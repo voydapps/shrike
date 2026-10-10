@@ -1,0 +1,56 @@
+Shrike @VERSION@ - how to install and open it
+=============================================
+
+1. INSTALL
+
+   Drag "Shrike" onto the "Applications" folder in this window.
+   Then eject this disk: in Finder, right-click it and choose Eject.
+   Always start Shrike from your Applications folder, not from this disk.
+
+
+2. FIRST LAUNCH (one time only)
+
+   Shrike is not notarized by Apple. So the first time you open it,
+   macOS asks you to confirm that you trust it. The steps depend on
+   your macOS version (Apple menu > About This Mac).
+
+   macOS 26 (Tahoe)
+     Open Shrike from Applications. macOS asks for your Mac's password
+     to allow the app. Enter it. Shrike opens.
+     If you see "Shrike Not Opened" instead, follow the macOS 15 steps.
+
+   macOS 15 (Sequoia)
+     a. Open Shrike from Applications. macOS says "Shrike Not Opened".
+        Click Done.
+     b. Open System Settings > Privacy & Security. Scroll down to the
+        "Security" part. Next to the line about Shrike, click
+        "Open Anyway".
+     c. Enter your Mac's password. Then click "Open Anyway" once more.
+
+   macOS 14 (Sonoma)
+     In Applications, right-click (or Control-click) Shrike and choose
+     Open. In the message that appears, click Open.
+
+   After this, Shrike opens with a normal double-click.
+
+
+3. ACCESS TO YOUR FOLDERS
+
+   When you open pictures from Desktop, Documents, Downloads, a USB
+   drive or a network drive, macOS asks once whether Shrike may read
+   that place. Click Allow. macOS remembers it, also after you
+   install a newer version of Shrike.
+
+
+IF MACOS SAYS "SHRIKE IS DAMAGED AND CAN'T BE OPENED"
+
+   The download is broken or was changed. Move Shrike to the Trash,
+   download the DMG again, and compare its checksum with the one on
+   the website. In Terminal:
+       shasum -a 256 ~/Downloads/Shrike-@VERSION@.dmg
+
+
+FOR ADVANCED USERS
+
+   This Terminal command skips step 2:
+       xattr -dr com.apple.quarantine /Applications/Shrike.app

@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>Shrike</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <!-- Versions come from project.yml (MARKETING_VERSION /
+         CURRENT_PROJECT_VERSION). The install and package scripts stamp
+         the build number with the git commit count. -->
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.photography</string>
+
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticTermination</key>
+    <true/>
+    <key>NSSupportsSuddenTermination</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 Shrike contributors</string>
+
+    <!-- The Print panel looks for network printers; macOS asks once. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Shrike looks for printers on your network when you print.</string>
+
+    <!--
+        Document types. Shrike claims every image UTI it will decode, but
+        declares itself as LSHandlerRank "Alternate" so it does not steal
+        the default association from Preview on first launch. Users can
+        promote Shrike to default via Finder → Get Info → Open with.
+        The list covers the formats macOS can decode.
+
+        Every UTI below was checked against the macOS 26 type database
+        (UTType(filenameExtension:)) and ImageIO's decoder list on
+        macOS 26. An unknown UTI is silently ignored by Launch Services,
+        so check new entries the same way before adding them.
+    -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <!-- Common raster formats -->
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.jpeg</string>
+                <string>public.png</string>
+                <string>public.tiff</string>
+                <string>com.compuserve.gif</string>
+                <string>com.microsoft.bmp</string>
+                <string>public.heic</string>
+                <string>public.heif</string>
+                <string>org.webmproject.webp</string>
+                <string>public.avif</string>
+                <string>com.adobe.photoshop-image</string>
+            </array>
+        </dict>
+
+        <!--
+            RAW formats. public.camera-raw-image is the umbrella: Launch
+            Services matches by conformance, so it already covers every RAW
+            type macOS knows. The specific UTIs are listed as well, one per
+            extension the app handles, using the UTI that extension actually
+            resolves to on macOS 26 (e.g. .orf -> com.olympus.raw-image,
+            .rw2 -> com.panasonic.rw2-raw-image). Sigma X3F is left out:
+            macOS has no UTI for it and ImageIO cannot decode it.
+        -->
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Camera RAW Image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.camera-raw-image</string>
+                <string>com.adobe.raw-image</string>
+                <string>com.canon.cr2-raw-image</string>
+                <string>com.canon.cr3-raw-image</string>
+                <string>com.nikon.raw-image</string>
+                <string>com.nikon.nrw-raw-image</string>
+                <string>com.sony.arw-raw-image</string>
+                <string>com.sony.sr2-raw-image</string>
+                <string>com.olympus.raw-image</string>
+                <string>com.olympus.or-raw-image</string>
+                <string>com.pentax.raw-image</string>
+                <string>com.fuji.raw-image</string>
+                <string>com.panasonic.rw2-raw-image</string>
+                <string>com.panasonic.raw-image</string>
+                <string>com.konicaminolta.raw-image</string>
+                <string>com.samsung.raw-image</string>
+            </array>
+        </dict>
+
+        <!--
+            Folders. Declaring public.folder lets a folder dropped on the
+            Dock icon (or "Open With > Shrike" on a folder) reach
+            application(_:open:). Finder still opens folders itself on a
+            double-click; "Alternate" never changes that.
+        -->
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Folder</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.folder</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

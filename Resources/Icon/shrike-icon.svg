@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Shrike app icon</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34495F"/>
+      <stop offset="1" stop-color="#101A26"/>
+    </linearGradient>
+    <linearGradient id="grey" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#C3CCD8"/>
+      <stop offset="1" stop-color="#8996A8"/>
+    </linearGradient>
+    <linearGradient id="throat" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D3DAE3"/>
+    </linearGradient>
+    <clipPath id="shape"><rect x="100" y="100" width="824" height="824" rx="185" ry="185"/></clipPath>
+  </defs>
+  <g clip-path="url(#shape)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#bg)"/>
+    <!-- 1. head, nape and back (grey): round crown, forehead sloping into the beak, chest running off the bottom -->
+    <path d="M318 404 C340 310 440 250 580 250 C740 250 850 360 850 520 C850 700 810 830 790 960 L380 960 C400 860 430 790 372 710 C336 662 330 624 346 600 Z" fill="url(#grey)"/>
+    <!-- 2. white throat and breast -->
+    <path d="M346 600 C430 630 520 650 556 710 C596 780 600 840 612 960 L380 960 C400 860 430 790 372 710 C336 662 330 624 346 600 Z" fill="url(#throat)"/>
+    <!-- 3. mask and hooked beak: ONE shape -->
+    <path d="M 640 410 L 410 410 C 330 396 232 418 172 476 C 138 510 132 562 148 591 C 176 571 216 565 262 574 C 292 588 316 600 346 600 L 640 600 C 740 600 770 555 770 505 C 770 455 740 410 640 410 Z" fill="#0A0E14"/>
+    <!-- 4. eye -->
+    <circle cx="450" cy="505" r="84" fill="#FFB224"/>
+    <circle cx="450" cy="505" r="44" fill="#0A0E14"/>
+    <circle cx="475" cy="479" r="14" fill="#FFFFFF"/>
+  </g>
+</svg>

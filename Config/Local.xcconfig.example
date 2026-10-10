@@ -1,0 +1,6 @@
+//  Copy to Config/Local.xcconfig (git-ignored) and put your own team ID in.
+//  Needs an "Apple Development" certificate for that team in your keychain.
+//  A stable identity keeps macOS privacy grants across rebuilds.
+CODE_SIGN_IDENTITY = Apple Development
+CODE_SIGN_IDENTITY[sdk=macosx*] = Apple Development
+DEVELOPMENT_TEAM = YOUR_TEAM_ID

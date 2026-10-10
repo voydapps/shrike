@@ -1,0 +1,162 @@
+# XcodeGen project spec for Shrike.
+# Regenerate with:   xcodegen generate
+# Rebuild with:      xcodebuild -scheme Shrike -configuration Debug build
+#
+# The app target depends on a local SwiftPM package (Packages/ShrikeKit)
+# that hosts all library modules (ShrikeCore, ShrikeRendering, ShrikeUI,
+# ShrikeEdit, ShrikeIO). Module boundaries live in the package so they stay
+# strict and are enforced even outside Xcode (swift test from CLI works).
+
+name: Shrike
+options:
+  bundleIdPrefix: app
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  xcodeVersion: "26.0"
+
+settings:
+  base:
+    # Swift 6 strict concurrency — keep configured at project level so every
+    # target inherits.
+    SWIFT_VERSION: 6.0
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY: YES
+    # Universal binary (Apple Silicon primary, Intel fallback).
+    ARCHS: "arm64 x86_64"
+    ONLY_ACTIVE_ARCH: NO
+    # Deployment + runtime posture.
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+    CLANG_ENABLE_MODULES: YES
+    # Versions. Info.plist reads both via $(MARKETING_VERSION) and
+    # $(CURRENT_PROJECT_VERSION). Bump MARKETING_VERSION by hand for a
+    # release. CURRENT_PROJECT_VERSION stays 1 for plain Xcode builds;
+    # Scripts/install-local.sh and Scripts/make-package.sh stamp it with
+    # `git rev-list --count HEAD`, so installed copies always outrank
+    # DerivedData builds in Launch Services ("Open With").
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Signing lives in Config/Signing.xcconfig (see the Shrike target).
+  configs:
+    Debug:
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+      SWIFT_COMPILATION_MODE: incremental
+      GCC_OPTIMIZATION_LEVEL: 0
+      ONLY_ACTIVE_ARCH: YES
+      DEBUG_INFORMATION_FORMAT: dwarf
+      # Don't fail the dev loop on a stray warning. Warnings-as-errors is
+      # still enforced in Release (and in the package's Release config).
+      SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+      SWIFT_COMPILATION_MODE: wholemodule
+      GCC_OPTIMIZATION_LEVEL: s
+      DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
+      SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+
+packages:
+  ShrikeKit:
+    path: Packages/ShrikeKit
+
+targets:
+
+  Shrike:
+    type: application
+    platform: macOS
+    sources:
+      - path: App/Sources
+      # Info.plist and Shrike.entitlements are listed as sources (not `info:`
+      # or `entitlements:`) on purpose — those top-level keys cause XcodeGen
+      # to generate / overwrite the files. We hand-author both and merely
+      # reference them from INFOPLIST_FILE / CODE_SIGN_ENTITLEMENTS below.
+      - path: App/Resources/Info.plist
+        buildPhase: none
+      - path: App/Resources/Shrike.entitlements
+        buildPhase: none
+      # Asset catalog (AppIcon only). There is no accent colour asset on
+      # purpose: controls follow the user's system accent colour.
+      # The catalog must be listed under `sources:` — XcodeGen has no
+      # target-level `resources:` key and silently ignores it. XcodeGen puts
+      # .xcassets into the Resources build phase.
+      - path: App/Resources/Assets.xcassets
+    # Code signing comes from Config/Signing.xcconfig: ad-hoc by default, so a
+    # fresh clone builds. An optional, git-ignored Config/Local.xcconfig (see
+    # Local.xcconfig.example) switches it to "Apple Development" with your
+    # team, which keeps macOS privacy grants (Desktop / Documents / Downloads,
+    # removable volumes) across rebuilds. Do not set CODE_SIGN_* in the
+    # settings below: target settings beat the xcconfig.
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    dependencies:
+      - package: ShrikeKit
+        product: ShrikeCore
+      - package: ShrikeKit
+        product: ShrikeRendering
+      - package: ShrikeKit
+        product: ShrikeUI
+      - package: ShrikeKit
+        product: ShrikeEdit
+      - package: ShrikeKit
+        product: ShrikeIO
+    settings:
+      base:
+        PRODUCT_NAME: Shrike
+        PRODUCT_BUNDLE_IDENTIFIER: app.shrike
+        INFOPLIST_FILE: App/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/Resources/Shrike.entitlements
+        # The Info.plist we commit is authoritative. Do NOT let Xcode
+        # synthesize one on top — that would overwrite CFBundleDocumentTypes.
+        GENERATE_INFOPLIST_FILE: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        Release:
+          # Secure timestamp, so the signature stays valid after the
+          # certificate expires.
+          OTHER_CODE_SIGN_FLAGS: "$(inherited) --timestamp"
+          # Keep com.apple.security.get-task-allow (debugger attach) out of
+          # Release products; only App/Resources/Shrike.entitlements is used.
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+          # App size (budget: < 20 MB signed app). What ships is
+          # the ARCHIVE (Scripts/install-local.sh, Scripts/make-package.sh):
+          # `archive` strips the whole symbol table (~6.5 MB per arch). A
+          # plain `xcodebuild build` does not strip (no deployment
+          # post-processing), on purpose: perf work runs `sample` /
+          # Instruments on those builds and needs the function names. The
+          # dSYM is made before the strip, so crash logs stay readable.
+          STRIP_INSTALLED_PRODUCT: YES
+          STRIP_STYLE: all
+          # An app has no plug-ins that link back into it, so it needs no
+          # exported symbols. Drops the ~0.37 MB per-arch export table; dyld
+          # also has less to read at launch. Swift/ObjC runtime lookups
+          # (NSClassFromString, protocol conformances) use sections, not
+          # exports. Release only: Xcode previews and test hosts need exports.
+          # (Xcode's setting for ld's -no_exported_symbols; Xcode warns if
+          # the flag is passed through OTHER_LDFLAGS.)
+          LD_EXPORT_SYMBOLS: NO
+
+schemes:
+  Shrike:
+    build:
+      targets:
+        Shrike: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      # Package tests surface automatically once xcodegen resolves the
+      # SwiftPM package. If not picked up, `swift test` from
+      # Packages/ShrikeKit/ always works.
+      targets: []
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

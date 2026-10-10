@@ -1,0 +1,611 @@
+//
+//  BatchRunner.swift
+//  ShrikeEdit
+//
+//  Convert, resize, rotate, rename and
+//  edit-recipe apply over many items.
+//
+//  - `preview` resolves every output name and every clash before anything
+//    runs (the Batch window's PREVIEW list).
+//  - `run` streams progress; cancelling the consuming task stops the batch
+//    (no new items start; ImageExporter writes temp + atomic rename, so an
+//    interrupted item leaves no partial file).
+//  - `undo` reverts a finished in-place run (renames, rotates, recipe
+//    applies). Convert / Resize into a folder create new files: no undo.
+//
+//  Built on the existing pieces, never beside them: `ImageExporter` writes
+//  every re-encoded file, `ExportFormat.inPlaceFormat` / `SaveTarget`
+//  decide what can be written in place, `FileOps` renames (companions
+//  keep the shared stem) and trashes Replace victims, `LosslessRotator`
+//  rotates in place, `BackupStore` keeps the originals.
+//
+
+import CoreGraphics
+import Foundation
+import ImageIO
+import os
+import ShrikeCore
+import ShrikeIO
+
+// MARK: - Plan
+
+public struct ConvertOptions: Sendable, Hashable, Codable {
+    public var format: ExportFormat
+    /// 0.60…1.00 (JPEG / HEIC only).
+    public var quality: Double
+    public var keepMetadata: Bool
+    public var removeLocation: Bool
+
+    public init(format: ExportFormat, quality: Double = 0.85,
+                keepMetadata: Bool = true, removeLocation: Bool = false) {
+        self.format = format
+        self.quality = min(max(quality, 0.60), 1.0)
+        self.keepMetadata = keepMetadata
+        self.removeLocation = removeLocation
+    }
+}
+
+public struct ResizeOptions: Sendable, Hashable, Codable {
+    public enum Mode: String, Sendable, Hashable, Codable, CaseIterable {
+        case longEdge, width, height, percent
+    }
+    public var mode: Mode
+    /// Pixels, or percent for `.percent`.
+    public var value: Int
+    public var dontEnlarge: Bool
+
+    public init(mode: Mode, value: Int, dontEnlarge: Bool = true) {
+        self.mode = mode
+        self.value = value
+        self.dontEnlarge = dontEnlarge
+    }
+
+    /// Output size for a (display-oriented) source size. Aspect is kept.
+    public func targetSize(for size: CGSize) -> CGSize {
+        guard size.width > 0, size.height > 0, value > 0 else { return size }
+        let scale: Double
+        switch mode {
+        case .longEdge: scale = Double(value) / Double(max(size.width, size.height))
+        case .width: scale = Double(value) / Double(size.width)
+        case .height: scale = Double(value) / Double(size.height)
+        case .percent: scale = Double(value) / 100
+        }
+        let s = dontEnlarge ? min(scale, 1) : scale
+        return CGSize(width: max(1, (size.width * s).rounded()), height: max(1, (size.height * s).rounded()))
+    }
+}
+
+public enum BatchOutput: Sendable, Hashable {
+    /// New files in this folder; originals untouched.
+    case folder(URL)
+    /// Change the files themselves (originals go to BackupStore first).
+    case inPlace
+}
+
+public struct BatchPlan: Sendable {
+    /// Counter order = list order.
+    public var items: [ImageGroup]
+    public var convert: ConvertOptions?
+    public var resize: ResizeOptions?
+    /// Quarter turns clockwise: 1 = Right 90°, 2 = 180°, 3 or -1 = Left 90°.
+    public var rotate: Int?
+    public var rename: RenameTemplate?
+    /// Edit operations applied to every item ("apply these edits to all").
+    /// A value snapshot: take it with `await recipe.operations` from the
+    /// `EditRecipe` actor.
+    public var recipe: [EditOperation]?
+    public var output: BatchOutput
+    /// What to do when an output name is already used on disk. Clashes
+    /// between items of the same batch always get Finder " 2" suffixes.
+    public var onConflict: ConflictAnswer.Action
+
+    public init(items: [ImageGroup], convert: ConvertOptions? = nil, resize: ResizeOptions? = nil,
+                rotate: Int? = nil, rename: RenameTemplate? = nil, recipe: [EditOperation]? = nil,
+                output: BatchOutput, onConflict: ConflictAnswer.Action = .keepBoth) {
+        self.items = items
+        self.convert = convert
+        self.resize = resize
+        self.rotate = rotate
+        self.rename = rename
+        self.recipe = recipe
+        self.output = output
+        self.onConflict = onConflict
+    }
+
+    var quarters: Int { ((rotate ?? 0) % 4 + 4) % 4 }
+    var hasRecipe: Bool { !(recipe?.isEmpty ?? true) }
+    /// Pixels are re-encoded (Convert, Resize, or a recipe).
+    var reencodes: Bool { convert != nil || resize != nil || hasRecipe }
+
+    /// Validation line, or nil when the plan can run.
+    public var validationError: BatchValidationError? {
+        if !reencodes && quarters == 0 && rename == nil { return .noOperation }
+        if convert != nil || resize != nil {
+            guard case .folder(let folder) = output else { return .outputFolderRequired }
+            var isDir: ObjCBool = false
+            if !FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir) || !isDir.boolValue {
+                // Created on run when its parent exists (default "<source>/Shrike Export").
+                if !FileManager.default.fileExists(atPath: folder.deletingLastPathComponent().path) {
+                    return .outputFolderRequired
+                }
+            }
+        }
+        return nil
+    }
+}
+
+public enum BatchValidationError: Error, Sendable, Hashable {
+    case noOperation
+    case outputFolderRequired
+
+    public var message: String {
+        switch self {
+        case .noOperation: return "Choose at least one operation."
+        case .outputFolderRequired: return "Choose an output folder."
+        }
+    }
+}
+
+// MARK: - Results
+
+public enum BatchSkipReason: Sendable, Hashable {
+    case unreadable
+    case diskFull
+    case nameExists
+    case cannotRotateLosslessly
+    case cancelled
+    /// An in-place recipe on a type Shrike can't write
+    /// back (RAW, multi-frame, …).
+    case cannotSaveInPlace
+    /// The rename template rendered an empty name.
+    case emptyName
+
+    /// The text shown to the user.
+    public var message: String {
+        switch self {
+        case .unreadable: return "Shrike can't read this file."
+        case .diskFull: return "Not enough disk space."
+        case .nameExists: return "A file with this name exists — skipped."
+        case .cannotRotateLosslessly: return "This file type can't be rotated without re-encoding — skipped."
+        case .cancelled: return "Cancelled."
+        case .cannotSaveInPlace: return "Shrike can't save this file type in place — skipped."
+        case .emptyName: return "The new name would be empty — skipped."
+        }
+    }
+}
+
+public struct BatchPreviewRow: Sendable, Hashable {
+    public let source: ImageGroup
+    public let outputName: String
+    public let destination: URL
+    /// Output pixel size when known (nil for rename-only rows).
+    public let outputSize: CGSize?
+    /// The name is used on disk or by an earlier item ("Name already used").
+    public let nameClash: Bool
+    /// Known before running (e.g. rotate on WebP, unreadable file).
+    public let skip: BatchSkipReason?
+}
+
+public enum BatchItemOutcome: Sendable {
+    case done(URL)
+    case skipped(BatchSkipReason)
+    case failed(any Error)
+}
+
+public struct BatchItemResult: Sendable {
+    public let source: ImageGroup
+    public let outcome: BatchItemOutcome
+}
+
+public struct BatchResult: Sendable {
+    public internal(set) var items: [BatchItemResult] = []
+    /// In-place renames, in run order (undo renames back).
+    public internal(set) var renames: [(before: ImageGroup, after: ImageGroup)] = []
+    public internal(set) var rotations: [LosslessRotateResult] = []
+    /// In-place recipe applies: the `.batch` backup of each original.
+    public internal(set) var replacedOriginals: [BackupRecord] = []
+
+    public var doneCount: Int { items.filter { if case .done = $0.outcome { return true }; return false }.count }
+    public var skippedCount: Int { items.count - doneCount }
+    /// Only in-place work can be undone.
+    public var canUndo: Bool { !renames.isEmpty || !rotations.isEmpty || !replacedOriginals.isEmpty }
+}
+
+public struct BatchProgress: Sendable {
+    public let completed: Int
+    public let total: Int
+    public let currentName: String?
+    /// The item that just finished (nil on the first event).
+    public let item: BatchItemResult?
+    /// Set on the last event only.
+    public let result: BatchResult?
+}
+
+// MARK: - Runner
+
+public struct BatchRunner: Sendable {
+
+    private let fileOps: FileOps
+    private let backups: BackupStore
+    private let metadata: MetadataStore?
+
+    public init(fileOps: FileOps, backups: BackupStore = .shared, metadata: MetadataStore? = nil) {
+        self.fileOps = fileOps
+        self.backups = backups
+        self.metadata = metadata
+    }
+
+    /// Worker count: `max(2, min(activeProcessorCount − 1, 6))`.
+    public static var workerCount: Int {
+        max(2, min(ProcessInfo.processInfo.activeProcessorCount - 1, 6))
+    }
+    /// Sources above this many pixels count against `maxBigDecodes`.
+    static let bigPixelCount = 40_000_000
+    static let maxBigDecodes = 4
+
+    // MARK: Preview
+
+    /// Every output name and clash, first `limit` rows (200, then
+    /// "and N more"). Nothing is written.
+    public func preview(_ plan: BatchPlan, limit: Int = 200) async -> [BatchPreviewRow] {
+        let items = Array(plan.items.prefix(max(0, limit)))
+        return Self.resolve(plan, items: items).map(\.row)
+    }
+
+    // MARK: Run
+
+    public func run(_ plan: BatchPlan) -> AsyncThrowingStream<BatchProgress, any Error> {
+        run(plan, stop: BatchStop())
+    }
+
+    /// Like `run(_:)`, with a Stop button: `stop.stop()` starts no new
+    /// items and cancels the ones in flight, and the stream still ends
+    /// with the last event carrying `result` ("Cancelled." rows included,
+    /// finished in-place work undoable). Ending the stream instead also
+    /// stops the work, but that last event is lost.
+    public func run(_ plan: BatchPlan, stop: BatchStop) -> AsyncThrowingStream<BatchProgress, any Error> {
+        AsyncThrowingStream { continuation in
+            let work = Task {
+                do {
+                    let result = try await self.execute(plan) { continuation.yield($0) }
+                    continuation.yield(BatchProgress(completed: result.items.count, total: plan.items.count,
+                                                     currentName: nil, item: nil, result: result))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            stop.attach(work)
+            continuation.onTermination = { _ in work.cancel() }
+        }
+    }
+
+    // MARK: Undo
+
+    /// Reverts a finished in-place run: renames back (last first),
+    /// lossless rotates undone, recipe applies restored from BackupStore.
+    public func undo(_ result: BatchResult) async throws {
+        var firstError: (any Error)?
+        for rename in result.renames.reversed() {
+            do { _ = try await fileOps.rename(rename.after, toStem: Self.stem(of: rename.before)) }
+            catch { firstError = firstError ?? error }
+        }
+        if !result.rotations.isEmpty {
+            let rotator = LosslessRotator(backupStore: backups)
+            for rotation in result.rotations.reversed() {
+                do { try await rotator.undo(rotation) } catch { firstError = firstError ?? error }
+            }
+        }
+        for record in result.replacedOriginals {
+            do { try await backups.restore(record) } catch { firstError = firstError ?? error }
+        }
+        if let firstError { throw firstError }
+    }
+
+    // MARK: - Resolution (shared by preview and run)
+
+    struct Resolved: Sendable {
+        let row: BatchPreviewRow
+        /// Existing file to Trash first (Replace).
+        let replaceTarget: URL?
+        let format: ExportFormat?
+        let pixelCount: Int
+    }
+
+    static func resolve(_ plan: BatchPlan, items: [ImageGroup]) -> [Resolved] {
+        let stems: [String]
+        if let template = plan.rename {
+            stems = template.plan(for: items.map(\.primary)).map { ($0.newName as NSString).deletingPathExtension }
+        } else {
+            stems = items.map { stem(of: $0) }
+        }
+        var claimed = Set<String>()
+        var out: [Resolved] = []
+        out.reserveCapacity(items.count)
+        let sources = Set(items.flatMap { $0.allURLs.map { CanonicalPath.of($0) } })
+
+        for (i, group) in items.enumerated() {
+            let src = group.primary
+            let header = Header(src)
+            var skip: BatchSkipReason? = header == nil ? .unreadable : nil
+            let folder: URL
+            var format: ExportFormat?
+            var ext = src.pathExtension
+            let inPlace: Bool
+            if plan.reencodes, case .folder(let f) = plan.output {
+                folder = f
+                inPlace = false
+                format = plan.convert?.format ?? ExportFormat.inPlaceFormat(for: src) ?? .jpeg
+                ext = format?.fileExtension ?? ext
+            } else {
+                folder = src.deletingLastPathComponent()
+                inPlace = true
+                if plan.reencodes {
+                    format = ExportFormat.inPlaceFormat(for: src)
+                    if format == nil, skip == nil { skip = .cannotSaveInPlace }
+                } else if plan.quarters != 0, !LosslessRotator.isSupported(src), skip == nil {
+                    skip = .cannotRotateLosslessly
+                }
+            }
+            var stem = stems[i]
+            if stem.isEmpty, skip == nil { skip = .emptyName }
+            if stem.isEmpty { stem = Self.stem(of: group) }
+
+            var name = ext.isEmpty ? stem : "\(stem).\(ext)"
+            var dest = folder.appendingPathComponent(name)
+            var clash = false
+            var replaceTarget: URL?
+            let unchanged = inPlace && name == src.lastPathComponent
+            if !unchanged {
+                let key = CanonicalPath.of(dest)
+                let onDisk = FileManager.default.fileExists(atPath: dest.path) && !sources.contains(key)
+                if claimed.contains(key) || onDisk {
+                    clash = true
+                    if claimed.contains(key) || plan.onConflict == .keepBoth {
+                        let isTaken: (URL) -> Bool = { url in
+                            claimed.contains(CanonicalPath.of(url))
+                                || (FileManager.default.fileExists(atPath: url.path) && !sources.contains(CanonicalPath.of(url)))
+                        }
+                        name = FileOps.freeNames(for: [name], stem: stem, in: folder, isTaken: isTaken)[0]
+                        dest = folder.appendingPathComponent(name)
+                    } else if plan.onConflict == .skip {
+                        if skip == nil { skip = .nameExists }
+                    } else {
+                        replaceTarget = dest
+                    }
+                }
+                claimed.insert(CanonicalPath.of(dest))
+            }
+
+            var size: CGSize?
+            if let header {
+                var s = header.displaySize
+                if plan.quarters % 2 == 1 { s = CGSize(width: s.height, height: s.width) }
+                if let resize = plan.resize { s = resize.targetSize(for: s) }
+                size = s
+            }
+            out.append(Resolved(
+                row: BatchPreviewRow(source: group, outputName: name, destination: dest,
+                                     outputSize: size, nameClash: clash, skip: skip),
+                replaceTarget: skip == nil ? replaceTarget : nil,
+                format: format,
+                pixelCount: header.map { Int($0.displaySize.width * $0.displaySize.height) } ?? 0))
+        }
+        return out
+    }
+
+    // MARK: - Execution
+
+    private func execute(_ plan: BatchPlan,
+                         emit: @escaping @Sendable (BatchProgress) -> Void) async throws -> BatchResult {
+        if let error = plan.validationError { throw error }
+        let resolved = Self.resolve(plan, items: plan.items)
+        let total = resolved.count
+        var result = BatchResult()
+        emit(BatchProgress(completed: 0, total: total, currentName: resolved.first?.row.source.primary.lastPathComponent,
+                           item: nil, result: nil))
+
+        if case .folder(let folder) = plan.output, plan.reencodes {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+
+        // Renames alone run in order (they're quick and names depend on
+        // earlier items); everything else runs on the worker pool.
+        if !plan.reencodes && plan.quarters == 0 {
+            for r in resolved {
+                let item = await renameItem(r, plan: plan, result: &result)
+                result.items.append(item)
+                emit(BatchProgress(completed: result.items.count, total: total,
+                                   currentName: r.row.source.primary.lastPathComponent, item: item, result: nil))
+            }
+            return result
+        }
+
+        let gate = BigDecodeGate(limit: Self.maxBigDecodes)
+        try await withThrowingTaskGroup(of: (BatchItemResult, Change).self) { group in
+            var next = 0
+            func startNext() {
+                guard next < resolved.count else { return }
+                let r = resolved[next]
+                next += 1
+                group.addTask {
+                    if Task.isCancelled { return (BatchItemResult(source: r.row.source, outcome: .skipped(.cancelled)), .none) }
+                    let big = r.pixelCount > Self.bigPixelCount
+                    if big { await gate.acquire() }
+                    let out = await self.processItem(r, plan: plan)
+                    if big { await gate.release() }
+                    return out
+                }
+            }
+            for _ in 0..<Self.workerCount { startNext() }
+            while let (item, change) = try await group.next() {
+                result.items.append(item)
+                switch change {
+                case .none: break
+                case .rotated(let rotation): result.rotations.append(rotation)
+                case .replaced(let record): result.replacedOriginals.append(record)
+                }
+                emit(BatchProgress(completed: result.items.count, total: total,
+                                   currentName: item.source.primary.lastPathComponent, item: item, result: nil))
+                if !Task.isCancelled { startNext() }
+            }
+        }
+        // Items never started because of a Stop.
+        let finished = Set(result.items.map(\.source))
+        for r in resolved where !finished.contains(r.row.source) {
+            result.items.append(BatchItemResult(source: r.row.source, outcome: .skipped(.cancelled)))
+        }
+        // In-place rename after a lossless rotate (Rotate + Rename).
+        if !plan.reencodes, plan.rename != nil {
+            var renamed = BatchResult()
+            for r in resolved where result.items.contains(where: { $0.source == r.row.source && $0.isDone }) {
+                _ = await renameItem(r, plan: plan, result: &renamed)
+            }
+            result.renames = renamed.renames
+        }
+        return result
+    }
+
+    private enum Change: Sendable {
+        case none
+        case rotated(LosslessRotateResult)
+        case replaced(BackupRecord)
+    }
+
+    private func renameItem(_ r: Resolved, plan: BatchPlan, result: inout BatchResult) async -> BatchItemResult {
+        let group = r.row.source
+        if Task.isCancelled { return BatchItemResult(source: group, outcome: .skipped(.cancelled)) }
+        if let skip = r.row.skip { return BatchItemResult(source: group, outcome: .skipped(skip)) }
+        if r.row.outputName == group.primary.lastPathComponent {
+            return BatchItemResult(source: group, outcome: .done(group.primary))
+        }
+        do {
+            if let victim = r.replaceTarget { _ = try await fileOps.trash([ImageGroup(primary: victim)]) }
+            let newStem = (r.row.outputName as NSString).deletingPathExtension
+            let renamed = try await fileOps.rename(group, toStem: newStem)
+            result.renames.append((group, renamed))
+            return BatchItemResult(source: group, outcome: .done(renamed.primary))
+        } catch {
+            return BatchItemResult(source: group, outcome: Self.outcome(for: error))
+        }
+    }
+
+    private func processItem(_ r: Resolved, plan: BatchPlan) async -> (BatchItemResult, Change) {
+        let group = r.row.source
+        let src = group.primary
+        if let skip = r.row.skip { return (BatchItemResult(source: group, outcome: .skipped(skip)), .none) }
+        do {
+            // Lossless in-place rotate (no re-encode).
+            if !plan.reencodes {
+                let rotation = try await LosslessRotator(backupStore: backups).rotate(url: src, quarters: plan.quarters)
+                return (BatchItemResult(source: group, outcome: .done(src)), .rotated(rotation))
+            }
+            var ops: [EditOperation] = plan.recipe ?? []
+            if plan.quarters != 0 { ops.append(.rotate90(quarters: plan.quarters)) }
+            if let resize = plan.resize, let size = r.row.outputSize {
+                ops.append(.resize(ResizeSpec(width: Int(size.width), height: Int(size.height),
+                                              interpolation: .lanczos, preventUpscale: resize.dontEnlarge)))
+            }
+            let format = r.format ?? .jpeg
+            let convert = plan.convert
+            let quality = convert?.quality ?? ImageExporter.defaultQuality
+            if Task.isCancelled { return (BatchItemResult(source: group, outcome: .skipped(.cancelled)), .none) }
+
+            if case .folder = plan.output {
+                if let victim = r.replaceTarget { _ = try await fileOps.trash([ImageGroup(primary: victim)]) }
+                try await ImageExporter(backupStore: nil, metadataStore: metadata).export(
+                    recipe: EditRecipe(operations: ops), from: src, to: r.row.destination, format: format,
+                    quality: quality, preserveEXIF: convert?.keepMetadata ?? true,
+                    stripGPS: convert?.removeLocation ?? false)
+                return (BatchItemResult(source: group, outcome: .done(r.row.destination)), .none)
+            }
+            // In place: `.batch` backup first; no backup, no overwrite.
+            let record = try await backups.backup(src, reason: .batch)
+            try await ImageExporter(backupStore: nil, metadataStore: metadata).export(
+                recipe: EditRecipe(operations: ops), from: src, to: src, format: format, quality: quality)
+            return (BatchItemResult(source: group, outcome: .done(src)), .replaced(record))
+        } catch {
+            return (BatchItemResult(source: group, outcome: Self.outcome(for: error)), .none)
+        }
+    }
+
+    // MARK: - Helpers
+
+    static func outcome(for error: any Error) -> BatchItemOutcome {
+        if error is CancellationError { return .skipped(.cancelled) }
+        if let e = error as? ExportError, case .sourceUnreadable = e { return .skipped(.unreadable) }
+        if let e = error as? BackupError, "\(e)".localizedCaseInsensitiveContains("space") { return .skipped(.diskFull) }
+        if (error as NSError).domain == NSCocoaErrorDomain, (error as NSError).code == NSFileWriteOutOfSpaceError {
+            return .skipped(.diskFull)
+        }
+        if let e = error as? FileOpsError, case .nameTaken = e { return .skipped(.nameExists) }
+        return .failed(error)
+    }
+
+    static func stem(of group: ImageGroup) -> String {
+        group.primary.deletingPathExtension().lastPathComponent
+    }
+
+    /// Display-oriented pixel size from the header (no decode).
+    struct Header {
+        let displaySize: CGSize
+        init?(_ url: URL) {
+            guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+                  let w = props[kCGImagePropertyPixelWidth] as? Int,
+                  let h = props[kCGImagePropertyPixelHeight] as? Int
+            else { return nil }
+            let orientation = props[kCGImagePropertyOrientation] as? Int ?? 1
+            displaySize = orientation >= 5 ? CGSize(width: h, height: w) : CGSize(width: w, height: h)
+        }
+    }
+}
+
+extension BatchItemResult {
+    var isDone: Bool { if case .done = outcome { return true }; return false }
+}
+
+/// The Batch window's Stop, for `BatchRunner.run(_:stop:)`.
+/// Safe to call from any thread, before or during the run.
+public final class BatchStop: Sendable {
+    private struct State: Sendable {
+        var stopped = false
+        var work: Task<Void, Never>?
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    public init() {}
+
+    public var isStopped: Bool { state.withLock { $0.stopped } }
+
+    public func stop() {
+        let work = state.withLock { s -> Task<Void, Never>? in
+            s.stopped = true
+            return s.work
+        }
+        work?.cancel()
+    }
+
+    func attach(_ work: Task<Void, Never>) {
+        let stopped = state.withLock { s -> Bool in
+            s.work = work
+            return s.stopped
+        }
+        if stopped { work.cancel() }
+    }
+}
+
+/// At most `limit` very large decodes at once (4 over 40 MP).
+private actor BigDecodeGate {
+    private let limit: Int
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    init(limit: Int) { self.limit = limit }
+    func acquire() async {
+        if active < limit { active += 1; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func release() {
+        if waiters.isEmpty { active -= 1 } else { waiters.removeFirst().resume() }
+    }
+}

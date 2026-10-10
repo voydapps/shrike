@@ -1,0 +1,291 @@
+//
+//  BrowserKeyViews.swift
+//  ShrikeUI
+//
+//  The grid / filmstrip and list views of the Browser.
+//  `keyDown` asks the Browser key map first; only keys it does not map
+//  reach `super`, so arrow keys keep AppKit's own column-aware movement
+//  and letters never turn into type-select. Double-click opens the item
+//  in the paired viewer.
+//
+
+import AppKit
+
+/// Grid and filmstrip.
+@MainActor
+final class BrowserCollectionView: NSCollectionView {
+
+    /// Returns true when the Browser key map consumed the event.
+    var keyHandler: ((NSEvent) -> Bool)?
+    /// Double-click on an item.
+    var onDoubleClick: ((IndexPath) -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if keyHandler?(event) == true { return }
+        if let step = Self.shiftArrow(event), extendSelection(by: step) { return }
+        super.keyDown(with: event)
+    }
+
+    // MARK: ⇧-arrows
+    //
+    // NSCollectionView keeps its own private anchor for ⇧-arrows, and any
+    // selection set in code (a re-list after a rating or Q, a view switch)
+    // resets it so that ⇧→ shrank the range from its start. The grid now
+    // ranges ⇧-arrows itself from the same anchor as a shift-click, with
+    // the moving end (`keyLead`) kept beside it.
+
+    enum KeyStep { case left, right, up, down }
+
+    /// ⇧ plus an arrow and no other modifier.
+    static func shiftArrow(_ event: NSEvent) -> KeyStep? {
+        let mods = event.modifierFlags.intersection([.shift, .command, .control, .option])
+        guard mods == .shift else { return nil }
+        switch event.keyCode {
+        case 123: return .left
+        case 124: return .right
+        case 125: return .down
+        case 126: return .up
+        default: return nil
+        }
+    }
+
+    /// The moving end of the range, while `keySelection` is the selection.
+    private var keyLead: IndexPath?
+    /// The selection when the anchor and lead were last set; any other
+    /// selection (a plain arrow, a select-all) makes them guesses again.
+    private var keySelection: Set<IndexPath>?
+
+    /// The range the next ⇧-arrow changes: the anchor, the moving end and
+    /// the items kept beside the range. When the selection changed in
+    /// another way, the anchor is the shift-click anchor if it is still
+    /// selected (else the first selected item) and the moving end is the
+    /// far end of the run of selected items through it.
+    var keyRange: (anchor: IndexPath, lead: IndexPath)? {
+        resolvedKeyRange().map { ($0.anchor, $0.lead) }
+    }
+
+    private func resolvedKeyRange() -> (anchor: IndexPath, lead: IndexPath, base: Set<IndexPath>)? {
+        let current = selectionIndexPaths
+        guard let first = current.min() else { return nil }
+        if keySelection == current, let anchor = selectionAnchor, let lead = keyLead,
+           current.contains(anchor), current.contains(lead) {
+            return (anchor, lead, anchorBase)
+        }
+        let anchor = selectionAnchor.flatMap { current.contains($0) ? $0 : nil } ?? first
+        func at(_ item: Int) -> IndexPath { IndexPath(item: item, section: anchor.section) }
+        var end = anchor.item
+        while current.contains(at(end + 1)) { end += 1 }
+        if end == anchor.item {
+            while current.contains(at(end - 1)) { end -= 1 }
+        }
+        let lead = at(end)
+        return (anchor, lead, current.subtracting(Self.range(anchor, lead)))
+    }
+
+    private static func range(_ a: IndexPath, _ b: IndexPath) -> Set<IndexPath> {
+        Set((min(a.item, b.item)...max(a.item, b.item)).map { IndexPath(item: $0, section: a.section) })
+    }
+
+    /// Moves the lead one item (← →) or one row (↑ ↓) and selects from the
+    /// anchor to it, plus the ⌘-clicked items beside the range. False (so
+    /// AppKit handles the key) with nothing selected, or ↑ ↓ in the
+    /// filmstrip.
+    @discardableResult
+    func extendSelection(by step: KeyStep) -> Bool {
+        let count = numberOfSections > 0 ? numberOfItems(inSection: 0) : 0
+        guard count > 0, let range = resolvedKeyRange() else { return false }
+        let horizontal = (collectionViewLayout as? NSCollectionViewFlowLayout)?.scrollDirection == .horizontal
+        let delta: Int
+        switch step {
+        case .left: delta = -1
+        case .right: delta = 1
+        case .up, .down:
+            if horizontal { return false }
+            delta = (step == .up ? -1 : 1) * itemsPerRow(count: count)
+        }
+        let item = min(max(range.lead.item + delta, 0), count - 1)
+        let lead = IndexPath(item: item, section: range.lead.section)
+        selectionAnchor = range.anchor
+        anchorBase = range.base
+        apply(selection: range.base.union(Self.range(range.anchor, lead)))
+        keyLead = lead
+        keySelection = selectionIndexPaths
+        scrollToItems(at: [lead], scrollPosition: horizontal ? .nearestHorizontalEdge : .nearestVerticalEdge)
+        return true
+    }
+
+    /// Items in the grid's first row (the step of ⇧↑ / ⇧↓).
+    private func itemsPerRow(count: Int) -> Int {
+        guard let first = layoutAttributesForItem(at: IndexPath(item: 0, section: 0))?.frame else { return 1 }
+        var n = 1
+        while n < count, let frame = layoutAttributesForItem(at: IndexPath(item: n, section: 0))?.frame,
+              abs(frame.minY - first.minY) < 1 {
+            n += 1
+        }
+        return n
+    }
+
+    // MARK: Shift-click range
+
+    /// The item the last plain or ⌘-click landed on: a shift-click selects
+    /// from here to the clicked item, as the list view does.
+    private(set) var selectionAnchor: IndexPath?
+    /// What stays selected beside the range: the ⌘-clicked items from
+    /// before the anchor was set (empty after a plain click).
+    private var anchorBase: Set<IndexPath> = []
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let hit = indexPathForItem(at: point)
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.clickCount == 1, let hit, mods.contains(.shift), !mods.contains(.command) {
+            // NSCollectionView's own shift-click adds just the one item.
+            window?.makeFirstResponder(self)
+            extendSelection(to: hit)
+            return
+        }
+        // "Single-click: select one". A
+        // plain click on a photo inside a multi-selection keeps them all
+        // on mouse-down (so a drag takes them all) and selects just that
+        // photo on mouse-up, as Finder does.
+        let plain = mods.intersection([.shift, .command, .control, .option]).isEmpty
+        pendingSingleSelect = nil
+        dragBegan = false
+        let narrowTo: IndexPath? = if event.clickCount == 1, plain, let hit,
+            selectionIndexPaths.count > 1, selectionIndexPaths.contains(hit) { hit } else { nil }
+        if let track = mouseTrackingForTesting { track(event) } else { super.mouseDown(with: event) }
+        if let narrowTo {
+            // NSCollectionView may track the press itself and return after
+            // the mouse-up (or when a drag starts); else the mouse-up comes
+            // to `mouseUp` below. A drag never narrows (`noteDragBegan`).
+            switch NSApp.currentEvent?.type {
+            case .leftMouseUp?: narrowSelection(to: narrowTo)
+            case .leftMouseDragged?: break
+            default: pendingSingleSelect = narrowTo
+            }
+        }
+        if event.clickCount == 1 { noteClick(on: hit, command: mods.contains(.command)) }
+        guard event.clickCount == 2 else { return }
+        if let hit { onDoubleClick?(hit) }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        if let target = pendingSingleSelect { narrowSelection(to: target) }
+        pendingSingleSelect = nil
+    }
+
+    /// The clicked photo waiting for its mouse-up.
+    private var pendingSingleSelect: IndexPath?
+    /// A drag of the selection started during this press: it keeps the
+    /// whole selection (the Browser hears `canDragItemsAt`).
+    private(set) var dragBegan = false
+    func noteDragBegan() {
+        dragBegan = true
+        pendingSingleSelect = nil
+    }
+    /// Test seam: stands in for AppKit's own press tracking.
+    var mouseTrackingForTesting: ((NSEvent) -> Void)?
+
+    /// Mouse-up without a drag: the clicked photo alone stays selected;
+    /// the delegate hears it as it does for a click.
+    private func narrowSelection(to target: IndexPath) {
+        guard !dragBegan, selectionIndexPaths.contains(target), selectionIndexPaths.count > 1 else { return }
+        apply(selection: [target])
+        selectionAnchor = target
+        anchorBase = []
+        keyLead = target
+        keySelection = selectionIndexPaths
+    }
+
+    /// A plain or ⌘-click (after AppKit applied it) moves the anchor.
+    func noteClick(on hit: IndexPath?, command: Bool) {
+        guard let hit else {
+            if !command { selectionAnchor = nil; anchorBase = [] }
+            keyLead = nil
+            keySelection = nil
+            return
+        }
+        selectionAnchor = hit
+        anchorBase = command ? selectionIndexPaths.subtracting([hit]) : []
+        keyLead = hit
+        keySelection = selectionIndexPaths
+    }
+
+    /// A view switch (list → grid) carries the anchor over;
+    /// nil leaves the first selected item as the anchor. A
+    /// re-list also carries the moving end of a ⇧-arrow range.
+    func restoreAnchor(_ anchor: IndexPath?, lead: IndexPath? = nil) {
+        selectionAnchor = anchor
+        anchorBase = []
+        keyLead = nil
+        keySelection = nil
+        guard let anchor, let lead, selectionIndexPaths.contains(anchor), selectionIndexPaths.contains(lead) else { return }
+        anchorBase = selectionIndexPaths.subtracting(Self.range(anchor, lead))
+        keyLead = lead
+        keySelection = selectionIndexPaths
+    }
+
+    /// Shift-click: the selection becomes the range from the anchor to
+    /// `target`, plus the ⌘-clicked items kept beside it, so a second
+    /// shift-click nearer the anchor shrinks the range (Finder list view,
+    /// NSTableView). Without an anchor that is still selected (the keys
+    /// moved the selection), the first selected item is the anchor. The
+    /// delegate hears the change as it does for a click.
+    func extendSelection(to target: IndexPath) {
+        var anchor = selectionAnchor
+        if let current = anchor, !selectionIndexPaths.contains(current) { anchor = nil }
+        if anchor == nil {
+            anchor = selectionIndexPaths.min()
+            anchorBase = []
+        }
+        guard let anchor else {
+            selectionAnchor = target
+            anchorBase = []
+            apply(selection: [target])
+            keyLead = target
+            keySelection = selectionIndexPaths
+            return
+        }
+        selectionAnchor = anchor
+        apply(selection: anchorBase.union(Self.range(anchor, target)))
+        keyLead = target
+        keySelection = selectionIndexPaths
+    }
+
+    private func apply(selection new: Set<IndexPath>) {
+        let old = selectionIndexPaths
+        let removed = old.subtracting(new)
+        let added = new.subtracting(old)
+        if !removed.isEmpty {
+            deselectItems(at: removed)
+            delegate?.collectionView?(self, didDeselectItemsAt: removed)
+        }
+        if !added.isEmpty {
+            selectItems(at: added, scrollPosition: [])
+            delegate?.collectionView?(self, didSelectItemsAt: added)
+        }
+    }
+
+    /// New contents (sort, filter, folder): the old anchor means nothing.
+    override func reloadData() {
+        selectionAnchor = nil
+        anchorBase = []
+        keyLead = nil
+        keySelection = nil
+        super.reloadData()
+    }
+}
+
+/// List view.
+@MainActor
+final class BrowserTableView: NSTableView {
+
+    /// Returns true when the Browser key map consumed the event.
+    var keyHandler: ((NSEvent) -> Bool)?
+
+    override func keyDown(with event: NSEvent) {
+        if keyHandler?(event) == true { return }
+        super.keyDown(with: event)
+    }
+}

@@ -1,0 +1,60 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Xcode
+build/
+# Release artifacts from Scripts/make-package.sh
+dist/
+DerivedData/
+.derived/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# The Xcode project is generated from project.yml — do not commit it.
+# Anyone checking out the repo regenerates with `xcodegen generate`.
+Shrike.xcodeproj/
+
+# SwiftPM
+.swiftpm/
+.build/
+Packages/*/.build/
+Packages/*/.swiftpm/
+# Package.resolved IS committed (Packages/ShrikeKit/Package.resolved) so GRDB
+# stays pinned. Scripts/lib/common.sh seeds Xcode's copy from it.
+
+# Dependency manager caches
+Carthage/
+Pods/
+
+# Logs, coverage, reports
+*.log
+*.profraw
+coverage/
+
+# Signing / secrets — should never land in the repo
+*.p12
+*.mobileprovision
+*.provisionprofile
+ExportOptions.plist.local
+fastlane/report.xml
+fastlane/Preview.html
+
+# IDE
+.idea/
+.vscode/
+
+# Local signing config (holds the developer team ID); template is Config/Local.xcconfig.example
+Config/Local.xcconfig

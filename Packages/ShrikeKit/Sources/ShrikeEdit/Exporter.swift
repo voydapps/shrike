@@ -1,0 +1,328 @@
+//
+//  Exporter.swift
+//  ShrikeEdit
+//
+//  Save / Save As pipeline.
+//  Three responsibilities:
+//    1. Bake the recipe against the original source into a `CGImage`.
+//    2. Encode to the requested `ExportFormat` with EXIF + ICC preserved
+//       (orientation forcibly rewritten to 1 because rotations are baked
+//       into the pixel data).
+//    3. Write atomically: temp file in the same directory + `replaceItemAt`,
+//       so a crash / IO failure leaves the original intact.
+//
+//  RAW redirect: if the destination URL points at a RAW format we can't
+//  write, the caller should have already redirected to `<stem>-edited.jpg`;
+//  the exporter refuses RAW writes (ImageDestinationError.unwritableFormat).
+//  The `-edited` suffix itself is exposed as
+//  `ImageExporter.rawRedirectSuffix` so it can become a preference
+//  without touching callers.
+//
+
+import CoreGraphics
+import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+import ShrikeCore
+import ShrikeIO
+
+public enum ExportFormat: String, Sendable, Codable, CaseIterable {
+    case jpeg, png, tiff, heic
+    /// WebP / AVIF: only usable when the running OS ships an encoder —
+    /// check `isEncodable` (ImageIO had no WebP encoder as of macOS 26).
+    case webp, avif
+
+    /// UTType for the CGImageDestination.
+    public var utType: UTType {
+        switch self {
+        case .jpeg: return .jpeg
+        case .png:  return .png
+        case .tiff: return .tiff
+        case .heic: return .heic
+        case .webp: return .webP
+        case .avif: return UTType("public.avif") ?? UTType(filenameExtension: "avif") ?? .image
+        }
+    }
+
+    /// File extension (no dot) for the format.
+    public var fileExtension: String {
+        switch self {
+        case .jpeg: return "jpg"
+        case .png:  return "png"
+        case .tiff: return "tiff"
+        case .heic: return "heic"
+        case .webp: return "webp"
+        case .avif: return "avif"
+        }
+    }
+
+    /// True when the format carries a user-visible quality slider.
+    public var usesQuality: Bool {
+        switch self {
+        case .jpeg, .heic, .webp, .avif: return true
+        case .png, .tiff:                return false
+        }
+    }
+
+}
+
+public enum ExportError: Error, Sendable, Equatable {
+    case sourceMissing
+    case sourceUnreadable
+    case recipeApplyFailed
+    case destinationCreateFailed
+    case destinationFinalizeFailed
+    case unwritableFormat
+    /// Refused to overwrite `source` in place: its format can't be written
+    /// back safely (RAW, GIF, PSD, multi-frame, format/extension mismatch…).
+    /// See `ExportFormat.inPlaceFormat(for:)`. The UI must use Save As.
+    case inPlaceWriteNotAllowed
+    /// The destination's extension doesn't match the bytes we'd write
+    /// (e.g. JPEG bytes into `photo.gif`).
+    case extensionMismatch
+    /// The pre-overwrite backup failed, so the overwrite was not attempted.
+    case backupFailed(underlying: String)
+    case atomicReplaceFailed(underlying: String)
+    case ioFailure(underlying: String)
+}
+
+/// Baking + encoding pipeline for the edit save path.
+public actor ImageExporter {
+
+    /// Suffix appended to the stem when the save path redirects a RAW
+    /// source to a sibling JPEG. Exposed as a `public
+    /// static let` so it can become a preference without breaking
+    /// call sites.
+    public static let rawRedirectSuffix: String = "-edited"
+
+    /// Default JPEG + HEIC quality when the caller doesn't pass one.
+    /// Matches `Prefs.editJPEGQualityDefault` / `editHEICQualityDefault`.
+    public static let defaultQuality: Double = 0.92
+
+    /// Where originals go before an overwrite. `nil` disables backups —
+    /// tests only; app code must keep the default.
+    private let backupStore: BackupStore?
+    /// When set, ratings / flags / tags follow the save: re-stamped on an
+    /// in-place overwrite, copied onto a Save-As file.
+    private let metadataStore: MetadataStore?
+
+    public init(backupStore: BackupStore? = BackupStore.shared,
+                metadataStore: MetadataStore? = nil) {
+        self.backupStore = backupStore
+        self.metadataStore = metadataStore
+    }
+
+    /// Bake `recipe` against the `CGImage` read from `from` and write
+    /// the result to `to` in `format`. EXIF, ICC, and (optionally) GPS
+    /// are preserved; orientation is rewritten to 1 because any recipe
+    /// rotation has been baked into pixels.
+    ///
+    /// Writes are atomic: the bytes land in a temp file in the same
+    /// directory, then `FileManager.replaceItemAt` swaps them over the
+    /// destination. A crash or I/O failure mid-write leaves the original
+    /// (if any) intact.
+    ///
+    /// Before an existing file at `destination` is replaced, it is copied
+    /// into the `BackupStore` (reason `.save`). If that copy fails nothing
+    /// is overwritten (`ExportError.backupFailed`). Returns the backup
+    /// record, or `nil` when no file was replaced.
+    @discardableResult
+    public func export(
+        recipe: EditRecipe,
+        from source: URL,
+        to destination: URL,
+        format: ExportFormat,
+        quality: Double = ImageExporter.defaultQuality,
+        preserveEXIF: Bool = true,
+        stripGPS: Bool = false
+    ) async throws -> BackupRecord? {
+        // 1. Read the source.
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw ExportError.sourceMissing
+        }
+
+        // 0. Refuse writes that would damage or mislabel a file.
+        //    Defence in depth: the UI is supposed to route these to
+        //    Save As already, via `ExportFormat.inPlaceFormat(for:)`.
+        try Self.validateDestination(source: source, destination: destination, format: format)
+        guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil) else {
+            throw ExportError.sourceUnreadable
+        }
+        guard let storedImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            throw ExportError.sourceUnreadable
+        }
+
+        let sourceProperties =
+            CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
+
+        // The recipe (crop rect, rotations) was built on screen against
+        // the *displayed* image, which the viewer decodes with the EXIF
+        // transform applied. `CGImageSourceCreateImageAtIndex` returns the
+        // stored (unrotated) pixels, so turn them into display pixels
+        // before replaying. Orientation 1 is written on the way out.
+        let originalImage = Self.displayOrientedImage(
+            storedImage, properties: sourceProperties
+        )
+
+        // 2. Replay the recipe. `renderFinal` is the non-dropping variant
+        // — we want a result, not a "maybe dropped" CGImage.
+        let renderer = EditRenderer()
+        let finalImage = await renderer.renderFinal(recipe: recipe, from: originalImage)
+
+        // 3. Encode to a temp file.
+        let tmpURL = temporaryURL(sameDirectoryAs: destination, format: format)
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
+
+        try writeEncoded(
+            image: finalImage,
+            to: tmpURL,
+            format: format,
+            quality: quality,
+            sourceProperties: sourceProperties,
+            preserveEXIF: preserveEXIF,
+            stripGPS: stripGPS
+        )
+
+        // 4. Back up whatever we are about to replace. No backup, no
+        // overwrite.
+        let replacing = FileManager.default.fileExists(atPath: destination.path)
+        var record: BackupRecord?
+        if replacing, let backupStore {
+            do {
+                record = try await backupStore.backup(destination, reason: .save)
+            } catch {
+                throw ExportError.backupFailed(underlying: "\(error)")
+            }
+        }
+
+        // 5. Atomic replace. Same-directory guarantee keeps the rename
+        // on one filesystem, which is what `replaceItemAt` requires for
+        // the atomic path.
+        do {
+            if replacing {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: tmpURL)
+            } else {
+                try FileManager.default.moveItem(at: tmpURL, to: destination)
+            }
+        } catch {
+            throw ExportError.atomicReplaceFailed(underlying: "\(error)")
+        }
+
+        // 6. Keep the user's rating / flag / tags with the file. The file
+        // is already written, so a metadata hiccup must not fail the save.
+        if let metadataStore {
+            if FileIdentity.sameFile(source, destination) {
+                try? await metadataStore.rekey(from: destination, to: destination)
+            } else {
+                try? await metadataStore.copyMetadata(from: source, to: destination)
+            }
+        }
+        return record
+    }
+
+    /// Throws when writing `format` to `destination` would damage or
+    /// mislabel a user file. Pure check, no side effects.
+    static func validateDestination(
+        source: URL, destination: URL, format: ExportFormat
+    ) throws {
+        let ext = destination.pathExtension
+        if !ext.isEmpty {
+            if ImageFormat.isCameraRAW(destination) {
+                throw ExportError.unwritableFormat
+            }
+            guard format.accepts(extension: ext) else {
+                throw ExportError.extensionMismatch
+            }
+        }
+        guard format.isEncodable else { throw ExportError.unwritableFormat }
+        if FileIdentity.sameFile(source, destination) {
+            guard ExportFormat.inPlaceFormat(for: source) == format else {
+                throw ExportError.inPlaceWriteNotAllowed
+            }
+        }
+    }
+
+    /// Stored pixels → display pixels, using the source's orientation tag.
+    /// Same coordinate space as the viewer (and therefore edit mode).
+    static func displayOrientedImage(
+        _ stored: CGImage, properties: [CFString: Any]?
+    ) -> CGImage {
+        ExifOrientation.apply(ExifOrientation(properties: properties), to: stored)
+    }
+
+    // MARK: - Internal
+
+    /// Construct a temp URL in the same directory as `destination`.
+    /// Same-directory is load-bearing — `replaceItemAt` is only atomic
+    /// within a filesystem.
+    private func temporaryURL(sameDirectoryAs destination: URL, format: ExportFormat) -> URL {
+        let dir = destination.deletingLastPathComponent()
+        let stem = destination.deletingPathExtension().lastPathComponent
+        let uuid = UUID().uuidString
+        return dir.appendingPathComponent(
+            "\(stem).shrikeedit.\(uuid).\(format.fileExtension).tmp"
+        )
+    }
+
+    /// Write `image` to `url` in `format`. Throws the appropriate
+    /// `ExportError` case on failure.
+    private func writeEncoded(
+        image: CGImage,
+        to url: URL,
+        format: ExportFormat,
+        quality: Double,
+        sourceProperties: [CFString: Any]?,
+        preserveEXIF: Bool,
+        stripGPS: Bool
+    ) throws {
+        guard let dest = CGImageDestinationCreateWithURL(
+            url as CFURL,
+            format.utType.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw ExportError.destinationCreateFailed
+        }
+
+        // Build the per-frame properties dictionary.
+        var frameProps: [CFString: Any] = [:]
+
+        // Orientation: always 1 because the recipe has baked in any rotation.
+        frameProps[kCGImagePropertyOrientation] = 1
+
+        if format.usesQuality {
+            frameProps[kCGImageDestinationLossyCompressionQuality] =
+                max(0, min(1, quality))
+        }
+
+        if preserveEXIF, let sourceProperties {
+            // EXIF sub-dictionary: copy as-is, minus orientation-adjacent
+            // fields the destination will fight us on.
+            if var exif = sourceProperties[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+                exif.removeValue(forKey: kCGImagePropertyOrientation)
+                frameProps[kCGImagePropertyExifDictionary] = exif
+            }
+            // TIFF sub-dictionary: carries Make/Model/Software among others.
+            // Drop Orientation; keep everything else.
+            if var tiff = sourceProperties[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
+                tiff.removeValue(forKey: kCGImagePropertyTIFFOrientation)
+                tiff.removeValue(forKey: kCGImagePropertyOrientation)
+                frameProps[kCGImagePropertyTIFFDictionary] = tiff
+            }
+            // GPS sub-dictionary: opt-out via stripGPS.
+            if !stripGPS,
+               let gps = sourceProperties[kCGImagePropertyGPSDictionary] as? [CFString: Any] {
+                frameProps[kCGImagePropertyGPSDictionary] = gps
+            }
+            // IPTC is typically small and wholly copyable.
+            if let iptc = sourceProperties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] {
+                frameProps[kCGImagePropertyIPTCDictionary] = iptc
+            }
+        }
+
+        CGImageDestinationAddImage(dest, image, frameProps as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else {
+            throw ExportError.destinationFinalizeFailed
+        }
+    }
+}

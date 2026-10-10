@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Shrike is distributed directly, without the sandbox: a local install in
+        /Applications and a downloadable DMG, signed with the Apple
+        Development certificate, not notarized.
+        Direct distribution is chosen so users can
+        open any folder instantly and launch external editors freely.
+        Hardened runtime is enabled in build settings, not entitlements —
+        runtime exceptions (JIT, library-validation) are added here as needed
+        once real features land (libjpeg-turbo link etc.).
+    -->
+
+    <!-- File access: user-selected reads/writes + persistent bookmarks.
+         Both are App Sandbox entitlements: without app-sandbox they have no
+         effect today. Kept for the future Mac App Store variant. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
+
+    <!--
+        NOTE: No `com.apple.security.app-sandbox` key.
+        When we eventually build a Mac App Store variant, enable these and
+        add scoped-folder / hardware entitlements:
+
+        <key>com.apple.security.app-sandbox</key>
+        <true/>
+        <key>com.apple.security.files.bookmarks.document-scope</key>
+        <true/>
+        <key>com.apple.security.files.downloads.read-write</key>
+        <true/>
+        <key>com.apple.security.files.pictures.read-write</key>
+        <true/>
+        <key>com.apple.security.print</key>
+        <true/>
+    -->
+</dict>
+</plist>

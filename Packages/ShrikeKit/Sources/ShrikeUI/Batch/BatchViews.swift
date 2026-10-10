@@ -1,0 +1,696 @@
+//
+//  BatchViews.swift
+//  ShrikeUI
+//
+//  The Batch window's SwiftUI content: one form (queue on
+//  the left, operations, output, "If a file exists", live preview, the
+//  preset bar), replaced in place by the Running view and then the Done
+//  view. No step bar. Type: body 13 pt, secondary lines
+//  11 pt, counters in monospaced digits; the clash triangle is
+//  accent.warning, the template error outline accent.danger.
+//
+
+import AppKit
+import SwiftUI
+import ShrikeCore
+import ShrikeEdit
+import ShrikeIO
+
+/// What the buttons ask the window controller to do.
+@MainActor
+struct BatchViewActions {
+    var addItems: () -> Void = {}
+    var chooseOutput: () -> Void = {}
+    var savePreset: () -> Void = {}
+    var deletePreset: (String) -> Void = { _ in }
+    var cancel: () -> Void = {}
+    var copyLog: () -> Void = {}
+    var showInFinder: () -> Void = {}
+    var openInShrike: () -> Void = {}
+    var done: () -> Void = {}
+}
+
+/// Tokens… popover groups.
+public enum BatchTokens {
+    public static let groups: [(title: String, tokens: [String])] = [
+        ("Date", ["{yyyy}", "{MM}", "{dd}", "{yyyy-MM-dd}", "{HH-mm-ss}",
+                  "{date:yyyyMMdd}", "{filedate:yyyy-MM-dd}"]),
+        ("Counter", ["{counter}", "{counter:000}", "{counter:0000}"]),
+        ("File", ["{name}", "{ext}", "{rating}"]),
+        ("Camera", ["{camera}", "{lens}", "{iso}", "{aperture}", "{shutter}", "{focal}"]),
+    ]
+}
+
+struct BatchRootView: View {
+    @ObservedObject var model: BatchModel
+    let actions: BatchViewActions
+    let inserter: BatchTokenInserter
+
+    var body: some View {
+        Group {
+            switch model.phase {
+            case .form: BatchFormView(model: model, actions: actions, inserter: inserter)
+            case .running: BatchRunningView(model: model)
+            case .done: BatchDoneView(model: model, actions: actions)
+            }
+        }
+        .font(.system(size: 13))
+        .frame(minWidth: 760, minHeight: 520)
+    }
+}
+
+// MARK: - Form
+
+struct BatchFormView: View {
+    @ObservedObject var model: BatchModel
+    let actions: BatchViewActions
+    let inserter: BatchTokenInserter
+    @State private var showsTokens = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                BatchQueuePane(model: model, actions: actions)
+                    .frame(width: 280)
+                Divider()
+                VStack(alignment: .leading, spacing: 12) {
+                    operations
+                    conflictRow
+                    BatchPreviewBox(model: model)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            Divider()
+            bottomBar
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+        }
+    }
+
+    private var formats: [ExportFormat] { SaveAsAccessory.offeredFormats }
+
+    private var quality: Binding<Double> {
+        Binding(get: { Double(model.form.quality) },
+                set: { model.form.quality = Int($0.rounded()) })
+    }
+
+    private var resizeMode: Binding<ResizeOptions.Mode> {
+        Binding(get: { model.form.resizeMode }, set: { model.setResizeMode($0) })
+    }
+
+    private var operations: some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 9) {
+            GridRow {
+                BatchCheckbox("Convert", isOn: $model.form.convertOn)
+                HStack(spacing: 8) {
+                    // The label is a Text of its own: a Picker's label
+                    // stays bright in a disabled row.
+                    Text("Format").dimsWithRow()
+                    Picker("Format", selection: $model.form.format) {
+                        ForEach(formats, id: \.self) { Text(SaveAsAccessory.title(of: $0)).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    if SaveAsAccessory.showsQuality(model.form.format) {
+                        Text("Quality").dimsWithRow()
+                        Slider(value: quality, in: 60...100)
+                            .frame(width: 140)
+                            .accessibilityLabel("Quality")
+                            .accessibilityValue(Text(verbatim: "\(model.form.quality)"))
+                            .sliderDimsWithRow()
+                        Text(verbatim: "\(model.form.quality)")
+                            .monospacedDigit()
+                            .frame(width: 28, alignment: .trailing)
+                            .dimsWithRow()
+                    }
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                .disabled(!model.form.convertOn)
+            }
+            GridRow {
+                Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                HStack(spacing: 16) {
+                    BatchCheckbox("Keep metadata", isOn: $model.form.keepMetadata)
+                    BatchCheckbox("Remove location", isOn: $model.form.removeLocation)
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                .disabled(!model.form.convertOn)
+            }
+            GridRow {
+                BatchCheckbox("Resize", isOn: $model.form.resizeOn)
+                HStack(spacing: 8) {
+                    Picker("Resize by", selection: resizeMode) {
+                        Text("Long edge").tag(ResizeOptions.Mode.longEdge)
+                        Text("Width").tag(ResizeOptions.Mode.width)
+                        Text("Height").tag(ResizeOptions.Mode.height)
+                        Text("Percent").tag(ResizeOptions.Mode.percent)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    TextField("Size", value: $model.form.resizeValue, format: .number.grouping(.never))
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
+                        .monospacedDigit()
+                        .frame(width: 64)
+                        .accessibilityLabel(model.form.resizeMode == .percent ? "Percent" : "Pixels")
+                    Text(model.form.resizeMode == .percent ? "%" : "px")
+                        .dimsWithRow(secondary: true)
+                        .fixedSize()
+                    BatchCheckbox("Don't enlarge", isOn: $model.form.dontEnlarge)
+                        .fixedSize()
+                        .padding(.leading, 8)
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                .disabled(!model.form.resizeOn)
+            }
+            GridRow {
+                BatchCheckbox("Rotate", isOn: $model.form.rotateOn)
+                Picker("Rotation", selection: $model.form.rotation) {
+                    ForEach(BatchRotation.menuOrder, id: \.self) { Text($0.title).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+                .disabled(!model.form.rotateOn)
+            }
+            GridRow {
+                BatchCheckbox("Rename", isOn: $model.form.renameOn)
+                HStack(spacing: 8) {
+                    BatchTemplateField(text: $model.form.template, inserter: inserter)
+                        .frame(minWidth: 220, maxWidth: 320)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color(nsColor: .systemRed), lineWidth: 2)
+                                .opacity(model.templateError == nil ? 0 : 1)
+                        )
+                    Button("Tokens…") { showsTokens.toggle() }
+                        .help("Insert a name token")
+                        .popover(isPresented: $showsTokens, arrowEdge: .bottom) {
+                            BatchTokenPopover { token in
+                                inserter.insert(token) { model.form.template += $0 }
+                            }
+                        }
+                }
+                .disabled(!model.form.renameOn)
+            }
+            GridRow {
+                Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                HStack(spacing: 8) {
+                    Text("Start").dimsWithRow()
+                    TextField("Start", value: $model.form.counterStart, format: .number.grouping(.never))
+                        .labelsHidden()
+                        .monospacedDigit()
+                        .frame(width: 56)
+                        .accessibilityLabel("Counter start")
+                    Text("Case").dimsWithRow()
+                        .padding(.leading, 8)
+                    Picker("Case", selection: $model.form.nameCase) {
+                        Text("Keep").tag(NameCase.keep)
+                        Text("lowercase").tag(NameCase.lower)
+                        Text("UPPERCASE").tag(NameCase.upper)
+                        Text("Title Case").tag(NameCase.title)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                .disabled(!model.form.renameOn)
+            }
+            GridRow {
+                Text("Output")
+                outputRow
+            }
+        }
+    }
+
+    /// "If a file exists" (a full-width row).
+    private var conflictRow: some View {
+        HStack(spacing: 8) {
+            Text("If a file exists").dimsWithRow()
+            Picker("If a file exists", selection: $model.form.onConflict) {
+                Text("Keep Both").tag(ConflictAnswer.Action.keepBoth)
+                Text("Skip").tag(ConflictAnswer.Action.skip)
+                Text("Replace").tag(ConflictAnswer.Action.replace)
+            }
+            .labelsHidden()
+            .fixedSize()
+        }
+        .disabled(!model.form.writesToFolder && !model.form.renameOn)
+    }
+
+    @ViewBuilder
+    private var outputRow: some View {
+        if let text = model.inPlaceText {
+            Text(text).foregroundStyle(.secondary)
+        } else if model.form.writesToFolder {
+            HStack(spacing: 8) {
+                Text(model.outputFolder.map(UserFacingPath.string) ?? "—")
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .frame(minWidth: 220, maxWidth: 320, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .textBackgroundColor)))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color(nsColor: .separatorColor)))
+                    .help(model.outputFolder.map(UserFacingPath.string) ?? "")
+                    .accessibilityLabel("Output folder")
+                    .accessibilityValue(model.outputFolder.map(UserFacingPath.string) ?? "none")
+                Button("Choose…", action: actions.chooseOutput)
+            }
+        } else {
+            Text("—").foregroundStyle(.secondary)
+        }
+    }
+
+    private var bottomBar: some View {
+        HStack(spacing: 8) {
+            Text("Preset")
+            Menu(model.presetTitle) {
+                // A Toggle in a menu is a menu item with a check mark:
+                // the current preset shows one. Choosing
+                // the checked one again applies it again.
+                ForEach(model.presets, id: \.name) { preset in
+                    Toggle(preset.name, isOn: Binding(get: { model.isCurrent(preset) },
+                                                      set: { _ in model.apply(preset) }))
+                }
+                Divider()
+                Button("Save Preset…", action: actions.savePreset)
+                if let name = model.deletablePresetName {
+                    Button("Delete “\(name)”") { actions.deletePreset(name) }
+                }
+            }
+            .fixedSize()
+            .accessibilityLabel("Preset")
+            if let line = model.validationLine {
+                Text(line)
+                    .foregroundStyle(model.templateError == nil ? Color.secondary : Color(nsColor: .systemRed))
+                    .lineLimit(1)
+                    .padding(.leading, 8)
+            }
+            Spacer(minLength: 12)
+            Button("Cancel", action: actions.cancel)
+                .keyboardShortcut(.cancelAction)
+            Button(BatchModel.Copy.runButton(model.queue.count)) { model.run() }
+                .keyboardShortcut(.return, modifiers: .command)
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.canRun)
+                .help("Run the batch (⌘Return)")
+        }
+    }
+}
+
+// MARK: - Dimming with the row
+
+/// Greys a label out when its row is disabled, like the row's checkboxes
+/// and pop-ups. SwiftUI keeps a Text's colour in a disabled row, so
+/// "Format", "Quality" and "px" stayed bright while Convert was off.
+struct BatchLabelDimming: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    var secondary = false
+
+    static let disabledColor = Color(nsColor: .disabledControlTextColor)
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(isEnabled ? (secondary ? Color.secondary : Color.primary) : Self.disabledColor)
+    }
+}
+
+/// Greys a slider out when its row is disabled. A disabled SwiftUI Slider
+/// keeps its white knob and looks active.
+struct BatchSliderDimming: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    static let disabledOpacity: Double = 0.4
+
+    func body(content: Content) -> some View {
+        content.opacity(isEnabled ? 1 : Self.disabledOpacity)
+    }
+}
+
+extension View {
+    func dimsWithRow(secondary: Bool = false) -> some View {
+        modifier(BatchLabelDimming(secondary: secondary))
+    }
+
+    func sliderDimsWithRow() -> some View {
+        modifier(BatchSliderDimming())
+    }
+}
+
+// MARK: - Queue
+
+struct BatchQueuePane: View {
+    @ObservedObject var model: BatchModel
+    let actions: BatchViewActions
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Text(BatchModel.Copy.images(model.queue.count))
+                    .font(.system(size: 13, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(action: actions.addItems) { Image(systemName: "plus") }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("Add Images…")
+                    .accessibilityLabel("Add Images")
+                Button { model.removeSelected() } label: { Image(systemName: "minus") }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .disabled(model.selection.isEmpty)
+                    .help("Remove from Queue")
+                    .accessibilityLabel("Remove from Queue")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            List(selection: $model.selection) {
+                ForEach(model.queue) { item in
+                    HStack(spacing: 8) {
+                        Text(item.name)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        if let size = model.sizes[item.id] {
+                            Text(verbatim: "\(Int(size.width)) × \(Int(size.height))")
+                                .font(.system(size: 11))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: BatchLayout.dimensionsColumnWidth, alignment: .trailing)
+                        }
+                    }
+                    .tag(item.id)
+                }
+                .onMove { model.move(from: $0, to: $1) }
+            }
+            .listStyle(.inset(alternatesRowBackgrounds: false))
+            .onDeleteCommand { model.removeSelected() }
+            .overlay {
+                if model.queue.isEmpty {
+                    Text(BatchModel.Copy.emptyQueue)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Preview
+
+struct BatchPreviewBox: View {
+    @ObservedObject var model: BatchModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Preview")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(model.previewRows.enumerated()), id: \.offset) { _, row in
+                        BatchPreviewRowView(row: row)
+                    }
+                    if model.moreCount > 0 {
+                        Text(BatchModel.Copy.andMore(model.moreCount))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+                .padding(8)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
+        }
+    }
+}
+
+struct BatchPreviewRowView: View {
+    let row: BatchPreviewRow
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if row.nameClash {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Color(nsColor: .systemYellow))
+                    .accessibilityHidden(true)
+            }
+            Text(row.source.primary.lastPathComponent)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text("→").foregroundStyle(.secondary)
+            Text(row.outputName)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            if let skip = row.skip {
+                Text(skip.message).foregroundStyle(.secondary).lineLimit(1)
+            } else {
+                if row.nameClash {
+                    Text(BatchModel.Copy.nameClash).foregroundStyle(.secondary)
+                }
+                if let size = row.outputSize {
+                    Text(verbatim: "\(Int(size.width.rounded())) × \(Int(size.height.rounded()))")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: BatchLayout.dimensionsColumnWidth, alignment: .trailing)
+                }
+            }
+        }
+        .font(.system(size: 12))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Tokens
+
+struct BatchTokenPopover: View {
+    let insert: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(BatchTokens.groups, id: \.title) { group in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(group.title.uppercased())
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 6, alignment: .leading)],
+                              alignment: .leading, spacing: 6) {
+                        ForEach(group.tokens, id: \.self) { token in
+                            Button(token) { insert(token) }
+                                .font(.system(size: 11, design: .monospaced))
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .help("Insert \(token)")
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 440)
+    }
+}
+
+/// Inserts a token at the caret of the template field (replacing the
+/// selection), like typing it. Undo in the field works as usual.
+@MainActor
+final class BatchTokenInserter {
+    weak var field: NSTextField?
+
+    func insert(_ token: String, fallback: (String) -> Void) {
+        guard let field, let window = field.window else { return fallback(token) }
+        if field.currentEditor() == nil {
+            window.makeFirstResponder(field)
+            (field.currentEditor() as? NSTextView)?.moveToEndOfDocument(nil)
+        }
+        guard let editor = field.currentEditor() as? NSTextView else { return fallback(token) }
+        editor.insertText(token, replacementRange: editor.selectedRange())
+    }
+}
+
+/// The name template field (AppKit, so Tokens… can insert at the caret).
+struct BatchTemplateField: NSViewRepresentable {
+    @Binding var text: String
+    let inserter: BatchTokenInserter
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(string: text)
+        field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.delegate = context.coordinator
+        field.lineBreakMode = .byTruncatingTail
+        field.cell?.isScrollable = true
+        field.cell?.wraps = false
+        field.setAccessibilityLabel("Name template")
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        inserter.field = field
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.text = $text
+        if field.stringValue != text { field.stringValue = text }
+        field.isEnabled = context.environment.isEnabled
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+
+        func controlTextDidChange(_ note: Notification) {
+            guard let field = note.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
+        }
+    }
+}
+
+// MARK: - Running
+
+struct BatchRunningView: View {
+    @ObservedObject var model: BatchModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            VStack(alignment: .leading, spacing: 10) {
+                Text(model.runningTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                HStack(spacing: 12) {
+                    ProgressView(value: Double(model.completed), total: Double(max(model.total, 1)))
+                        .frame(width: 480)
+                        .accessibilityLabel("Batch progress")
+                        .accessibilityValue(BatchModel.Copy.progress(model.completed, model.total))
+                    Text(model.progressLine)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
+                Text(model.currentName ?? " ")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(.horizontal, 40)
+            Spacer()
+            Divider()
+            HStack {
+                Spacer()
+                Button(model.isStopping ? "Stopping…" : "Stop") { model.stop() }
+                    .keyboardShortcut(".", modifiers: .command)
+                    .disabled(model.isStopping)
+                    .help("Stop the batch (⌘.)")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+    }
+}
+
+// MARK: - Done
+
+struct BatchDoneView: View {
+    @ObservedObject var model: BatchModel
+    let actions: BatchViewActions
+
+    /// The green check in the calm case (nothing skipped).
+    static let calmCheckSize: CGFloat = 48
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if model.skippedRows.isEmpty {
+                calm
+            } else {
+                withReasons
+            }
+            Divider()
+            HStack(spacing: 8) {
+                Button("Copy Log", action: actions.copyLog)
+                Button("Show in Finder", action: actions.showInFinder)
+                    .disabled(model.doneURLs.isEmpty)
+                Button("Open in Shrike", action: actions.openInShrike)
+                    .disabled(model.doneFolders.isEmpty)
+                Spacer()
+                Button("Done", action: actions.done)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+    }
+
+    /// Everything went through: a large check, the summary and the
+    /// folder, centred in the area.
+    private var calm: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: Self.calmCheckSize))
+                .foregroundStyle(Color(nsColor: .systemGreen))
+                .accessibilityHidden(true)
+            Text(model.summary)
+                .font(.system(size: 17, weight: .semibold))
+                .multilineTextAlignment(.center)
+            folderLink
+                .frame(maxWidth: 560)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Some items were skipped or failed: the summary, the folder, then
+    /// one row per item with its reason.
+    private var withReasons: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color(nsColor: .systemGreen))
+                    .accessibilityHidden(true)
+                Text(model.summary)
+                    .font(.system(size: 15, weight: .semibold))
+            }
+            folderLink
+            List(Array(model.skippedRows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 8) {
+                    Text(row.name)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Text(row.reason)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            // Stripes help only a long list; as tall as its rows (then it
+            // scrolls), so a short list has no empty stripes under it.
+            .listStyle(.inset(alternatesRowBackgrounds: model.skippedRows.count > 8))
+            .frame(maxHeight: CGFloat(model.skippedRows.count) * 24 + 20)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// The Output folder (or the folder changed in place) as a link:
+    /// clicking it shows the files in Finder.
+    @ViewBuilder private var folderLink: some View {
+        if let text = model.resultFolderText, let folder = model.resultFolder {
+            Button(action: actions.showInFinder) {
+                Label(text, systemImage: "folder")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .buttonStyle(.link)
+            .help("Show in Finder")
+            .accessibilityLabel("Show “\(folder.lastPathComponent)” in Finder")
+        }
+    }
+}
+
+/// The "W × H" columns (queue list and preview) share one
+/// minimum width and a trailing edge, so the right edges line up row to row.
+enum BatchLayout {
+    static let dimensionsColumnWidth: CGFloat = 96
+}

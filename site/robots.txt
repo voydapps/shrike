@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://voydapps.github.io/shrike/sitemap.xml

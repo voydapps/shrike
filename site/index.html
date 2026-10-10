@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Shrike: a fast, free image viewer for Mac</title>
+<meta name="description" content="Shrike is a free, open-source image viewer for Mac. The next photo is ready as you press Space. Browse, rate, compare and make light edits. macOS 14 or newer, Apple silicon and Intel. No tracking.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F3F3F3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#202020" media="(prefers-color-scheme: dark)">
+<link rel="canonical" href="https://voydapps.github.io/shrike/">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.ico" sizes="48x48">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Shrike">
+<meta property="og:title" content="Shrike: a fast, free image viewer for Mac">
+<meta property="og:description" content="Free, open-source image viewer for Mac. Press Space and the next photo is already there. No tracking.">
+<meta property="og:url" content="https://voydapps.github.io/shrike/">
+<meta property="og:image" content="https://voydapps.github.io/shrike/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Shrike app icon and the words: a fast image viewer for Mac">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Shrike: a fast, free image viewer for Mac">
+<meta name="twitter:description" content="Free, open-source image viewer for Mac. Press Space and the next photo is already there. No tracking.">
+<meta name="twitter:image" content="https://voydapps.github.io/shrike/og.png">
+<meta name="twitter:image:alt" content="Shrike app icon and the words: a fast image viewer for Mac">
+<link rel="stylesheet" href="style.css">
+<script src="site.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Shrike",
+  "description": "A free, open-source image viewer for Mac. Fast photo-to-photo browsing, thumbnails, ratings, compare and light edits. It never connects to the internet.",
+  "operatingSystem": "macOS 14 or newer",
+  "applicationCategory": "PhotographyApplication",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "license": "https://github.com/voydapps/shrike/blob/main/LICENSE",
+  "downloadUrl": "https://github.com/voydapps/shrike/releases/latest",
+  "url": "https://voydapps.github.io/shrike/",
+  "image": "https://voydapps.github.io/shrike/og.png",
+  "author": { "@type": "Organization", "name": "voyd", "url": "https://github.com/voydapps" },
+  "publisher": { "@type": "Organization", "name": "voyd", "url": "https://github.com/voydapps" }
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="favicon.svg" alt="" width="28" height="28">Shrike</a>
+    <nav class="nav" aria-label="Main">
+      <a class="text" href="#features">Features</a>
+      <a class="text" href="#install">Install</a>
+      <a class="text" href="#faq">FAQ</a>
+      <a class="text" href="https://github.com/voydapps/shrike">GitHub</a>
+      <button class="icon-btn" id="theme" type="button" aria-pressed="false" aria-label="Dark theme" hidden>
+        <svg class="sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+      </button>
+      <a class="icon-btn" href="https://github.com/voydapps/shrike" aria-label="Shrike on GitHub">
+        <svg class="fill" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.69 1.25 3.35.96.1-.74.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.18 1.83 1.18 3.09 0 4.42-2.69 5.39-5.25 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="hero" id="top" aria-labelledby="h-hero">
+  <div class="wrap">
+    <img class="logo" src="favicon.svg" alt="" width="72" height="72">
+    <h1 id="h-hero">A fast, free image viewer for Mac</h1>
+    <p class="lead">Press Space and the next photo is already there. Browse a folder, rate and compare your shots, make light edits.</p>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/voydapps/shrike/releases/latest/download/Shrike.dmg" aria-label="Download Shrike for Mac">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 3h2v9.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3zM4 19h16v2H4z"/></svg>
+        Download for Mac
+      </a>
+      <a class="btn secondary" href="https://github.com/voydapps/shrike">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.69 1.25 3.35.96.1-.74.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.18 1.83 1.18 3.09 0 4.42-2.69 5.39-5.25 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
+        View on GitHub
+      </a>
+    </div>
+    <p class="small">Free and open source (MIT) · macOS 14 or newer · Apple silicon and Intel · about 5 MB</p>
+    <p class="small">Not sure it is safe? <a href="#install">See how to install</a>. If the download does not start, <a href="https://github.com/voydapps/shrike/releases/latest">open the download page</a>.</p>
+    <div class="hero-shot">
+      <a class="zoom" href="img/shot-viewer.webp" aria-label="Enlarge screenshot: One photo in the viewer"><img class="shot" src="img/shot-viewer.webp" width="2400" height="1600" fetchpriority="high" alt="Shrike showing one photo in a window with a thin toolbar."></a>
+    </div>
+  </div>
+</section>
+
+<section id="why" aria-labelledby="h-why">
+  <div class="wrap">
+    <h2 id="h-why">Why Shrike</h2>
+    <div class="why">
+      <div class="card">
+        <div class="chip-icon"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg></div>
+        <h3>Fast where it counts</h3>
+        <p>Shrike prepares the next photos in the background, so moving through a folder feels instant. About 33 ms from key press to photo.</p>
+      </div>
+      <div class="card">
+        <div class="chip-icon"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 11h12v9H6zM8 11V8a4 4 0 0 1 8 0v3"/></svg></div>
+        <h3>Private by design</h3>
+        <p>Shrike never connects to the internet. Your photos are read from your disk and stay there. No accounts, no tracking.</p>
+      </div>
+      <div class="card">
+        <div class="chip-icon"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4M13 6l-2 12"/></svg></div>
+        <h3>Open source</h3>
+        <p>Anyone can read the code and check what it does. It is free under the MIT license, today and later.</p>
+      </div>
+    </div>
+    <p class="small why-line">No ads. No upsell. No sign-up.</p>
+  </div>
+</section>
+
+<section class="band-alt" id="speed" aria-labelledby="h-speed">
+  <div class="wrap">
+    <h2 id="h-speed">Speed, in numbers</h2>
+    <p class="intro">Shrike decodes the next photos before you ask for them.</p>
+    <div class="why">
+      <div class="card stat">
+        <div class="num">~33&nbsp;ms</div>
+        <div class="label">to show the next photo</div>
+        <p class="small">Median key press to photo on screen, windowed and full screen, with the photo already prepared. A photo that is not prepared yet (for example jumping to the end of a big folder) takes about 0.1&nbsp;s.</p>
+      </div>
+      <div class="card stat">
+        <div class="num">80+&nbsp;/&nbsp;sec</div>
+        <div class="label">thumbnails</div>
+        <p class="small">12-megapixel JPEGs on 4 cores. Thumbnails are saved, so a folder you have seen opens at once the next time.</p>
+      </div>
+      <div class="card stat">
+        <div class="num">~16&nbsp;MB</div>
+        <div class="label">app size</div>
+        <p class="small">Apple silicon and Intel in one app. The download is about 5&nbsp;MB.</p>
+      </div>
+    </div>
+    <p class="small why-line">Numbers from Shrike&rsquo;s own measurements, taken on one Mac (M2 Pro) in October 2026. Your Mac may be faster or slower.</p>
+  </div>
+</section>
+
+<section id="features" aria-labelledby="h-features">
+  <div class="wrap">
+    <h2 id="h-features">What you get</h2>
+    <p class="intro">Everything you need to go through your photos, and nothing you do not.</p>
+    <div class="features">
+      <article class="card">
+        <a class="zoom" href="img/shot-fullscreen.webp" aria-label="Enlarge screenshot: Know your photo"><img class="shot" src="img/shot-fullscreen.webp" width="2400" height="1500" loading="lazy" decoding="async" alt="Shrike full screen with the info panel and histogram over the photo."></a>
+        <h3>Know your photo</h3>
+        <p>Info panel with EXIF and a histogram, over the photo in full screen. Open the photo&rsquo;s location in Apple Maps when it has GPS.</p>
+      </article>
+      <article class="card">
+        <a class="zoom" href="img/shot-browser.webp" aria-label="Enlarge screenshot: Browse a whole folder"><img class="shot" src="img/shot-browser.webp" width="2400" height="1500" loading="lazy" decoding="async" alt="Shrike&rsquo;s browser with a folder list, a grid of thumbnails and star ratings."></a>
+        <h3>Browse a whole folder</h3>
+        <p>Folder list on the left, thumbnail grid, list or filmstrip. Sorts naturally, so IMG_2 comes before IMG_10. Thumbnails are saved between launches.</p>
+      </article>
+      <article class="card">
+        <a class="zoom" href="img/shot-edit.webp" aria-label="Enlarge screenshot: Light edits"><img class="shot" src="img/shot-edit.webp" width="2400" height="1500" loading="lazy" decoding="async" alt="Shrike&rsquo;s edit panel with crop, rotate and colour controls."></a>
+        <h3>Light edits</h3>
+        <p>Crop, rotate (also by any angle), resize, colour adjustments and levels. Shrike keeps a copy of the original, and File &gt; Revert to Original takes you back.</p>
+      </article>
+      <article class="card">
+        <h3>Move through photos instantly</h3>
+        <p>Space or the arrow keys. Pinch to zoom, drag to pan, hold Z for a loupe, press A for 100&nbsp;%, press B to fit the window.</p>
+      </article>
+      <article class="card">
+        <h3>Cull quickly</h3>
+        <p>Rate 1 to 5 with the number keys. Flag with Q. Add Finder tags. Copy, move, rename or trash from the keyboard, with undo. A RAW file and its JPEG show as one photo.</p>
+      </article>
+      <article class="card">
+        <h3>Compare</h3>
+        <p>Look at up to 4 photos side by side. Zoom and pan stay in sync.</p>
+      </article>
+      <article class="card">
+        <h3>Batch and print</h3>
+        <p>Convert, resize or rename many photos at once with templates. Print a photo, or make a contact sheet (A4 or US Letter).</p>
+      </article>
+      <article class="card">
+        <h3>Slideshow</h3>
+        <p>Full-screen slideshow with timing, fade or dissolve, random order and loop.</p>
+      </article>
+      <article class="card">
+        <h3>Made for the Mac</h3>
+        <p>A native app, dark by default, follows your light or dark setting. Coming from Windows? There is a FastStone-style shortcut preset in Settings.</p>
+      </article>
+    </div>
+    <p class="small why-line"><strong>Formats:</strong> JPEG, PNG, HEIC, WebP, AVIF, GIF, TIFF, BMP, Photoshop (PSD) and RAW from most cameras (RAW support comes from macOS).</p>
+
+    <h3 class="sub-h">Shortcuts worth knowing</h3>
+    <dl class="keys">
+      <div><dt><kbd>Space</kbd> <kbd>→</kbd></dt><dd>Next photo</dd></div>
+      <div><dt><kbd>⇧Space</kbd> <kbd>←</kbd></dt><dd>Previous photo</dd></div>
+      <div><dt><kbd>Z</kbd> (hold)</dt><dd>Loupe</dd></div>
+      <div><dt><kbd>A</kbd> / <kbd>B</kbd></dt><dd>Actual size / best fit</dd></div>
+      <div><dt><kbd>1</kbd> – <kbd>5</kbd></dt><dd>Rate (0 clears)</dd></div>
+      <div><dt><kbd>Q</kbd></dt><dd>Flag</dd></div>
+      <div><dt><kbd>⌃⌘F</kbd></dt><dd>Full screen</dd></div>
+      <div><dt><kbd>⌃H</kbd></dt><dd>Histogram</dd></div>
+      <div><dt><kbd>⌘4</kbd></dt><dd>Compare</dd></div>
+      <div><dt><kbd>F5</kbd></dt><dd>Slideshow</dd></div>
+      <div><dt><kbd>⌥⌘B</kbd></dt><dd>Batch</dd></div>
+      <div><dt><kbd>⌘/</kbd></dt><dd>Show all shortcuts</dd></div>
+    </dl>
+    <p class="small why-line">All shortcuts are in the app: Help &gt; Keyboard Shortcuts.</p>
+  </div>
+</section>
+
+<section class="band-alt" id="install" aria-labelledby="h-install">
+  <div class="wrap">
+    <h2 id="h-install">How to install</h2>
+    <p class="intro">It takes about a minute. The first time you open Shrike, macOS asks you to confirm once.</p>
+    <ol class="steps">
+      <li>
+        <strong>Download.</strong> Click Download for Mac. The file is about 5 MB.
+        <br><a class="btn primary" href="https://github.com/voydapps/shrike/releases/latest/download/Shrike.dmg" aria-label="Download Shrike for Mac">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 3h2v9.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3zM4 19h16v2H4z"/></svg>
+          Download for Mac
+        </a>
+      </li>
+      <li><strong>Open the file.</strong> Double-click <code class="file">Shrike.dmg</code> in your Downloads folder. Drag <strong>Shrike</strong> onto the <strong>Applications</strong> folder.</li>
+      <li><strong>Open Shrike from Applications,</strong> not from the DMG. If macOS says it cannot check the app, see the box below.</li>
+      <li><strong>Allow folder access.</strong> When you open photos from Desktop, Documents, Downloads or an external drive, macOS asks once if Shrike may read them. Click Allow.</li>
+    </ol>
+
+    <div class="note warn" role="group" aria-labelledby="n-notarized">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l10 18H2zM12 10v5M12 18v.01"/></svg>
+      <div>
+        <h3 id="n-notarized">macOS may not open it the first time</h3>
+        <p>This is normal. Shrike is a free hobby project and is not notarized by Apple, because notarization needs a paid Apple Developer account. Apple has not checked the app, so macOS asks you to confirm once. After that it opens normally. Not sure which macOS you have? Choose Apple menu &gt; About This Mac.</p>
+        <div class="os">
+          <h4>macOS 26 Tahoe</h4>
+          <ol>
+            <li>Open Shrike from Applications.</li>
+            <li>macOS asks for your Mac&rsquo;s password to allow it. Enter it.</li>
+            <li>If you see &ldquo;Shrike Not Opened&rdquo; instead, follow the macOS 15 steps.</li>
+          </ol>
+        </div>
+        <div class="os">
+          <h4>macOS 15 Sequoia</h4>
+          <ol>
+            <li>Open Shrike from Applications. Click <strong>Done</strong> in the message.</li>
+            <li>Open <strong>System Settings &gt; Privacy &amp; Security</strong> and scroll down.</li>
+            <li>Click <strong>Open Anyway</strong> next to Shrike. Enter your password. Click <strong>Open Anyway</strong> again.</li>
+          </ol>
+        </div>
+        <div class="os">
+          <h4>macOS 14 Sonoma</h4>
+          <ol>
+            <li>In Applications, right-click (or Control-click) Shrike and choose <strong>Open</strong>.</li>
+            <li>Click <strong>Open</strong> in the message.</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <div class="note info" role="group" aria-labelledby="n-damaged">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg>
+      <div>
+        <h3 id="n-damaged">If macOS says &ldquo;Shrike is damaged and can&rsquo;t be opened&rdquo;</h3>
+        <p>The download is probably broken. Delete it and download it again. For advanced users: this Terminal command skips the first-launch step.</p>
+        <p><code class="file cmd">xattr -dr com.apple.quarantine /Applications/Shrike.app</code></p>
+      </div>
+    </div>
+
+    <p class="small verify">Want to check the file first? Every release is built on GitHub from the public code. See the <a href="https://github.com/voydapps/shrike/releases">releases page</a> and the <a href="https://github.com/voydapps/shrike/actions">build page</a>. Prefer to build it yourself? The <a href="https://github.com/voydapps/shrike">source is on GitHub</a>, with build steps in the README.</p>
+  </div>
+</section>
+
+<section id="privacy" aria-labelledby="h-privacy">
+  <div class="wrap">
+    <h2 id="h-privacy">What Shrike connects to</h2>
+    <div class="two">
+      <div class="card">
+        <h3>Shrike talks to</h3>
+        <ul>
+          <li>Nothing on the internet. Shrike never connects to it.</li>
+          <li>Apple Maps, only when you choose <strong>Show in Maps</strong> for a photo that has a GPS position.</li>
+          <li>The editor you chose, only when you choose <strong>Open in External Editor</strong>.</li>
+          <li>Your own network drive, if your photos are on one. macOS may ask for permission to use the local network for this.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Shrike does not</h3>
+        <ul>
+          <li>Send your photos or anything about them to us. We have no servers.</li>
+          <li>Track you. There is no telemetry, no analytics and no crash reporting.</li>
+          <li>Check for updates by itself. To get a new version, download it from the releases page.</li>
+          <li>Show ads, or ask for an account.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="privacy-foot">
+      <p>Shrike keeps its thumbnails, ratings and edit backups in your Library folder, on your Mac only. When you rate or flag a photo, Shrike also writes that rating or flag as a small hidden note on the file (a macOS extended attribute), so it survives if you move the file in Finder. You can turn this off in Settings. Shrike changes the content of a photo only when you save an edit. <a href="https://github.com/voydapps/shrike">Read the code</a>.</p>
+      <p class="small">This website has no cookies, no trackers and loads nothing from other sites.</p>
+    </div>
+  </div>
+</section>
+
+<section class="band-alt" id="faq" aria-labelledby="h-faq">
+  <div class="wrap">
+    <h2 id="h-faq">Questions</h2>
+    <div class="faq">
+      <details><summary>Is it really free?</summary><div class="ans"><p>Yes. There are no paid plans and no ads. It is open source under the MIT license.</p></div></details>
+      <details><summary>Does it work on Windows, Linux or iPhone?</summary><div class="ans"><p>No. Shrike is a Mac app. It needs macOS 14 Sonoma or newer and runs on Apple silicon and Intel Macs.</p></div></details>
+      <details><summary>Is it safe? Why does macOS warn me?</summary><div class="ans"><p>Shrike is not notarized by Apple, so macOS is careful the first time. The code is public and anyone can check it. See <a href="#install">How to install</a>.</p></div></details>
+      <details><summary>Does Shrike change my photos?</summary><div class="ans"><p>Only when you save an edit, and then Shrike keeps a copy of the original. Ratings and flags are written as a small hidden note on the file, not into the picture. You can turn that off in Settings.</p></div></details>
+      <details><summary>How do I get a new version?</summary><div class="ans"><p>Shrike does not check for updates, because it never goes online. Download the new version from the <a href="https://github.com/voydapps/shrike/releases">releases page</a>.</p></div></details>
+      <details><summary>Which photo formats does it open?</summary><div class="ans"><p>JPEG, PNG, HEIC, WebP, AVIF, GIF, TIFF, BMP, Photoshop (PSD) and RAW from most cameras. RAW support comes from macOS.</p></div></details>
+      <details><summary>I found a bug or I want a feature. What do I do?</summary><div class="ans"><p>Open an issue on <a href="https://github.com/voydapps/shrike/issues">GitHub</a>. Please do not include private photos.</p></div></details>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="fcols">
+      <div>
+        <a class="brand" href="#top"><img src="favicon.svg" alt="" width="24" height="24">Shrike</a>
+        <p>Fast, free image viewer for Mac.</p>
+      </div>
+      <nav aria-label="Project">
+        <h2>Project</h2>
+        <ul>
+          <li><a href="https://github.com/voydapps/shrike">GitHub repository</a></li>
+          <li><a href="https://github.com/voydapps/shrike/releases">Releases</a></li>
+          <li><a href="https://github.com/voydapps/shrike/issues">Report a problem</a></li>
+          <li><a href="https://github.com/voydapps/shrike/blob/main/LICENSE">Source code license (MIT)</a></li>
+        </ul>
+      </nav>
+      <nav aria-label="Get started">
+        <h2>Get started</h2>
+        <ul>
+          <li><a href="https://github.com/voydapps/shrike/releases/latest/download/Shrike.dmg">Download for Mac</a></li>
+          <li><a href="#install">How to install</a></li>
+          <li><a href="#faq">FAQ</a></li>
+        </ul>
+      </nav>
+    </div>
+    <p class="small legal">MIT License. &copy; 2026 voyd. Made by voyd. Mac and macOS are trademarks of Apple Inc. Shrike is not affiliated with Apple.</p>
+  </div>
+</footer>
+
+</body>
+</html>

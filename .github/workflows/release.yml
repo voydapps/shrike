@@ -1,0 +1,90 @@
+name: Release
+# Push a tag like v1.0 (the number must equal MARKETING_VERSION in project.yml).
+# The runner builds the app, signs it ad-hoc (no certificate, so no personal
+# name in the signature), makes the DMG and publishes a GitHub Release.
+# The release is created by github-actions[bot].
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build, for example v1.0'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # macOS 26 on Apple silicon (GA). Xcode 26.4.1 is installed next to
+    # 26.6 (the default); 26.4.1 is the closest to the Xcode 26.4 the project is developed with.
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0   # the build number is the commit count
+
+      - name: Tag must be on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main \
+            || { echo "::error::$TAG is not on main"; exit 1; }
+
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode_26.4.1.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.4.1.app
+          fi
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build the ad-hoc signed DMG
+        run: |
+          VERSION="${TAG#v}"
+          Scripts/make-package.sh --adhoc "$VERSION"
+          ls -l dist
+
+      - name: Stable file names
+        run: |
+          VERSION="${TAG#v}"
+          cp "dist/Shrike-$VERSION.dmg" dist/Shrike.dmg
+          (cd dist && shasum -a 256 Shrike.dmg > Shrike.dmg.sha256 && cat Shrike.dmg.sha256)
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${TAG#v}"
+          SHA="$(cut -d' ' -f1 dist/Shrike.dmg.sha256)"
+          cat > notes.md <<EOF
+          Shrike $VERSION for macOS 14 or newer (Apple silicon and Intel).
+
+          Download **Shrike.dmg**, open it, and drag Shrike to Applications.
+          The app is not notarized, so macOS asks once before the first
+          launch. The steps are in the text file inside the disk image and in
+          the README.
+
+          SHA-256 of Shrike.dmg:
+
+              $SHA
+
+          Check it in Terminal with: \`shasum -a 256 ~/Downloads/Shrike.dmg\`
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/Shrike.dmg dist/Shrike.dmg.sha256 --clobber
+          else
+            gh release create "$TAG" dist/Shrike.dmg dist/Shrike.dmg.sha256 \
+              --title "Shrike $VERSION" --notes-file notes.md --verify-tag
+          fi

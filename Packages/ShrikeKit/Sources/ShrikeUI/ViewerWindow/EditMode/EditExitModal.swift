@@ -1,0 +1,104 @@
+//
+//  EditExitModal.swift
+//  ShrikeUI
+//
+//  Exit alert for edit mode. Shown when the user leaves edit mode with unsaved
+//  changes. One sheet on the viewer window.
+//
+//  | File                     | Message                                   | Buttons (addButton order)             |
+//  |--------------------------|-------------------------------------------|---------------------------------------|
+//  | Writable in place        | Save changes to “x.jpg”?                  | Save (default) · Cancel · Don't Save  |
+//  | RAW / not writable       | Save changes to “x.ORF” as a new file?    | Save As… (default) · Cancel · Don't Save |
+//
+//  Exactly one Save / Save As… button. The cancel button is titled
+//  "Cancel" so NSAlert maps Esc to it; Don't Save is ⌘D.
+//
+
+import AppKit
+
+@MainActor
+enum EditExitModal {
+
+    enum Choice: Sendable, Equatable {
+        case save
+        case saveAs
+        case discard
+        case cancel
+    }
+
+    /// The alert's copy and buttons for one file.
+    struct Content: Equatable {
+        let message: String
+        let information: String
+        /// In `addButton` order: the default first.
+        let buttons: [String]
+        /// What the first (default) button does.
+        let primary: Choice
+    }
+
+    static func content(fileName: String, writable: Bool) -> Content {
+        if writable {
+            return Content(
+                message: "Save changes to “\(fileName)”?",
+                information: "Shrike keeps a copy of the original. You can go back with File › Revert to Original.",
+                buttons: ["Save", "Cancel", "Don't Save"],
+                primary: .save
+            )
+        }
+        return Content(
+            message: "Save changes to “\(fileName)” as a new file?",
+            information: "Shrike can't change this file. It saves a copy next to it.",
+            buttons: ["Save As…", "Cancel", "Don't Save"],
+            primary: .saveAs
+        )
+    }
+
+    /// Maps a response (first / second / third button) to a choice.
+    static func choice(for response: NSApplication.ModalResponse, content: Content) -> Choice {
+        switch response {
+        case .alertFirstButtonReturn: return content.primary
+        case .alertThirdButtonReturn: return .discard
+        default: return .cancel
+        }
+    }
+
+    /// The alert, not shown. Buttons in `addButton` order:
+    /// Save / Save As… (Return) · Cancel (Esc, by its title) · Don't Save
+    /// (⌘D). On macOS 26 NSAlert stacks three buttons: the first on top,
+    /// then Don't Save, with Cancel at the bottom (checked offscreen).
+    /// That is the system's own save-alert layout.
+    static func makeAlert(_ content: Content) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = content.message
+        alert.informativeText = content.information
+        alert.alertStyle = .warning
+        for title in content.buttons { alert.addButton(withTitle: title) }
+        let dontSave = alert.buttons[2]
+        dontSave.keyEquivalent = "d"
+        dontSave.keyEquivalentModifierMask = [.command]
+        return alert
+    }
+
+    /// Tests answer here instead of a sheet.
+    static var responderForTesting: ((Content) -> Choice)?
+
+    /// Show the exit alert attached to `window`. Completion receives the
+    /// user's choice on the main actor.
+    static func show(
+        on window: NSWindow,
+        fileName: String,
+        writable: Bool,
+        completion: @escaping @MainActor (Choice) -> Void
+    ) {
+        let content = content(fileName: fileName, writable: writable)
+        if let responder = responderForTesting {
+            completion(responder(content))
+            return
+        }
+        let alert = makeAlert(content)
+        alert.beginSheetModal(for: window) { response in
+            let choice = Self.choice(for: response, content: content)
+            Task { @MainActor in completion(choice) }
+        }
+    }
+}
