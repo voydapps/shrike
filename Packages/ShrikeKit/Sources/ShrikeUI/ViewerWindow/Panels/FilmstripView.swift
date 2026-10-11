@@ -431,6 +431,7 @@ final class FilmstripView: HUDSurfaceView {
             if incomingIndices.contains(idx) { listShifted = true }
             stackView.removeArrangedSubview(cell)
             cell.removeFromSuperview()
+            cell.cancelThumbnail()
             cellsByIndex.removeValue(forKey: idx)
         }
         // Cached aspects are keyed by index: stale once the list shifted.
@@ -959,6 +960,14 @@ private final class ThumbCell: NSView, NSDraggingSource {
 
     private let imageView = NSImageView()
     private let highlight = NSView()
+    /// The running thumbnail request; cancelled when the cell leaves the
+    /// strip, so a queued decode for a photo nobody sees any more is dropped.
+    private var thumbnailTask: Task<Void, Never>?
+
+    func cancelThumbnail() {
+        thumbnailTask?.cancel()
+        thumbnailTask = nil
+    }
     /// Stars bottom-left (8 pt), flag top-left (9 pt), 3 pt inset.
     private let starsLabel = NSTextField(labelWithString: "")
     private let flagView = NSImageView()
@@ -1311,7 +1320,8 @@ private final class ThumbCell: NSView, NSDraggingSource {
         let cache = services.thumbnailCache
         let src = source
         let targetSize = maxPixelSize
-        Task { [weak self] in
+        thumbnailTask?.cancel()
+        thumbnailTask = Task { [weak self] in
             if let thumb = try? await cache.thumbnail(for: src, maxPixelSize: targetSize) {
                 let w = thumb.width
                 let h = thumb.height
@@ -1328,6 +1338,8 @@ private final class ThumbCell: NSView, NSDraggingSource {
                 }
                 return
             }
+            // Cancelled (the cell left the strip): no second, uncached read.
+            if Task.isCancelled { return }
             if let file = src as? FileImageSource,
                let thumb = Self.ioThumbnail(url: file.url, maxPixelSize: targetSize) {
                 let w = thumb.width

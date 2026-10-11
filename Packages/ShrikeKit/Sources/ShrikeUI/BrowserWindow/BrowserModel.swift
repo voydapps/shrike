@@ -79,8 +79,14 @@ public struct BrowserItem: Sendable, Hashable, Identifiable {
     }
 
     /// Backing image source for decode + hashing (via ThumbnailCache).
+    /// Carries the listing's size and date, so a thumbnail lookup needs no
+    /// `stat()`. A placeholder date (file unreadable at listing) is not
+    /// trusted: the source then reads the file itself.
     public var imageSource: FileImageSource {
-        FileImageSource(url: url)
+        if fileSize > 0, modificationDate.timeIntervalSince1970 > 0 {
+            return FileImageSource(url: url, knownSize: fileSize, knownMTime: modificationDate)
+        }
+        return FileImageSource(url: url)
     }
 
     /// Best-effort construction from a URL — reads file size / mtime / ctime

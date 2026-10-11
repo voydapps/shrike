@@ -39,7 +39,7 @@ settings:
     # Scripts/install-local.sh and Scripts/make-package.sh stamp it with
     # `git rev-list --count HEAD`, so installed copies always outrank
     # DerivedData builds in Launch Services ("Open With").
-    MARKETING_VERSION: "0.2.5"
+    MARKETING_VERSION: "0.2.6"
     CURRENT_PROJECT_VERSION: "1"
     # Signing lives in Config/Signing.xcconfig (see the Shrike target).
   configs:

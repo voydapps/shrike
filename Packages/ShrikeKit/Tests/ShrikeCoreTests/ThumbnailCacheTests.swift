@@ -239,6 +239,104 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertEqual(a.decodeCount + b.decodeCount + c.decodeCount, 0)
     }
 
+    func testCancelPrefetch_dropsQueuedRowsButNotOnesSomeoneWaitsFor() async throws {
+        let tmp = TempDir("thumb-cancel-prefetch")
+        defer { tmp.cleanup() }
+        let (cache, blocker) = try blockedCache(tmp)
+        let first = Task { try await cache.thumbnail(for: blocker, maxPixelSize: 64) }
+        await waitUntil { await cache.activeDecodeSlotsForTesting() == 1 }
+
+        let a = GatedSource(id: "a"), b = GatedSource(id: "b"), c = GatedSource(id: "c")
+        await cache.prefetch([a, b, c], maxPixelSize: 64)
+        await waitUntil { await cache.decodeWaiterCountForTesting() == 3 }
+        // A cell for c comes on screen and waits for it.
+        let waiting = Task { try await cache.thumbnail(for: c, maxPixelSize: 64, priority: .visible) }
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        // AppKit: the prefetch window moved away from a, b and c.
+        await cache.cancelPrefetch([a, b, c], maxPixelSize: 64)
+        let left = await cache.decodeWaiterCountForTesting()
+        XCTAssertEqual(left, 1, "a and b are dropped; c stays because a cell waits for it")
+
+        blocker.open(); c.open()
+        _ = try await first.value
+        _ = try await waiting.value
+        XCTAssertEqual(a.decodeCount + b.decodeCount, 0, "a dropped prefetch never decodes")
+        let jobs = await cache.jobCountForTesting()
+        XCTAssertEqual(jobs, 0)
+    }
+
+    func testPrefetchedThenShownThenScrolledAway_isDropped() async throws {
+        // The measured case: a row is prefetched (pinned), a cell shows it,
+        // and the user scrolls on before it decodes. It must not decode.
+        let tmp = TempDir("thumb-prefetched-away")
+        defer { tmp.cleanup() }
+        let (cache, blocker) = try blockedCache(tmp)
+        let first = Task { try await cache.thumbnail(for: blocker, maxPixelSize: 64) }
+        await waitUntil { await cache.activeDecodeSlotsForTesting() == 1 }
+
+        let v = GatedSource(id: "v")
+        await cache.prefetch([v], maxPixelSize: 64)
+        await waitUntil { await cache.decodeWaiterCountForTesting() == 1 }
+        let cell = Task { try await cache.thumbnail(for: v, maxPixelSize: 64, priority: .visible) }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        cell.cancel()   // the cell scrolled away
+        await waitUntil { await cache.decodeWaiterCountForTesting() == 0 }
+        let left = await cache.decodeWaiterCountForTesting()
+        XCTAssertEqual(left, 0)
+
+        blocker.open()
+        _ = try await first.value
+        XCTAssertEqual(v.decodeCount, 0)
+    }
+
+    func testCacheKey_sameWithKnownSizeAndDate_andChangesWithTheFile() throws {
+        let tmp = TempDir("thumb-key")
+        defer { tmp.cleanup() }
+        let url = tmp.url.appendingPathComponent("k.jpg")
+        try FileManager.default.copyItem(at: try TestFixture.url("small.jpg"), to: url)
+        let plain = FileImageSource(url: url)
+        let size = try XCTUnwrap(plain.fileSize), mtime = try XCTUnwrap(plain.mtime)
+        let known = FileImageSource(url: url, knownSize: size, knownMTime: mtime)
+        XCTAssertEqual(known, plain, "known values are not part of the identity")
+        XCTAssertEqual(ThumbnailCache.cacheKey(for: known, maxPixelSize: 96),
+                       ThumbnailCache.cacheKey(for: plain, maxPixelSize: 96),
+                       "the key format is unchanged, so old disk caches stay valid")
+        // A second lookup comes from the memo and agrees.
+        XCTAssertEqual(ThumbnailCache.cacheKey(for: known, maxPixelSize: 96),
+                       ThumbnailCache.cacheKey(for: plain, maxPixelSize: 96))
+        // Same file, new size or date: a new key.
+        let moved = FileImageSource(url: url, knownSize: size + 1, knownMTime: mtime)
+        let later = FileImageSource(url: url, knownSize: size, knownMTime: mtime.addingTimeInterval(5))
+        XCTAssertNotEqual(ThumbnailCache.cacheKey(for: moved, maxPixelSize: 96),
+                          ThumbnailCache.cacheKey(for: known, maxPixelSize: 96))
+        XCTAssertNotEqual(ThumbnailCache.cacheKey(for: later, maxPixelSize: 96),
+                          ThumbnailCache.cacheKey(for: known, maxPixelSize: 96))
+        // The path hash is still the shared prefix of every size and version.
+        XCTAssertTrue(ThumbnailCache.cacheKey(for: later, maxPixelSize: 96)
+            .hasPrefix(ThumbnailCache.pathPrefix(for: plain)))
+    }
+
+    func testKnownValuesNeedNoFileSystemCall() {
+        // A path that does not exist: with known values the key is still built.
+        let url = URL(fileURLWithPath: "/nonexistent-shrike-dir/x.jpg")
+        let src = FileImageSource(url: url, knownSize: 1234, knownMTime: Date(timeIntervalSince1970: 99))
+        XCTAssertEqual(src.fileSize, 1234)
+        XCTAssertEqual(src.mtime, Date(timeIntervalSince1970: 99))
+        XCTAssertNil(FileImageSource(url: url).fileSize)
+    }
+
+    func testRequestPixels_scaleAndBucket() {
+        XCTAssertEqual(ThumbnailSizing.requestPixels(points: 180, scale: 2), 384, "360 px rounds up to a multiple of 64")
+        XCTAssertEqual(ThumbnailSizing.requestPixels(points: 180, scale: 1), 192)
+        XCTAssertEqual(ThumbnailSizing.requestPixels(points: 118, scale: 2), 256)
+        XCTAssertEqual(ThumbnailSizing.requestPixels(points: 120, scale: 2), 256)
+        XCTAssertEqual(ThumbnailSizing.requestPixels(points: 800, scale: 2), 1024, "capped")
+        // A slider drag over 8 points makes at most one new size.
+        let sizes = Set((176...183).map { ThumbnailSizing.requestPixels(points: $0, scale: 2) })
+        XCTAssertEqual(sizes.count, 1)
+    }
+
     func testVisibleJumpsAheadOfPrefetch() async throws {
         let tmp = TempDir("thumb-prio")
         defer { tmp.cleanup() }

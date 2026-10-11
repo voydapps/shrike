@@ -13,9 +13,27 @@ import UniformTypeIdentifiers
 public struct FileImageSource: ImageSource {
     public let url: URL
 
+    /// Size and modification date the caller already holds (a Browser
+    /// listing has both). When set, `fileSize` / `mtime` return them with
+    /// no `stat()`, which is what makes a thumbnail cache lookup free of
+    /// file-system calls. Not part of the source's identity.
+    private let knownSize: Int64?
+    private let knownMTime: Date?
+
     public init(url: URL) {
         self.url = url
+        self.knownSize = nil
+        self.knownMTime = nil
     }
+
+    public init(url: URL, knownSize: Int64, knownMTime: Date) {
+        self.url = url
+        self.knownSize = knownSize
+        self.knownMTime = knownMTime
+    }
+
+    public static func == (a: FileImageSource, b: FileImageSource) -> Bool { a.url == b.url }
+    public func hash(into hasher: inout Hasher) { hasher.combine(url) }
 
     // MARK: Identity
 
@@ -23,11 +41,13 @@ public struct FileImageSource: ImageSource {
     public var displayName: String { url.lastPathComponent }
 
     public var fileSize: Int64? {
-        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init)
+        if let knownSize { return knownSize }
+        return (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init)
     }
 
     public var mtime: Date? {
-        try? url.resourceValues(forKeys: [.contentModificationDateKey])
+        if let knownMTime { return knownMTime }
+        return try? url.resourceValues(forKeys: [.contentModificationDateKey])
             .contentModificationDate
     }
 

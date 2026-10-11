@@ -60,10 +60,20 @@
     <a class="back" href="./">Back to the home page</a>
     <h1 id="h-changelog">Changelog</h1>
     <p class="intro">What changed in each version of Shrike. Newest first. For downloads, see the <a href="https://github.com/voydapps/shrike/releases">releases page</a>.</p>
+<article class="release" id="v-0-2-6" aria-labelledby="v-0-2-6-h">
+  <header class="rel-head">
+    <h2 id="v-0-2-6-h">0.2.6</h2>
+    <p><time datetime="2026-10-11">11 October 2026</time> <span class="chip">Latest</span></p>
+  </header>
+  <div class="rel-body">
+    <section class="rel-group" aria-labelledby="v-0-2-6-faster"><h3 id="v-0-2-6-faster" class="faster">Faster</h3><ul><li>Scrolling fast through a big folder no longer leaves work behind. Thumbnails for photos you scrolled past are not made any more. In a test with 1000 photos, the work after the scroll stopped went from about 3 seconds to under 1 second. The processor load in the next 12 seconds fell from about 17 seconds of work to 5.</li><li>A thumbnail you saw before shows at once when you scroll back, with no blank cell and no fade.</li><li>The viewer uses less memory. A 1200 by 800 window uses 125 to 130 MB when it opens (it was 150 to 165 MB) and 135 MB after 50 photos (it was 165 MB). After 3 seconds on one photo, Shrike lets go of the two photos farther away. It loads them again when you move.</li><li>A Browser with 1000 photos uses about 180 MB after a long scroll (it was about 300 MB).</li><li>Full screen keeps two screen buffers instead of up to three. That is up to 70 MB less on a large display.</li></ul></section>
+    <section class="rel-group" aria-labelledby="v-0-2-6-changed"><h3 id="v-0-2-6-changed" class="changed">Changed</h3><ul><li>Thumbnails in the Browser are sharp on a Retina screen. They were made at half the size and stretched. Thumbnails made by an older version are made again when you look at them.</li></ul></section>
+  </div>
+</article>
 <article class="release" id="v-0-2-0-to-0-2-5" aria-labelledby="v-0-2-0-to-0-2-5-h">
   <header class="rel-head">
     <h2 id="v-0-2-0-to-0-2-5-h">0.2.0 to 0.2.5</h2>
-    <p><time datetime="2026-10-11">11 October 2026</time> <span class="chip">Latest</span></p>
+    <p><time datetime="2026-10-11">11 October 2026</time></p>
   </header>
   <div class="rel-body">
     <section class="rel-group" aria-labelledby="v-0-2-0-to-0-2-5-new"><h3 id="v-0-2-0-to-0-2-5-new" class="new">New</h3><ul><li>A new full-screen look. The bars hide by themselves and come back when you move the pointer to the edge. The bottom bar has 11 buttons.</li><li>Pins on the panels. A pinned panel stays open. The Unpin All Panels command lets them all go at once.</li><li>Toolbar buttons for Full Screen, Show in Browser and Histogram.</li><li>RAW and JPEG switch: when a RAW file and its JPEG show as one photo, press Option+R to see the other one.</li><li>Filmstrip hover: the photo under the pointer gets a white ring, a hand cursor and its file name.</li><li>The Browser has a Filmstrip view with a big preview. Grid, Filmstrip or List: Shrike remembers your choice.</li><li>The histogram can be turned on or off in every window. It shows the share of clipped pixels at both ends.</li><li>The Browser follows the photo you select in the viewer, also when you select a range with Shift+arrow.</li><li>A disabled tool on the edit bar now says why in its tooltip.</li><li>The photo number badge hides by itself after 2 seconds. It comes back when you move the pointer.</li><li>Toolbar buttons now light up clearly when you point at them, in the viewer and in the Browser (macOS 26). A group such as Previous / Next lights one button at a time.</li></ul></section>

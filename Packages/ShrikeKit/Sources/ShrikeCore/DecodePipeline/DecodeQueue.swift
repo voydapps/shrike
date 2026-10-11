@@ -129,7 +129,13 @@ public actor DecodeQueue {
     // Navigation state
     private var list: [any ImageSource] = []
     private var currentIndex: Int = 0 {
-        didSet { if currentIndex != oldValue { publishReadyCurrent() } }
+        didSet {
+            if currentIndex != oldValue {
+                // Moving again: the full window comes back.
+                compactWindow = false
+                publishReadyCurrent()
+            }
+        }
     }
 
     /// The current photo's finished entry,
@@ -201,6 +207,17 @@ public actor DecodeQueue {
     /// longer hold four prefetch windows. Its neighbours come back when
     /// it is key again.
     private var isBackground = false
+
+    /// How long the viewer may sit on one photo before the window shrinks
+    /// to the current photo and its two direct neighbours (nil: never).
+    /// The farther neighbours (about 15 MB of GPU texture each in a
+    /// 1200 x 800 window) only help while the user is stepping, and they
+    /// are decoded again as soon as the user steps.
+    private let idleTrimDelay: Duration?
+    private var compactWindow = false
+    private var idleTrimTask: Task<Void, Never>?
+    /// Radius in use now: the configured one, or 1 after the idle trim.
+    private var effectiveRadius: Int { compactWindow ? 1 : windowRadius }
     /// Process-wide byte count shared by every queue; far neighbours
     /// (beyond the direct ones) only load while the total fits
     /// `sharedByteBudget`.
@@ -213,8 +230,10 @@ public actor DecodeQueue {
         lane: DecodeLane = .shared,
         preparer: DisplayPreparer? = nil,
         ledger: DecodeMemoryLedger = .shared,
-        sharedByteBudget: Int = DecodeMemoryLedger.defaultSharedBudget
+        sharedByteBudget: Int = DecodeMemoryLedger.defaultSharedBudget,
+        idleTrimDelay: Duration? = .seconds(3)
     ) {
+        self.idleTrimDelay = idleTrimDelay
         self.windowRadius = max(1, windowRadius)
         self.byteBudget = byteBudget
         self.lane = lane
@@ -427,6 +446,8 @@ public actor DecodeQueue {
     /// check in `install`. (Closed windows used to keep
     /// their caches while anything still referenced the queue.)
     public func purge() {
+        idleTrimTask?.cancel()
+        idleTrimTask = nil
         fullResTask?.cancel()
         fullResTask = nil
         for pending in inFlight.values { pending.task.cancel() }
@@ -581,7 +602,7 @@ public actor DecodeQueue {
     /// ahead/behind with the direction of travel first. Clamped, no wrap.
     private func windowOrder(around index: Int) -> [Int] {
         var order = [index]
-        for d in 1...windowRadius {
+        for d in 1...effectiveRadius {
             for i in [index + d * direction, index - d * direction] where list.indices.contains(i) {
                 order.append(i)
             }
@@ -633,6 +654,28 @@ public actor DecodeQueue {
         for i in toStart {
             spawnDecode(index: i)
         }
+        armIdleTrim()
+    }
+
+    /// (Re)starts the idle timer: when the user has not moved for
+    /// `idleTrimDelay`, the window shrinks to radius 1.
+    private func armIdleTrim() {
+        idleTrimTask?.cancel()
+        idleTrimTask = nil
+        guard let delay = idleTrimDelay, !compactWindow, !isBackground, windowRadius > 1 else { return }
+        // Detached: a task that inherits the actor's isolation keeps the
+        // queue (and, through it, the closed window) alive while it sleeps.
+        idleTrimTask = Task.detached(priority: .utility) { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await self?.compactWindowNow()
+        }
+    }
+
+    private func compactWindowNow() {
+        guard !compactWindow, !list.isEmpty else { return }
+        compactWindow = true
+        schedule(around: currentIndex)
     }
 
     /// Start a decode for `index` (off-actor, on the lane) and record it.

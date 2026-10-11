@@ -209,6 +209,7 @@ public final class MetalImageView: NSView {
 
     /// Test seam: the drawable pixel format in use.
     internal var layerPixelFormatForTesting: MTLPixelFormat { metalLayer.pixelFormat }
+    internal var maximumDrawableCountForTesting: Int { metalLayer.maximumDrawableCount }
 
     /// Test seam: forces Reduce Motion on or off (nil = the system
     /// setting). The one shared source (`ReduceMotion`).
@@ -832,6 +833,10 @@ public final class MetalImageView: NSView {
         // + extendedLinearDisplayP3 when a 16F photo arrives.
         layer.pixelFormat = .bgra8Unorm_srgb
         layer.framebufferOnly = true
+        // Two drawables, not the default three: the viewer draws one frame
+        // per change, never several frames ahead, and a drawable is the
+        // window's pixels x 4 bytes (70 MB each on a 5K full screen).
+        layer.maximumDrawableCount = 2
         layer.colorspace = ColorPipeline.displayP3Space
         layer.wantsExtendedDynamicRangeContent = false
         layer.backgroundColor = NSColor.black.cgColor

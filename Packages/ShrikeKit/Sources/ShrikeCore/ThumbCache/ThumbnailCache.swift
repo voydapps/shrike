@@ -147,6 +147,8 @@ public actor ThumbnailCache {
     // Eviction state
     private var lastEviction: Date = .distantPast
     private var evictionTicker: Task<Void, Never>?
+    private var writesAtLastTrim = -1   // -1: the first tick always walks once
+    private var trimRunning = false
 
     // MARK: Init
 
@@ -243,6 +245,10 @@ public actor ThumbnailCache {
                                          priority: priority)
         raise(job, to: priority)
         job.interest += 1
+        // A caller now waits for this job and owns it: if that caller goes
+        // away (the cell scrolled off) the queued decode is dropped, even
+        // when a prefetch had pinned it earlier.
+        job.pinned = false
         let jobID = job.id
         guard let task = job.task else { throw CancellationError() }
         do {
@@ -288,6 +294,19 @@ public actor ThumbnailCache {
     /// has started or when nothing is queued.
     public func cancel(for source: any ImageSource, maxPixelSize: Int) {
         drop(key: Self.cacheKey(for: source, maxPixelSize: maxPixelSize))
+    }
+
+    /// Withdraws a prefetch request (the row left the prefetch window).
+    /// The queued decode is dropped unless someone is waiting for it; one
+    /// that already started finishes and is cached. No effect on a
+    /// thumbnail that is already in memory.
+    public func cancelPrefetch(_ sources: [any ImageSource], maxPixelSize: Int) {
+        for source in sources {
+            let key = Self.cacheKey(for: source, maxPixelSize: maxPixelSize)
+            guard let job = jobs[key] else { continue }
+            job.pinned = false
+            if job.interest <= 0 { drop(key: key) }
+        }
     }
 
     /// Drops every queued (not started) decode at `priority` or lower, e.g.
@@ -486,7 +505,19 @@ public actor ThumbnailCache {
     /// file shares a prefix (and a shard folder): `evict(url:)` finds them
     /// without knowing the old mtime or size.
     static func cacheKey(for source: any ImageSource, maxPixelSize: Int) -> String {
-        "\(pathPrefix(for: source))\(contentHash(for: source).prefix(12))_\(maxPixelSize)"
+        "\(keyStem(for: source))_\(maxPixelSize)"
+    }
+
+    /// The size-independent part of the key (24 hex chars). Remembered per
+    /// (file, mtime, size) for the session: a lookup then costs a hash-map
+    /// read instead of two `stat()` calls and two SHA-256 runs. A changed
+    /// file has a new mtime or size, so it gets a new stem.
+    static func keyStem(for source: any ImageSource) -> String {
+        let memoKey = KeyStemMemo.Key(source: source)
+        if let hit = KeyStemMemo.shared.get(memoKey) { return hit }
+        let stem = "\(pathPrefix(for: source))\(contentHash(for: source).prefix(12))"
+        KeyStemMemo.shared.set(stem, for: memoKey)
+        return stem
     }
 
     /// First 12 hex chars of SHA256 of the file's standardized path (or of
@@ -498,7 +529,19 @@ public actor ThumbnailCache {
 
     static func pathPrefix(forPath path: String) -> String {
         let digest = SHA256.hash(data: Data(path.utf8))
-        return digest.prefix(6).map { String(format: "%02x", $0) }.joined()
+        return hex(digest.prefix(6))
+    }
+
+    private static let hexDigits: [UInt8] = Array("0123456789abcdef".utf8)
+
+    static func hex<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
+        var out = [UInt8]()
+        out.reserveCapacity(64)
+        for byte in bytes {
+            out.append(hexDigits[Int(byte >> 4)])
+            out.append(hexDigits[Int(byte & 0x0F)])
+        }
+        return String(decoding: out, as: UTF8.self)
     }
 
     // MARK: - Per-file eviction and disk ceiling
@@ -565,15 +608,7 @@ public actor ThumbnailCache {
         sizeBits = sizeBits.bigEndian
         withUnsafeBytes(of: sizeBits) { hasher.update(bufferPointer: $0) }
 
-        let digest = hasher.finalize()
-        let hex: [UInt8] = Array("0123456789abcdef".utf8)
-        var out = [UInt8]()
-        out.reserveCapacity(64)
-        for byte in digest {
-            out.append(hex[Int(byte >> 4)])
-            out.append(hex[Int(byte & 0x0F)])
-        }
-        return String(decoding: out, as: UTF8.self)
+        return hex(hasher.finalize())
     }
 
     /// `<root>/<first 2 hex>/<key>.heic`. The shard folder is created by
@@ -628,12 +663,25 @@ public actor ThumbnailCache {
         }
     }
 
+    /// The 60 s ticker. Skips the folder walk when no thumbnail was written
+    /// since the last one (nothing can have grown), and runs it off this
+    /// actor, so requests are served while it walks.
     private func runEvictionIfNeeded() {
         let now = Date()
         guard now.timeIntervalSince(lastEviction) >= 30 else { return }
         lastEviction = now
-        evictDiskIfOverCeiling()
+        let written = disk.acceptedWrites
+        guard written != writesAtLastTrim, !trimRunning else { return }
+        writesAtLastTrim = written
+        trimRunning = true
+        let root = diskRoot, ceiling = diskCeilingBytes
+        Task.detached(priority: .utility) { [weak self] in
+            Self.trimDisk(root: root, ceiling: ceiling)
+            await self?.trimFinished()
+        }
     }
+
+    private func trimFinished() { trimRunning = false }
 
     /// Exposed for tests.
     public func runEvictionNow() {

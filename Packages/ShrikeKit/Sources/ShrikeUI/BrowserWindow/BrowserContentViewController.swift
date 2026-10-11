@@ -105,6 +105,8 @@ public final class BrowserContentViewController: NSViewController {
     var tableViewForTesting: NSTableView { tableView }
     /// Test seam: the grid / filmstrip view.
     var collectionViewForTesting: BrowserCollectionView { collectionView }
+    /// Test seam: sees what `cancelPrefetchingForItemsAt` withdraws.
+    var cancelPrefetchObserverForTesting: (([any ImageSource], Int) -> Void)?
     var gridScrollViewForTesting: NSScrollView { gridScrollView }
     /// The view that takes the keys in this mode: the grid or the list
     /// (Esc in the search field hands focus back here).
@@ -132,6 +134,14 @@ public final class BrowserContentViewController: NSViewController {
         didSet {
             applyThumbnailSize()
         }
+    }
+
+    /// Pixels to ask the thumbnail cache for: the cell's size in points at
+    /// the window's screen scale, so a Retina grid is sharp. In filmstrip
+    /// mode the cells are a fixed 120 pt.
+    public var cellRequestPixelSize: Int {
+        let scale = view.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        return ThumbnailSizing.requestPixels(points: mode == .filmstrip ? 120 : thumbnailPixelSize, scale: scale)
     }
 
     // MARK: - Views
@@ -1558,7 +1568,7 @@ extension BrowserContentViewController: NSCollectionViewDataSource {
         guard let item = raw as? ThumbnailItem,
               visibleItems.indices.contains(indexPath.item) else { return raw }
         let model = visibleItems[indexPath.item]
-        let thumbSize = mode == .filmstrip ? 120 : thumbnailPixelSize
+        let thumbSize = cellRequestPixelSize
         item.showsNameTooltip = mode == .filmstrip
         item.configure(with: model, pixelSize: thumbSize, cache: services.thumbnailCache)
         item.onRAWChip = { [weak self] in self?.rawChipClicked(model.url) }
@@ -1607,7 +1617,7 @@ extension BrowserContentViewController: NSCollectionViewDelegate, NSCollectionVi
 
     public func collectionView(_ collectionView: NSCollectionView,
                                prefetchItemsAt indexPaths: [IndexPath]) {
-        let size = mode == .filmstrip ? 120 : thumbnailPixelSize
+        let size = cellRequestPixelSize
         let sources: [any ImageSource] = indexPaths.compactMap { ip in
             visibleItems.indices.contains(ip.item)
                 ? visibleItems[ip.item].imageSource
@@ -1621,7 +1631,19 @@ extension BrowserContentViewController: NSCollectionViewDelegate, NSCollectionVi
 
     public func collectionView(_ collectionView: NSCollectionView,
                                cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
-        // `prefetch` is fire-and-forget; there's nothing to cancel.
+        // Rows that left the prefetch window: drop their queued decodes
+        // (one that already started finishes). A row that is on screen
+        // keeps its own request, which is not affected.
+        let size = cellRequestPixelSize
+        let sources: [any ImageSource] = indexPaths.compactMap { ip in
+            visibleItems.indices.contains(ip.item) ? visibleItems[ip.item].imageSource : nil
+        }
+        guard !sources.isEmpty else { return }
+        cancelPrefetchObserverForTesting?(sources, size)
+        let cache = services.thumbnailCache
+        Task.detached(priority: .utility) {
+            await cache.cancelPrefetch(sources, maxPixelSize: size)
+        }
     }
 }
 

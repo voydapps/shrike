@@ -391,7 +391,14 @@ public final class ThumbnailItem: NSCollectionViewItem {
         // Kick off the thumbnail decode. Cancellation happens in
         // `prepareForReuse` or `didEndDisplaying`.
         loadTask?.cancel()
+        loadTask = nil
         let source = item.imageSource
+        // Already in memory (scrolling back over cells seen before): the
+        // cell shows it in this same frame, with no fade and no task.
+        if let hit = cache.cachedThumbnail(for: source, maxPixelSize: pixelSize) {
+            showThumbnail(hit, animated: false)
+            return
+        }
         loadTask = Task { [weak self] in
             do {
                 let image = try await cache.thumbnail(for: source, maxPixelSize: pixelSize)
@@ -416,10 +423,10 @@ public final class ThumbnailItem: NSCollectionViewItem {
 
     /// Shows the decoded thumbnail with a fade: 80 ms,
     /// ease-out; at once under Reduce Motion.
-    func showThumbnail(_ image: CGImage) {
+    func showThumbnail(_ image: CGImage, animated: Bool = true) {
         let size = NSSize(width: image.width, height: image.height)
         thumbnailView.image = NSImage(cgImage: image, size: size)
-        guard !ReduceMotion.isOn, let layer = thumbnailView.layer else { return }
+        guard animated, !ReduceMotion.isOn, let layer = thumbnailView.layer else { return }
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = 0
         fade.toValue = 1
@@ -429,6 +436,8 @@ public final class ThumbnailItem: NSCollectionViewItem {
     }
 
     /// Test seam: the thumbnail layer's fade-in, if one runs.
+    var hasThumbnailForTesting: Bool { thumbnailView.image != nil }
+
     var thumbnailFadeForTesting: CABasicAnimation? {
         thumbnailView.layer?.animation(forKey: Self.fadeInKey) as? CABasicAnimation
     }

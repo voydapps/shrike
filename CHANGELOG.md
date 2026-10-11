@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.6 - 2026-10-11
+### Faster
+- Scrolling fast through a big folder no longer leaves work behind. Thumbnails for photos you scrolled past are not made any more. In a test with 1000 photos, the work after the scroll stopped went from about 3 seconds to under 1 second. The processor load in the next 12 seconds fell from about 17 seconds of work to 5.
+- A thumbnail you saw before shows at once when you scroll back, with no blank cell and no fade.
+- The viewer uses less memory. A 1200 by 800 window uses 125 to 130 MB when it opens (it was 150 to 165 MB) and 135 MB after 50 photos (it was 165 MB). After 3 seconds on one photo, Shrike lets go of the two photos farther away. It loads them again when you move.
+- A Browser with 1000 photos uses about 180 MB after a long scroll (it was about 300 MB).
+- Full screen keeps two screen buffers instead of up to three. That is up to 70 MB less on a large display.
+### Changed
+- Thumbnails in the Browser are sharp on a Retina screen. They were made at half the size and stretched. Thumbnails made by an older version are made again when you look at them.
+
 ## 0.2.0 to 0.2.5 - 2026-10-11
 ### New
 - A new full-screen look. The bars hide by themselves and come back when you move the pointer to the edge. The bottom bar has 11 buttons.

@@ -451,7 +451,7 @@ public final class BrowserWindowController: NSWindowController {
             let px = InspectorPreviewImageView.maxPixelSize
             var quick: InspectorPreviewImageView.QuickThumbnail?
             if self.contentController.mode != .list {
-                let size = self.contentController.mode == .filmstrip ? 120 : self.contentController.thumbnailPixelSize
+                let size = self.contentController.cellRequestPixelSize
                 quick = { url in cache.cachedThumbnail(for: FileImageSource(url: url), maxPixelSize: size) }
             }
             return InspectorPreviewImageView.Lookups(

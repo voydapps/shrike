@@ -108,6 +108,47 @@ final class DecodeQueueTests: XCTestCase {
         XCTAssertGreaterThan(img0.width, 0)
     }
 
+    func testIdleTrim_dropsFarNeighboursAndStepsBringThemBack() async throws {
+        let tmp = TempDir("decode-idle-trim")
+        defer { tmp.cleanup() }
+        let sources = try makeNavList(count: 12, tmp: tmp)
+        let q = DecodeQueue(idleTrimDelay: .milliseconds(300))
+        await q.setNavigation(list: sources, currentIndex: 5)
+
+        func waitFor(_ cond: @Sendable () async -> Bool) async {
+            for _ in 0..<300 where !(await cond()) { try? await Task.sleep(nanoseconds: 10_000_000) }
+        }
+        let ids = sources.map(\.id)
+        let full = Set(ids[3...7])
+        await waitFor { await q.cachedIDs() == full }
+        let cachedFull = await q.cachedIDs()
+        XCTAssertEqual(cachedFull, full, "radius 2 while the user is active")
+
+        // Idle: only the current photo and its two direct neighbours stay.
+        let near = Set(ids[4...6])
+        await waitFor { await q.cachedIDs() == near }
+        let cachedNear = await q.cachedIDs()
+        XCTAssertEqual(cachedNear, near)
+
+        // One step: the full window is back around the new photo.
+        _ = try await q.jumpTo(index: 6)
+        let fullAgain = Set(ids[4...8])
+        await waitFor { await q.cachedIDs() == fullAgain }
+        let cachedAgain = await q.cachedIDs()
+        XCTAssertEqual(cachedAgain, fullAgain)
+    }
+
+    func testIdleTrim_offKeepsTheFullWindow() async throws {
+        let tmp = TempDir("decode-idle-off")
+        defer { tmp.cleanup() }
+        let sources = try makeNavList(count: 8, tmp: tmp)
+        let q = DecodeQueue(idleTrimDelay: nil)
+        await q.setNavigation(list: sources, currentIndex: 3)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        let n = await q.cachedIDs().count
+        XCTAssertEqual(n, 5)
+    }
+
     func testJumpTo_populatesCurrent() async throws {
         let tmp = TempDir("decode-jump")
         defer { tmp.cleanup() }

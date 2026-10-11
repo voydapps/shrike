@@ -180,6 +180,7 @@ final class ThumbnailDiskStore: @unchecked Sendable {
             return true
         }
         guard accepted else { return false }
+        acceptedTotal.withLock { $0 += 1 }
         let box = UncheckedImage(image)
         let gen = generation.withLock { $0 }
         let token = targets.withLock { state -> UInt64 in
@@ -228,6 +229,11 @@ final class ThumbnailDiskStore: @unchecked Sendable {
     private let targets = OSAllocatedUnfairLock(initialState: Targets())
 
     var pendingWrites: Int { pending.withLock { $0 } }
+
+    /// How many writes were accepted since this store was created. The
+    /// cache compares it between disk trims: unchanged means nothing grew.
+    private let acceptedTotal = OSAllocatedUnfairLock(initialState: 0)
+    var acceptedWrites: Int { acceptedTotal.withLock { $0 } }
 
     /// Resumes once every write queued so far has finished.
     func waitUntilIdle() async {
@@ -304,5 +310,63 @@ final class ThumbnailDecodeExecutor: TaskExecutor, @unchecked Sendable {
         case TaskPriority.utility.rawValue...: return .utility
         default: return .background
         }
+    }
+}
+
+// MARK: - Key stem memo
+
+/// Session memo for `ThumbnailCache.keyStem`: (file, mtime, size) -> the 24
+/// hex chars of the cache key. Thread-safe; bounded (cleared when full).
+final class KeyStemMemo: @unchecked Sendable {
+    static let shared = KeyStemMemo()
+
+    struct Key: Hashable {
+        let url: URL?
+        let id: String?
+        let mtimeBits: UInt64
+        let size: Int64
+
+        init(source: any ImageSource) {
+            if let file = source as? FileImageSource {
+                url = file.url
+                id = nil
+            } else {
+                url = nil
+                id = source.id
+            }
+            mtimeBits = source.mtime.map { $0.timeIntervalSince1970.bitPattern } ?? 0
+            size = source.fileSize ?? 0
+        }
+    }
+
+    private let limit = 200_000
+    private var map: [Key: String] = [:]
+    private let lock = NSLock()
+
+    func get(_ key: Key) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return map[key]
+    }
+
+    func set(_ stem: String, for key: Key) {
+        lock.lock(); defer { lock.unlock() }
+        if map.count >= limit { map.removeAll(keepingCapacity: true) }
+        map[key] = stem
+    }
+}
+
+// MARK: - Request sizes
+
+/// Which pixel size a cell asks the cache for.
+public enum ThumbnailSizing {
+    /// Cell size in points x the screen scale, rounded up to a multiple of
+    /// 64 and capped at 1024. The rounding keeps a continuous size slider
+    /// from creating a new cache file for every point value, and the cap
+    /// keeps the cache entry small for the largest grid size.
+    public static func requestPixels(points: Int, scale: CGFloat) -> Int {
+        let raw = Double(max(1, points)) * Double(max(1, scale))
+        let bucket = 64
+        let rounded = Int((raw / Double(bucket)).rounded(.up)) * bucket
+        return min(1024, max(bucket, rounded))
     }
 }

@@ -116,6 +116,14 @@ final class DisplayTextureTests: XCTestCase {
     }
 
     @MainActor
+    func testLayerKeepsTwoDrawablesNotThree() {
+        // A drawable is the window's pixels x 4 bytes (70 MB each on a 5K
+        // full screen). The viewer draws on demand, so two are enough.
+        let view = MetalImageView(frame: NSRect(x: 0, y: 0, width: 64, height: 64))
+        XCTAssertEqual(view.maximumDrawableCountForTesting, 2)
+    }
+
+    @MainActor
     func testDrawableFormatFollowsThePhoto() {
         let view = MetalImageView(frame: NSRect(x: 0, y: 0, width: 64, height: 64))
         view.image = sixteenBit(space: srgb)
