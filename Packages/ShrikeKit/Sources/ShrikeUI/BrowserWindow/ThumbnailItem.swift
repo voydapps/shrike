@@ -49,12 +49,26 @@ public final class ThumbnailItem: NSCollectionViewItem {
     private let starsLabel = NSTextField(labelWithString: "")
     private let badgeRow = NSStackView()
     private let rawChipView = NSImageView()
+    /// Over the RAW chip: a click shows the pair's RAW file (⌥R).
+    private let rawChipButton = PillChipButton()
+    /// Set by the Browser: the chip was clicked.
+    var onRAWChip: (() -> Void)?
     private let livePhotoView = NSImageView()
     private let pencilView = NSImageView()
     private let tagDotsView = NSImageView()
     private let nameRow = NSStackView()
     /// Selection ring, 3 pt outside the card.
     private let ringView = PassThroughView()
+    /// Spec 24 §2 (the filmstrip view's strip): the hover ring on the card's
+    /// edge and a white veil on the photo.
+    private let hoverRing = PassThroughView()
+    private let hoverOverlay = PassThroughView()
+    /// The pointer is over this cell (set by `BrowserCollectionView`).
+    private(set) var isHovered = false
+    /// The file name as the tooltip (the filmstrip view's strip).
+    var showsNameTooltip = false {
+        didSet { updateToolTip() }
+    }
     /// Capsule behind the name when selected.
     private let nameCapsule = PassThroughView()
     /// Decode failure: triangle, then "Can't preview" on big cells.
@@ -92,6 +106,15 @@ public final class ThumbnailItem: NSCollectionViewItem {
         thumbnailView.layer?.cornerRadius = 8
         thumbnailView.layer?.masksToBounds = true
         imageBackground.addSubview(thumbnailView)
+
+        // The hover veil: above the photo, below the badges.
+        hoverOverlay.translatesAutoresizingMaskIntoConstraints = false
+        hoverOverlay.wantsLayer = true
+        hoverOverlay.layer?.cornerRadius = 8
+        hoverOverlay.layer?.masksToBounds = true
+        hoverOverlay.layer?.backgroundColor = StripHoverLook.overlayColor
+        hoverOverlay.layer?.opacity = 0
+        imageBackground.addSubview(hoverOverlay)
 
         formatBadge.translatesAutoresizingMaskIntoConstraints = false
         formatBadge.font = .monospacedSystemFont(ofSize: 9, weight: .semibold)
@@ -177,11 +200,33 @@ public final class ThumbnailItem: NSCollectionViewItem {
         Badges.applyThumbnailShadow(to: badgeRow)
         imageBackground.addSubview(badgeRow)
 
+        rawChipButton.translatesAutoresizingMaskIntoConstraints = false
+        rawChipButton.target = self
+        rawChipButton.action = #selector(rawChipTapped(_:))
+        rawChipButton.isHidden = true
+        rawChipButton.setAccessibilityLabel("Show RAW File")
+        rawChipButton.toolTip = LiveTooltips.text(.toggleRAWFile, context: .browser, preset: Prefs.shortcutPreset,
+                                                  title: "Show RAW File")
+        imageBackground.addSubview(rawChipButton)
+        NSLayoutConstraint.activate([
+            rawChipButton.centerXAnchor.constraint(equalTo: rawChipView.centerXAnchor),
+            rawChipButton.centerYAnchor.constraint(equalTo: rawChipView.centerYAnchor),
+            rawChipButton.widthAnchor.constraint(equalTo: rawChipView.widthAnchor, constant: 8),
+            rawChipButton.heightAnchor.constraint(equalTo: rawChipView.heightAnchor, constant: 6),
+        ])
+
         ringView.translatesAutoresizingMaskIntoConstraints = false
         ringView.wantsLayer = true
         ringView.layer?.cornerRadius = Self.ringRadius
         ringView.layer?.borderWidth = 0
         root.addSubview(ringView)
+
+        hoverRing.translatesAutoresizingMaskIntoConstraints = false
+        hoverRing.wantsLayer = true
+        hoverRing.layer?.cornerRadius = Self.cardRadius
+        hoverRing.layer?.borderWidth = StripHoverLook.ringWidth
+        hoverRing.layer?.opacity = 0
+        root.addSubview(hoverRing)
 
         let ring = Self.ringWidth
         let pad = Self.capsulePadding
@@ -195,6 +240,15 @@ public final class ThumbnailItem: NSCollectionViewItem {
             ringView.bottomAnchor.constraint(equalTo: imageBackground.bottomAnchor, constant: ring),
             ringView.leadingAnchor.constraint(equalTo: imageBackground.leadingAnchor, constant: -ring),
             ringView.trailingAnchor.constraint(equalTo: imageBackground.trailingAnchor, constant: ring),
+
+            hoverRing.topAnchor.constraint(equalTo: imageBackground.topAnchor),
+            hoverRing.bottomAnchor.constraint(equalTo: imageBackground.bottomAnchor),
+            hoverRing.leadingAnchor.constraint(equalTo: imageBackground.leadingAnchor),
+            hoverRing.trailingAnchor.constraint(equalTo: imageBackground.trailingAnchor),
+            hoverOverlay.topAnchor.constraint(equalTo: thumbnailView.topAnchor),
+            hoverOverlay.bottomAnchor.constraint(equalTo: thumbnailView.bottomAnchor),
+            hoverOverlay.leadingAnchor.constraint(equalTo: thumbnailView.leadingAnchor),
+            hoverOverlay.trailingAnchor.constraint(equalTo: thumbnailView.trailingAnchor),
 
             thumbnailView.topAnchor.constraint(equalTo: imageBackground.topAnchor, constant: 4),
             thumbnailView.bottomAnchor.constraint(equalTo: imageBackground.bottomAnchor, constant: -4),
@@ -268,11 +322,45 @@ public final class ThumbnailItem: NSCollectionViewItem {
         formatBadge.isHidden = true
         currentItem = nil
         setFailed(false)
+        setHovered(false, animated: false)
         updateSelectionAppearance()
     }
 
     public override var isSelected: Bool {
-        didSet { updateSelectionAppearance() }
+        didSet {
+            updateSelectionAppearance()
+            applyHover(animated: false)
+        }
+    }
+
+    // MARK: - Hover
+
+    func setHovered(_ on: Bool, animated: Bool = true) {
+        guard on != isHovered else { return }
+        isHovered = on
+        applyHover(animated: animated)
+    }
+
+    /// A selected cell shows its selection ring and no hover.
+    private var showsHover: Bool { isHovered && !isSelected }
+
+    private func applyHover(animated: Bool) {
+        guard isViewLoaded, let ring = hoverRing.layer, let veil = hoverOverlay.layer else { return }
+        StripHoverLook.fade(ring, visible: showsHover, animated: animated)
+        StripHoverLook.fade(veil, visible: showsHover, animated: animated)
+    }
+
+    /// Test seam: the name capsule's frame in the cell's own coordinates.
+    var nameCapsuleFrameForTesting: NSRect {
+        view.layoutSubtreeIfNeeded()
+        return nameCapsule.frame
+    }
+
+    /// Test seam: what the hover draws now (target state).
+    var hoverLookForTesting: (ringWidth: CGFloat, ringOpacity: Float, overlayAlpha: CGFloat) {
+        let veil = hoverOverlay.layer
+        let alpha = (veil?.opacity ?? 0) > 0 ? (veil?.backgroundColor?.alpha ?? 0) : 0
+        return (hoverRing.layer?.borderWidth ?? 0, hoverRing.layer?.opacity ?? 0, alpha)
     }
 
     // MARK: - Configure
@@ -370,12 +458,18 @@ public final class ThumbnailItem: NSCollectionViewItem {
         starsLabel.stringValue = Badges.stars(badges.rating)
         starsLabel.isHidden = badges.rating <= 0
         rawChipView.isHidden = !badges.hasRAW
+        rawChipButton.isHidden = !badges.hasRAW
         livePhotoView.isHidden = !badges.isLivePhoto
         pencilView.isHidden = !badges.edited
         let dots = Badges.dotColors(badges.tags).map { Badges.dotFill($0) }
         tagDotsView.image = Badges.tagDotsImage(dots)
         tagDotsView.isHidden = dots.isEmpty
     }
+
+    @objc private func rawChipTapped(_ sender: Any?) { onRAWChip?() }
+
+    /// Test seams: the clickable chip.
+    var rawChipButtonForTesting: NSButton { rawChipButton }
 
     /// Test seam: what the cell shows now.
     var badgeStateForTesting: (flag: Bool, stars: String, raw: Bool, live: Bool, pencil: Bool, dots: Bool) {
@@ -400,8 +494,18 @@ public final class ThumbnailItem: NSCollectionViewItem {
         failureStack.isHidden = !failed
         let name = currentItem?.displayName ?? ""
         view.setAccessibilityLabel(failed ? "\(name), can't preview" : name)
-        view.toolTip = failed ? "Shrike can't read this file." : nil
+        updateToolTip()
         updateFailureLabel()
+    }
+
+    /// The failure text, else (filmstrip strip) the file name.
+    private func updateToolTip() {
+        guard isViewLoaded else { return }
+        if isFailed {
+            view.toolTip = "Shrike can't read this file."
+        } else {
+            view.toolTip = showsNameTooltip ? currentItem?.displayName : nil
+        }
     }
 
     private func updateFailureLabel() {
@@ -453,6 +557,8 @@ public final class ThumbnailItem: NSCollectionViewItem {
         imageBackground.layer?.borderColor = look.border?.resolvedCGColor(for: appearance)
         ringView.layer?.borderWidth = look.ring == nil ? 0 : Self.ringWidth
         ringView.layer?.borderColor = look.ring?.resolvedCGColor(for: appearance)
+        hoverRing.layer?.borderColor = StripHoverLook.ringColor(for: appearance)
+        hoverRing.layer?.borderWidth = StripHoverLook.ringWidth
         nameCapsule.layer?.backgroundColor = look.capsule?.resolvedCGColor(for: appearance)
         nameLabel.textColor = look.text
     }
@@ -487,6 +593,18 @@ final class ThumbnailCellView: NSView {
     override var wantsUpdateLayer: Bool { true }
 
     override func updateLayer() { onUpdateLayer?() }
+
+    /// The pointing hand over a filmstrip-strip cell (spec 24 §2).
+    override func resetCursorRects() {
+        var ancestor = superview
+        while let view = ancestor {
+            if let collection = view as? BrowserCollectionView {
+                if collection.hoverEnabled { addCursorRect(bounds, cursor: .pointingHand) }
+                return
+            }
+            ancestor = view.superview
+        }
+    }
 
     override func layout() {
         super.layout()

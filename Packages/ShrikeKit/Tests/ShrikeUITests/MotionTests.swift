@@ -76,7 +76,8 @@ final class MotionTests: XCTestCase {
 
     func testStackRevealRisesEightPointsWithEaseOut() {
         let content = makeContent()
-        content.togglePanel(.filmstrip)   // pinned: the stack shows
+        content.togglePanel(.filmstrip)   // pinned
+        content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))   // the pointer rests in the bottom zone: capsule + strip   // the stack shows
         defer { content.togglePanel(.filmstrip) }
         for view in [content.filmstripForTesting, content.toolbarForTesting] as [NSView] {
             XCTAssertFalse(view.isHidden, "\(type(of: view)) shows")
@@ -108,6 +109,7 @@ final class MotionTests: XCTestCase {
         ReduceMotion.overrideForTesting = true
         let content = makeContent()
         content.togglePanel(.filmstrip)
+        content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))   // the pointer rests in the bottom zone: capsule + strip
         defer { content.togglePanel(.filmstrip) }
         for view in [content.filmstripForTesting, content.toolbarForTesting] as [NSView] {
             XCTAssertFalse(view.isHidden)

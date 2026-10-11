@@ -18,7 +18,7 @@ final class ViewerInputRulesTests: XCTestCase {
                     isDirectionInverted: inverted, swapsAction: swap, timestamp: t)
     }
 
-    // One notch down at Fit → next; 8 fast notches → ≤ 2 changes.
+    // One notch down at Fit → next; 8 fast notches → ≤ 4 changes.
     func testVector1_notchDownAtFitGoesNext_fastSpinAdvancesAtMostTwice() {
         var r = ScrollInputRouter()
         XCTAssertEqual(r.route(wheel(-1, t: 0), atFit: true, wheelChangesImage: true, swipeEnabled: true),
@@ -32,24 +32,150 @@ final class ViewerInputRulesTests: XCTestCase {
             if case .navigate = a { changes += 1 }
         }
         XCTAssertGreaterThanOrEqual(changes, 1)
-        XCTAssertLessThanOrEqual(changes, 2)
+        XCTAssertLessThanOrEqual(changes, 4)
     }
 
-    func testWheelUpGoesPrevious_andSubLineDeltasAccumulate() {
+    // A small tick (0.1-0.3, slow turn with acceleration) is still one notch.
+    func testWheelUpGoesPrevious_andSmallTicksStepAtOnce() {
         var r = ScrollInputRouter()
-        XCTAssertEqual(r.route(wheel(0.4, t: 0), atFit: true, wheelChangesImage: true, swipeEnabled: true), .none)
-        XCTAssertEqual(r.route(wheel(0.4, t: 0.2), atFit: true, wheelChangesImage: true, swipeEnabled: true), .none)
-        XCTAssertEqual(r.route(wheel(0.4, t: 0.4), atFit: true, wheelChangesImage: true, swipeEnabled: true),
+        XCTAssertEqual(r.route(wheel(0.4, t: 0), atFit: true, wheelChangesImage: true, swipeEnabled: true),
+                       .navigate(forward: false))
+        XCTAssertEqual(r.route(wheel(0.4, t: 0.2), atFit: true, wheelChangesImage: true, swipeEnabled: true),
                        .navigate(forward: false))
         XCTAssertEqual(r.accumulator, 0)
+    }
+
+    private let fit = (atFit: true, wheelChangesImage: true, swipeEnabled: true)
+
+    /// Runs `events` at Fit; returns the steps (true = next, false = previous).
+    private func steps(_ events: [ScrollInput], router: inout ScrollInputRouter,
+                       atFit: Bool = true, wheelChangesImage: Bool = true) -> [Bool] {
+        events.compactMap {
+            if case .navigate(let f) = router.route($0, atFit: atFit,
+                                                    wheelChangesImage: wheelChangesImage,
+                                                    swipeEnabled: true) { return f }
+            return nil
+        }
+    }
+
+    func testNotchedFractionalTicks_oneStepPerTick_withAcceleration() {
+        var r = ScrollInputRouter()
+        // 5 slow notches, 0.1 -> 0.3 per tick, 200 ms apart.
+        let ev = [0.1, 0.1, 0.2, 0.3, 0.3].enumerated().map { wheel(-$1, t: Double($0) * 0.2) }
+        XCTAssertEqual(steps(ev, router: &r), [true, true, true, true, true])
+        // Wheel up goes back.
+        var up = ScrollInputRouter()
+        XCTAssertEqual(steps([wheel(0.1, t: 0), wheel(0.1, t: 0.2)], router: &up), [false, false])
+    }
+
+    func testNotchedWholeLines_oneStepPerNotch() {
+        var r = ScrollInputRouter()
+        let ev = (0..<4).map { wheel(-1, t: Double($0) * 0.1) }
+        XCTAssertEqual(steps(ev, router: &r), [true, true, true, true])
+    }
+
+    func testNotchedTicksOfOneNotchInsideDropWindowStepOnce() {
+        var r = ScrollInputRouter()
+        // A driver that splits one notch into three ticks 8 ms apart.
+        let ev = (0..<3).map { wheel(-0.2, t: Double($0) * 0.008) }
+        XCTAssertEqual(steps(ev, router: &r), [true])
+    }
+
+    func testNotchedHorizontalOnlyAtFitDoesNothing() {
+        var r = ScrollInputRouter()
+        XCTAssertEqual(r.route(wheel(0, dx: -1, t: 0), atFit: true, wheelChangesImage: true, swipeEnabled: true), .none)
+    }
+
+    func testNotchedPrefZooms_swapNavigatesOnSmallTick() {
+        var r = ScrollInputRouter()
+        XCTAssertEqual(r.route(wheel(-0.2, t: 0, swap: true), atFit: false, wheelChangesImage: false, swipeEnabled: true),
+                       .navigate(forward: true))
+    }
+
+    private func precise(_ dy: Double, t: TimeInterval, began: Bool = false, ended: Bool = false,
+                         phased: Bool = true, momentum: Bool = false, dx: Double = 0,
+                         swap: Bool = false, inverted: Bool = false) -> ScrollInput {
+        ScrollInput(isPrecise: true, deltaX: dx, deltaY: dy, isDirectionInverted: inverted,
+                    phaseBegan: began, isMomentum: momentum, phaseEnded: ended,
+                    hasPhase: phased, swapsAction: swap, timestamp: t)
+    }
+
+    // Smooth-scrolling wheel: precise, no phase, small vertical deltas.
+    func testPreciseVerticalWithoutPhase_stepsEvery80Points() {
+        var r = ScrollInputRouter()
+        let ev = (0..<16).map { precise(-10, t: Double($0) * 0.02, phased: false) }
+        XCTAssertEqual(steps(ev, router: &r), [true, true], "8 events of 10 pt = one image")
+        var up = ScrollInputRouter()
+        XCTAssertEqual(steps((0..<8).map { precise(10, t: Double($0) * 0.02, phased: false) }, router: &up), [false])
+    }
+
+    func testPreciseVerticalWithoutPhase_pauseStartsNewGesture() {
+        var r = ScrollInputRouter()
+        var ev = (0..<5).map { precise(-10, t: Double($0) * 0.02, phased: false) }
+        ev += (0..<5).map { precise(-10, t: 2 + Double($0) * 0.02, phased: false) }
+        XCTAssertEqual(steps(ev, router: &r), [], "50 pt, a pause, 50 pt never adds up")
+    }
+
+    func testPreciseVerticalWithPhases_stepsAndEndResetsCounter() {
+        var r = ScrollInputRouter()
+        var ev = [precise(-30, t: 0, began: true)]
+        ev += (1..<4).map { precise(-30, t: Double($0) * 0.016) }          // 120 pt -> one step
+        ev += [precise(-30, t: 0.07, ended: true)]                         // leaves 70 + 30 -> second step? no: 40 left
+        XCTAssertEqual(steps(ev, router: &r), [true])
+        XCTAssertEqual(r.accumulator, 0, "phase end resets")
+        // New gesture starts clean: 60 pt is not enough.
+        let next = [precise(-30, t: 1, began: true), precise(-30, t: 1.016)]
+        XCTAssertEqual(steps(next, router: &r), [])
+    }
+
+    func testPreciseVerticalReversalRestartsCounter() {
+        var r = ScrollInputRouter()
+        let ev = [precise(-60, t: 0, began: true), precise(60, t: 0.016), precise(60, t: 0.032)]
+        XCTAssertEqual(steps(ev, router: &r), [false], "60 down is dropped; the 120 up steps back once")
+    }
+
+    func testPreciseMomentumAtFitNeverSteps() {
+        var r = ScrollInputRouter()
+        let ev = (0..<20).map { precise(-40, t: Double($0) * 0.016, momentum: true) }
+        XCTAssertEqual(steps(ev, router: &r), [])
+    }
+
+    func testPreciseVerticalAtFit_prefZoomsDoesNotStep() {
+        var r = ScrollInputRouter()
+        let ev = [precise(-200, t: 0, began: true)]
+        XCTAssertEqual(steps(ev, router: &r, wheelChangesImage: false), [])
+    }
+
+    func testPreciseHorizontalStartStillSwipes_verticalStartDoesNot() {
+        var r = ScrollInputRouter()
+        XCTAssertEqual(r.route(precise(1, t: 0, began: true, dx: -8), atFit: true, wheelChangesImage: true, swipeEnabled: true),
+                       .beginSwipe)
+        var v = ScrollInputRouter()
+        XCTAssertEqual(v.route(precise(-8, t: 0, began: true, dx: 1), atFit: true, wheelChangesImage: true, swipeEnabled: true),
+                       .none, "8 pt is far from a step")
+    }
+
+    func testPreciseZoomedInPans_neverSteps() {
+        var r = ScrollInputRouter()
+        for i in 0..<20 {
+            let a = r.route(precise(-40, t: Double(i) * 0.016, began: i == 0), atFit: false,
+                            wheelChangesImage: true, swipeEnabled: true)
+            XCTAssertEqual(a, .pan(dx: 0, dy: 40))
+        }
+    }
+
+    func testPreciseSwapModifierZooms() {
+        var r = ScrollInputRouter()
+        XCTAssertEqual(r.route(precise(10, t: 0, swap: true), atFit: true, wheelChangesImage: true, swipeEnabled: true),
+                       .zoom(factor: 1.25))
     }
 
     func testEventsInsideDropWindowAreDroppedNotQueued() {
         var r = ScrollInputRouter()
         _ = r.route(wheel(-1, t: 1.0), atFit: true, wheelChangesImage: true, swipeEnabled: true)
-        XCTAssertEqual(r.route(wheel(-1, t: 1.05), atFit: true, wheelChangesImage: true, swipeEnabled: true), .none)
+        XCTAssertEqual(r.route(wheel(-1, t: 1.02), atFit: true, wheelChangesImage: true, swipeEnabled: true), .none)
         XCTAssertEqual(r.accumulator, 0, "dropped deltas must not build up")
-        XCTAssertEqual(r.route(wheel(-1, t: 1.07), atFit: true, wheelChangesImage: true, swipeEnabled: true),
+        XCTAssertEqual(r.route(wheel(-1, t: 1.03), atFit: true, wheelChangesImage: true, swipeEnabled: true),
                        .navigate(forward: true))
     }
 
@@ -133,7 +259,7 @@ final class ViewerInputRulesTests: XCTestCase {
         XCTAssertEqual(r.route(h, atFit: true, wheelChangesImage: true, swipeEnabled: true), .beginSwipe)
         XCTAssertEqual(r.route(h, atFit: true, wheelChangesImage: true, swipeEnabled: false), .none)
         let v = ScrollInput(isPrecise: true, deltaX: 1, deltaY: -8, phaseBegan: true)
-        XCTAssertEqual(r.route(v, atFit: true, wheelChangesImage: true, swipeEnabled: true), .none)
+        XCTAssertEqual(r.route(v, atFit: true, wheelChangesImage: true, swipeEnabled: true), .none)   // 8 pt < 80
         let changed = ScrollInput(isPrecise: true, deltaX: -8, deltaY: 0, phaseBegan: false)
         XCTAssertEqual(r.route(changed, atFit: true, wheelChangesImage: true, swipeEnabled: true), .none)
     }

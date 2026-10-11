@@ -7,7 +7,10 @@
 //  `[BrowserItem]` model so selection + sort + filter are mode-agnostic.
 //
 //  * Grid   — `NSCollectionView` flow layout, square thumbnails.
-//  * Filmstrip — same collection view; horizontal flow, fixed 120 pt rows.
+//  * Filmstrip — a large preview of the selected photo on top and, below
+//    it, the same collection view as ONE horizontal row of 120 pt cells in a
+//    fixed-height strip (user test 2, 2026-10-10: the old layout let the
+//    scroll view fill the whole height, so a horizontal flow filled columns).
 //  * List   — `NSTableView` with columns.
 //
 
@@ -15,6 +18,7 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 import ShrikeCore
+import ShrikeRendering
 import ShrikeIO
 
 @MainActor
@@ -26,6 +30,12 @@ public protocol BrowserContentDelegate: AnyObject {
     func browserContentRequestsRate(_ items: [BrowserItem], to rating: Int)
     func browserContentRequestsFlag(_ items: [BrowserItem], flag: Bool)
     func browserContentDidChangeMode(_ mode: BrowserViewMode)
+    /// The RAW chip on a cell was clicked (that photo is selected).
+    func browserContentRequestsRAWSwitch()
+}
+
+extension BrowserContentDelegate {
+    public func browserContentRequestsRAWSwitch() {}
 }
 
 @MainActor
@@ -95,6 +105,7 @@ public final class BrowserContentViewController: NSViewController {
     var tableViewForTesting: NSTableView { tableView }
     /// Test seam: the grid / filmstrip view.
     var collectionViewForTesting: BrowserCollectionView { collectionView }
+    var gridScrollViewForTesting: NSScrollView { gridScrollView }
     /// The view that takes the keys in this mode: the grid or the list
     /// (Esc in the search field hands focus back here).
     var focusView: NSView { mode == .list ? tableView : collectionView }
@@ -139,6 +150,20 @@ public final class BrowserContentViewController: NSViewController {
     var gridBackgroundForTesting: NSColor { containerView.fillColor }
 
     private let gridScrollView = NSScrollView()
+    /// Filmstrip mode: the big picture above the strip.
+    private let filmstripPreview = FilmstripPreviewView()
+    private var filmstripPreviewTask: Task<Void, Never>?
+    /// The file the preview shows (or is loading).
+    private(set) var filmstripPreviewURL: URL?
+    /// A strip cell: the 120 pt thumbnail plus the room the selected cell's
+    /// name capsule needs under it (4 pt gap + 18 pt capsule). Without it
+    /// the name hung below the cell and the scroller cut it off.
+    static let filmstripItemSize = NSSize(width: 120, height: 146)
+    /// The strip's height: one cell row, 8 pt above and below, and 16 pt
+    /// for a legacy (always visible) horizontal scroller.
+    static let filmstripStripHeight: CGFloat = 8 + filmstripItemSize.height + 8 + 16
+    /// The preview is decoded at most this big (the thumbnail cache).
+    static let filmstripPreviewPixels = 1536
     private let collectionView = BrowserCollectionView()
     private let listScrollView = NSScrollView()
     private let tableView = BrowserTableView()
@@ -146,8 +171,9 @@ public final class BrowserContentViewController: NSViewController {
 
     // MARK: - Init
 
-    public init(services: ShrikeServices) {
+    public init(services: ShrikeServices, initialMode: BrowserViewMode = .grid) {
         self.services = services
+        self.mode = initialMode
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -184,6 +210,15 @@ public final class BrowserContentViewController: NSViewController {
                                 forItemWithIdentifier: ThumbnailItem.reuseIdentifier)
         collectionView.setAccessibilityLabel("Thumbnail grid")
         collectionView.keyHandler = { [weak self] event in self?.keyHandler?(event) ?? false }
+        collectionView.onUserMouseDown = { [weak self] in self?.firstOnOpenPending = false }
+        collectionView.revealLead = { [weak self] ip in
+            guard let self else { return }
+            // Filmstrip centres the moving end; the grid keeps it visible.
+            if self.mode == .filmstrip { self.scrollToCenter(ip, animated: true) }
+            else if let frame = self.collectionView.layoutAttributesForItem(at: ip)?.frame {
+                self.collectionView.scrollToVisible(frame.insetBy(dx: 0, dy: -8))
+            }
+        }
         collectionView.onDoubleClick = { [weak self] indexPath in self?.openItem(at: indexPath.item) }
 
         let clip = NSClipView()
@@ -296,6 +331,28 @@ public final class BrowserContentViewController: NSViewController {
     override public func viewDidLayout() {
         super.viewDidLayout()
         fitListColumns()
+        keepFilmstripSelectionCentred()
+    }
+
+    /// The strip's width when the selection was last centred.
+    private var filmstripCentredWidth: CGFloat = 0
+
+    /// The strip got another width (the inspector opened or closed, the
+    /// window changed, the view switched to the filmstrip): the selected
+    /// cell is centred again, so it never ends up beyond the new edge.
+    private func keepFilmstripSelectionCentred() {
+        guard mode == .filmstrip else { filmstripCentredWidth = 0; return }
+        let width = gridScrollView.contentView.bounds.width
+        guard width > 0, abs(width - filmstripCentredWidth) > 0.5 else { return }
+        guard !isCarryingSelection else { return }
+        filmstripCentredWidth = width
+        // A select-all (or any several items without a known moving end)
+        // has no item to centre: the strip stays where it is.
+        let selected = collectionView.selectionIndexPaths
+        if selected.count > 1 && !collectionView.hasKeyMovingEnd { return }
+        if let ip = collectionView.keyRange?.lead ?? selected.min() {
+            scrollToCenter(ip, animated: false)
+        }
     }
 
     /// The list's text font (every text cell).
@@ -361,11 +418,23 @@ public final class BrowserContentViewController: NSViewController {
         tableView.sizeToFit()
     }
 
+    /// The filmstrip strip's fixed height. A height-only constraint lives on
+    /// the scroll view itself, so it survives `removeFromSuperview`; left
+    /// active, the grid kept the strip's 178 pt and the window shrank to
+    /// fit it (580 pt tall in ⌘2, 202 pt after ⌘1).
+    private var filmstripStripHeightConstraint: NSLayoutConstraint?
+
     private func layoutForMode() {
+        filmstripStripHeightConstraint?.isActive = false
+        filmstripStripHeightConstraint = nil
+        filmstripPreviewTask?.cancel()
+        filmstripPreview.removeFromSuperview()
         gridScrollView.removeFromSuperview()
         listScrollView.removeFromSuperview()
         emptyStateView.removeFromSuperview()
 
+        // Spec 24 §2: the hover look belongs to the filmstrip view's strip.
+        collectionView.hoverEnabled = mode == .filmstrip
         let activeScroll: NSView
         switch mode {
         case .grid, .filmstrip:
@@ -374,12 +443,14 @@ public final class BrowserContentViewController: NSViewController {
                 switch mode {
                 case .grid:
                     layout.scrollDirection = .vertical
+                    layout.sectionInset = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
                     layout.itemSize = NSSize(width: thumbnailPixelSize, height: thumbnailPixelSize + 40)
                     gridScrollView.hasHorizontalScroller = false
                     gridScrollView.hasVerticalScroller = true
                 case .filmstrip:
                     layout.scrollDirection = .horizontal
-                    layout.itemSize = NSSize(width: 120, height: 120)
+                    layout.sectionInset = NSEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
+                    layout.itemSize = Self.filmstripItemSize
                     gridScrollView.hasHorizontalScroller = true
                     gridScrollView.hasVerticalScroller = false
                 case .list:
@@ -391,14 +462,35 @@ public final class BrowserContentViewController: NSViewController {
             applyListColumnFits()
         }
 
+        applyWheelStep()
         view.addSubview(activeScroll)
         view.addSubview(emptyStateView)
         activeScroll.translatesAutoresizingMaskIntoConstraints = false
+        if mode == .filmstrip {
+            // Preview on top, one fixed-height strip below.
+            filmstripPreview.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(filmstripPreview, positioned: .below, relativeTo: activeScroll)
+            let stripHeight = activeScroll.heightAnchor.constraint(equalToConstant: Self.filmstripStripHeight)
+            filmstripStripHeightConstraint = stripHeight
+            NSLayoutConstraint.activate([
+                stripHeight,
+                filmstripPreview.topAnchor.constraint(equalTo: view.topAnchor),
+                filmstripPreview.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                filmstripPreview.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                filmstripPreview.bottomAnchor.constraint(equalTo: activeScroll.topAnchor),
+                activeScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                activeScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                activeScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                activeScroll.topAnchor.constraint(equalTo: view.topAnchor),
+                activeScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                activeScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                activeScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            ])
+        }
         NSLayoutConstraint.activate([
-            activeScroll.topAnchor.constraint(equalTo: view.topAnchor),
-            activeScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            activeScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            activeScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             emptyStateView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             emptyStateView.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
@@ -423,6 +515,10 @@ public final class BrowserContentViewController: NSViewController {
         restoreSelection(selected, anchor: anchor)
         isCarryingSelection = false
         if hadKeys { view.window?.makeFirstResponder(focusView) }
+        updateFilmstripPreview()
+        // The Filmstrip shows one photo large: with none selected it would
+        // be an empty box, so the first photo is selected.
+        selectFirstIfFilmstripIsEmpty()
         // The same items are selected: the inspector and the status bar
         // hear it only if some item could not be shown.
         if selectedItems.map(\.url) != selected { notifySelection() }
@@ -510,6 +606,7 @@ public final class BrowserContentViewController: NSViewController {
         // A re-list puts the selection back with `select(urls:)`; the
         // ⇧-arrow range comes back with it.
         carriedKeyRange = gridKeyRangeURLs
+        firstOnOpenPending = false
         allItems = BrowserPipeline.nameOrdered(items)
         cullingChangedSinceListing = []
         tagsChangedSinceListing = []
@@ -527,6 +624,8 @@ public final class BrowserContentViewController: NSViewController {
     // MARK: - Sort
 
     private func sortDidChange() {
+        // The user chose another order: the open-time selection stays.
+        firstOnOpenPending = false
         cancelSortRead()
         if sort.key.needsReading, !allItems.isEmpty,
            readValuesKey != sort.key || allItems.contains(where: { readValues[$0.group.primary] == nil }) {
@@ -592,11 +691,23 @@ public final class BrowserContentViewController: NSViewController {
     private func resortKeepingSelection() {
         let selected = selectedItems.map(\.url)
         recomputeVisibleItems()
+        // Only the automatic first photo is selected (nobody chose
+        // anything yet): after the re-sort the first photo ON SCREEN is the
+        // selected one, scrolled to, as it would be had the order been
+        // known at open.
+        if firstOnOpenPending, let first = visibleItems.first {
+            if selected != [first.url] || !selectionIsShown(first.url) {
+                selectingFirst = true
+                select(url: first.url)
+                selectingFirst = false
+            }
+            return
+        }
         guard !selected.isEmpty, select(urls: selected) else { return }
         switch mode {
         case .grid, .filmstrip:
             if let first = collectionView.selectionIndexPaths.min() {
-                collectionView.scrollToItems(at: [first], scrollPosition: .centeredVertically)
+                scrollToCenter(first, animated: false)
             }
         case .list:
             if let row = tableView.selectedRowIndexes.first { tableView.scrollRowToVisible(row) }
@@ -924,6 +1035,7 @@ public final class BrowserContentViewController: NSViewController {
         case .list:
             tableView.reloadData()
         }
+        if mode == .filmstrip { updateFilmstripPreview() }
     }
 
     private func reloadVisibleRow(index: Int) {
@@ -993,7 +1105,7 @@ public final class BrowserContentViewController: NSViewController {
         case .grid, .filmstrip:
             let ip = IndexPath(item: index, section: 0)
             collectionView.selectionIndexPaths = [ip]
-            collectionView.scrollToItems(at: [ip], scrollPosition: .centeredVertically)
+            scrollToCenter(ip, animated: false)
         case .list:
             tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             tableView.scrollRowToVisible(index)
@@ -1059,7 +1171,7 @@ public final class BrowserContentViewController: NSViewController {
         case .grid, .filmstrip:
             let ip = IndexPath(item: target, section: 0)
             collectionView.selectionIndexPaths = [ip]
-            collectionView.scrollToItems(at: [ip], scrollPosition: .centeredVertically)
+            scrollToCenter(ip, animated: false)
         case .list:
             tableView.selectRowIndexes(IndexSet(integer: target), byExtendingSelection: false)
             tableView.scrollRowToVisible(target)
@@ -1072,6 +1184,32 @@ public final class BrowserContentViewController: NSViewController {
         if mode == .grid {
             layout.itemSize = NSSize(width: thumbnailPixelSize, height: thumbnailPixelSize + 40)
             layout.invalidateLayout()
+        }
+        applyWheelStep()
+    }
+
+    /// One wheel notch moves a third of a grid row (a third of a cell in
+    /// the filmstrip). AppKit's default is 10 pt
+    /// per line, which is a sliver of a 150 pt thumbnail row and made a
+    /// wheel mouse crawl. Precise (trackpad) scrolling ignores these and
+    /// stays 1:1.
+    static func wheelStep(mode: BrowserViewMode, thumbnailSize: Int, rowHeight: CGFloat) -> CGFloat {
+        switch mode {
+        case .grid: return ((CGFloat(thumbnailSize) + 40 + 16) / 3).rounded()
+        case .filmstrip: return ((filmstripItemSize.width + 12) / 3).rounded()
+        case .list: return rowHeight / 3   // = AppKit's default 10 pt for a 28 pt row; unchanged
+        }
+    }
+
+    func applyWheelStep() {
+        let step = Self.wheelStep(mode: mode, thumbnailSize: thumbnailPixelSize, rowHeight: tableView.rowHeight)
+        switch mode {
+        case .grid:
+            gridScrollView.verticalLineScroll = step
+        case .filmstrip:
+            gridScrollView.horizontalLineScroll = step
+        case .list:
+            break   // the list's default (10 pt of a 28 pt row) is already a third of a row
         }
     }
 
@@ -1186,10 +1324,221 @@ public final class BrowserContentViewController: NSViewController {
 
     // MARK: - Helpers
 
-    private func notifySelection() {
+    /// Scrolls the item at `ip` to the middle of the view: down the grid,
+    /// along the filmstrip. The strip keeps the selected cell centred like
+    /// the viewer's filmstrip does; the move is animated except under
+    /// Reduce Motion.
+    private func scrollToCenter(_ ip: IndexPath, animated: Bool) {
+        switch mode {
+        case .grid:
+            collectionView.scrollToItems(at: [ip], scrollPosition: .centeredVertically)
+        case .filmstrip:
+            let clip = gridScrollView.contentView
+            guard let frame = collectionView.layoutAttributesForItem(at: ip)?.frame,
+                  clip.bounds.width > 0 else { return }
+            let maxX = max(0, collectionView.frame.width - clip.bounds.width)
+            let x = min(max(0, frame.midX - clip.bounds.width / 2), maxX)
+            let origin = NSPoint(x: x, y: clip.bounds.origin.y)
+            if animated, !ReduceMotion.isOn, view.window != nil {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.12
+                    clip.animator().setBoundsOrigin(origin)
+                }
+            } else {
+                clip.setBoundsOrigin(origin)
+            }
+            gridScrollView.reflectScrolledClipView(clip)
+        case .list:
+            break
+        }
+    }
+
+    /// Filmstrip: whatever moved the selection (arrow keys, a click near
+    /// the edge, a viewer), the selected cell ends up centred.
+    private func centerFilmstripSelection() {
+        guard mode == .filmstrip else { return }
+        let selected = collectionView.selectionIndexPaths
+        guard selected.count == 1, let ip = selected.first else { return }
+        scrollToCenter(ip, animated: true)
+    }
+
+    /// Filmstrip with photos but no selection: selects the first one (the
+    /// big picture and the inspector then show it instead of an empty box).
+    func selectFirstIfFilmstripIsEmpty() {
+        guard mode == .filmstrip, isViewLoaded, !visibleItems.isEmpty,
+              collectionView.selectionIndexPaths.isEmpty else { return }
+        collectionView.selectionIndexPaths = [IndexPath(item: 0, section: 0)]
+        collectionView.scrollToItems(at: [IndexPath(item: 0, section: 0)],
+                                     scrollPosition: .centeredHorizontally)
+        // A programmatic selection reports nothing to the delegate.
+        notifySelection()
+    }
+
+    /// A folder just opened: the first photo is selected in every view
+    /// (grid, filmstrip, list), so the arrow keys have a place to start.
+    /// Nothing happens with a selection already made or an empty folder.
+    func selectFirstOnOpen() {
+        guard isViewLoaded, let first = visibleItems.first else { return }
+        let none = mode == .list ? tableView.selectedRowIndexes.isEmpty
+                                 : collectionView.selectionIndexPaths.isEmpty
+        guard none else { return }
+        selectingFirst = true
+        select(url: first.url)
+        selectingFirst = false
+        // The order may still change (capture-date sort reads files after
+        // the first paint): until the user selects something, the re-sort
+        // moves the selection to the new first photo.
+        firstOnOpenPending = true
+    }
+
+    /// True from the automatic first selection of an opened folder until
+    /// the user selects anything (or picks another sort order).
+    private(set) var firstOnOpenPending = false
+    private var selectingFirst = false
+
+    private func selectionIsShown(_ url: URL) -> Bool {
+        selectedItems.count == 1 && selectedItems[0].url == url
+    }
+
+    /// A selection change is delivered at once, except an EMPTY one: AppKit
+    /// reports a step from one photo to the next as "deselected the old"
+    /// and then "selected the new", and the first call alone would blank the
+    /// big picture and flash the folder in the inspector for one frame (the
+    /// 0.2.2 blinking). An empty selection is therefore checked once more at
+    /// the end of the event; only if it is still empty is it delivered.
+    /// Only AppKit's own callbacks are held back this way: a clear made by
+    /// the code itself (a filter, Deselect All) has no second half and is
+    /// delivered at once.
+    private func notifySelection(fromAppKit: Bool = false) {
         guard !isCarryingSelection else { return }
+        if !selectingFirst { firstOnOpenPending = false }
+        if fromAppKit && selectedItems.isEmpty {
+            guard !emptyCheckPending else { return }
+            emptyCheckPending = true
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.emptyCheckPending = false
+                    if self.selectedItems.isEmpty && !self.isCarryingSelection { self.deliverSelection() }
+                }
+            }
+            return
+        }
+        deliverSelection()
+    }
+
+    private var emptyCheckPending = false
+
+    private func deliverSelection() {
+        // The RAW view belongs to one photo: another selection ends it.
+        if let shown = rawShown, selectedItems.count != 1 || selectedItems[0].url != shown.primary {
+            rawShown = nil
+        }
+        centerFilmstripSelection()
+        updateFilmstripPreview()
         delegate?.browserContentDidSelect(selectedItems)
     }
+
+    // MARK: - RAW <-> JPEG view switch (⌥R, the RAW chip)
+
+    /// The RAW file of the one selected pair while it is shown instead of
+    /// the JPEG; `primary` is the pair's listed file. View only: ratings,
+    /// flags, tags and Trash still act on the pair. Another selection ends it.
+    private(set) var rawShown: (primary: URL, item: BrowserItem)?
+
+    /// The one selected item when it is a pair: a display file with a RAW
+    /// companion (not a RAW-only photo).
+    var rawSwitchCandidate: BrowserItem? {
+        let selected = selectedItems
+        guard selected.count == 1, let item = selected.first,
+              !item.group.primaryIsRAW, item.group.rawURL != nil else { return nil }
+        return item
+    }
+
+    var isShowingRAW: Bool { rawShown != nil }
+
+    /// What the preview, inspector and status bar show: the selection, with
+    /// the RAW file in place of its pair while the RAW is shown. The RAW
+    /// takes the pair's rating, flag and tags (they apply to both files).
+    var shownItems: [BrowserItem] {
+        let selected = selectedItems
+        guard let shown = rawShown, selected.count == 1, selected[0].url == shown.primary else { return selected }
+        var raw = shown.item
+        raw.rating = selected[0].rating
+        raw.isFlagged = selected[0].isFlagged
+        raw.tags = selected[0].tags
+        raw.finderTags = selected[0].finderTags
+        return [raw]
+    }
+
+    /// Shows `raw` (the selected pair's RAW file) in place of the JPEG, or
+    /// the JPEG again with nil.
+    func showRAW(_ raw: BrowserItem?) {
+        if let raw, let pair = rawSwitchCandidate {
+            rawShown = (pair.url, raw)
+        } else {
+            rawShown = nil
+        }
+        updateFilmstripPreview()
+    }
+
+    /// A click on a cell's RAW chip: that photo is the selection, then the
+    /// switch.
+    func rawChipClicked(_ url: URL) {
+        if selectedItems.map(\.url) != [url] {
+            guard let index = visibleItems.firstIndex(where: { $0.url == url }),
+                  mode != .list else { return }
+            collectionView.selectionIndexPaths = [IndexPath(item: index, section: 0)]
+            notifySelection()
+        }
+        delegate?.browserContentRequestsRAWSwitch()
+    }
+
+    // MARK: - Filmstrip preview
+
+    /// Shows the first selected photo large above the strip (filmstrip mode
+    /// only). Cancelled and replaced on every selection change; a result for
+    /// a file that is no longer the first selected one is dropped. The
+    /// picture comes from the thumbnail cache (no Metal view in the Browser).
+    private func updateFilmstripPreview() {
+        guard mode == .filmstrip else { return }
+        let url = shownItems.first?.url
+        guard url != filmstripPreviewURL else { return }
+        filmstripPreviewTask?.cancel()
+        filmstripPreviewURL = url
+        guard let url else {
+            filmstripPreview.image = nil
+            return
+        }
+        let cache = services.thumbnailCache
+        filmstripPreviewTask = Task { @MainActor [weak self] in
+            let image = try? await cache.thumbnail(
+                for: FileImageSource(url: url), maxPixelSize: Self.filmstripPreviewPixels)
+            guard !Task.isCancelled, let self, self.filmstripPreviewURL == url else { return }
+            // The old picture stays until this one is decoded; then one swap.
+            // An unreadable file clears it (never the last photo's picture).
+            self.filmstripPreview.image = image.map {
+                NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
+            }
+            self.prefetchFilmstripPreviews(around: url)
+        }
+    }
+
+    /// The next and the previous photo's big picture, decoded ahead
+    /// (utility priority), so a step on the arrow keys swaps at once.
+    private func prefetchFilmstripPreviews(around url: URL) {
+        guard let index = visibleItems.firstIndex(where: { $0.url == url }) else { return }
+        let near = [index + 1, index - 1].filter { visibleItems.indices.contains($0) }
+        let sources: [any ImageSource] = near.map { visibleItems[$0].imageSource }
+        let cache = services.thumbnailCache
+        let size = Self.filmstripPreviewPixels
+        Task.detached(priority: .utility) { await cache.prefetch(sources, maxPixelSize: size) }
+    }
+
+    /// Test seams.
+    var filmstripPreviewForTesting: NSImageView { filmstripPreview }
+    var filmstripStripFrameForTesting: NSRect { view.layoutSubtreeIfNeeded(); return gridScrollView.frame }
+    var filmstripPreviewFrameForTesting: NSRect { view.layoutSubtreeIfNeeded(); return filmstripPreview.frame }
 }
 
 // MARK: - NSCollectionViewDataSource
@@ -1210,7 +1559,9 @@ extension BrowserContentViewController: NSCollectionViewDataSource {
               visibleItems.indices.contains(indexPath.item) else { return raw }
         let model = visibleItems[indexPath.item]
         let thumbSize = mode == .filmstrip ? 120 : thumbnailPixelSize
+        item.showsNameTooltip = mode == .filmstrip
         item.configure(with: model, pixelSize: thumbSize, cache: services.thumbnailCache)
+        item.onRAWChip = { [weak self] in self?.rawChipClicked(model.url) }
         configureCount += 1
         madeCells.add(item)
         return item
@@ -1223,12 +1574,12 @@ extension BrowserContentViewController: NSCollectionViewDelegate, NSCollectionVi
 
     public func collectionView(_ collectionView: NSCollectionView,
                                didSelectItemsAt indexPaths: Set<IndexPath>) {
-        notifySelection()
+        notifySelection(fromAppKit: true)
     }
 
     public func collectionView(_ collectionView: NSCollectionView,
                                didDeselectItemsAt indexPaths: Set<IndexPath>) {
-        notifySelection()
+        notifySelection(fromAppKit: true)
     }
 
     // One item per group, the primary's file URL plus the
@@ -1376,6 +1727,14 @@ extension BrowserContentViewController: NSTableViewDataSource, NSTableViewDelega
         sort = BrowserSort(key: newKey, direction: first.ascending ? .ascending : .descending)
     }
 
+    /// Asked while the user clicks a row (also the selected one); code
+    /// that selects rows is not asked. So a click ends the automatic
+    /// first-photo selection, as in the grid (`onUserMouseDown`).
+    public func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        firstOnOpenPending = false
+        return true
+    }
+
     public func tableViewSelectionDidChange(_ notification: Notification) {
         notifySelection()
     }
@@ -1478,4 +1837,23 @@ final class BrowserEmptyState: NSView {
     var buttonTitle: String? { button.isHidden ? nil : button.title }
 
     @objc private func buttonPressed(_ sender: Any?) { action?() }
+}
+
+
+/// The large picture above the Browser's filmstrip strip.
+@MainActor
+final class FilmstripPreviewView: NSImageView {
+    init() {
+        super.init(frame: .zero)
+        imageScaling = .scaleProportionallyUpOrDown
+        imageAlignment = .alignCenter
+        isEditable = false
+        setAccessibilityLabel("Selected photo preview")
+        setAccessibilityElement(true)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Never grows the layout with the picture's pixel size.
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
 }

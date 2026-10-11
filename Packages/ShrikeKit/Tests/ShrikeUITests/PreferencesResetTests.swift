@@ -100,13 +100,13 @@ final class PreferencesResetTests: XCTestCase {
     @MainActor
     func testAdvancedReset_clearsViewerTogglesOnly() {
         Prefs.viewerBackgroundAlwaysBlack = false
-        Prefs.viewerPositionOverlayAutoHides = true
+        Prefs.viewerPositionOverlayAutoHides = false   // poison (default is on)
         Prefs.thumbnailSizePt = 256  // poison
 
         PreferencesTab.advanced.resetToDefaults()
 
         XCTAssertFalse(Prefs.viewerBackgroundAlwaysBlack)   // default off
-        XCTAssertFalse(Prefs.viewerPositionOverlayAutoHides)
+        XCTAssertTrue(Prefs.viewerPositionOverlayAutoHides)   // default on
         XCTAssertEqual(Prefs.thumbnailSizePt, 256,
                        "Advanced reset must not touch Thumbnails keys")
     }

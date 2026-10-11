@@ -82,6 +82,7 @@ final class ViewerContextMenu: NSObject, NSMenuDelegate {
         let editors = ExternalEditorsSubmenu(target: window)
         self.editors = editors
         menu.addItem(editors.makeParentItem())
+        add(.toggleRAWFile, target: window)
         add(.revealInFinder, target: window)
         add(.showInBrowser, target: window)
         menu.addItem(share.makeParentItem())

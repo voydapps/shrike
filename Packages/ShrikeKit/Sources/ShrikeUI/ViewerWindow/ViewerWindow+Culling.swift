@@ -143,12 +143,21 @@ extension ViewerWindow {
         guard let group = list[index] else { return PillMarks() }
         let record = cullingRecords[group.primary]
         let extras = fileBadges[group.primary]
+        // A pair (primary + RAW companion) gets the two-part chip; which
+        // part is lit follows the source that is (about to be) shown.
+        let isPair = !group.primaryIsRAW && group.rawURL != nil
+        var rawShown = false
+        if isPair, let file = intent.sourceAt(index) as? FileImageSource, let raw = group.rawURL {
+            rawShown = GroupList.canonical(file.url) == GroupList.canonical(raw)
+        }
         return PillMarks(
             rating: record?.rating ?? 0,
             flagged: record?.flagged ?? false,
             hasRAW: group.hasRAW,
             tags: extras?.tags ?? [],
-            edited: extras?.edited ?? false
+            edited: extras?.edited ?? false,
+            pairKind: isPair ? Self.chipKindName(of: group.primary) : nil,
+            rawShown: rawShown
         )
     }
 
@@ -167,7 +176,7 @@ extension ViewerWindow {
     /// The "Also:" line and the Edits row of the displayed file.
     func refreshInspectorFileState() {
         let panel = contentRoot.inspectorPanel
-        panel.updateAlsoLine(displayedItem.flatMap { PairCopy.alsoLine(for: $0.group) })
+        panel.updateAlsoLine(displayedItem.flatMap { PairCopy.alsoLine(for: $0.group, shownURL: $0.shownURL) })
         guard isDisplayedEdited, let url = displayedItem?.group.primary,
               let store = services.backupStore else {
             panel.updateOriginalDate(nil)

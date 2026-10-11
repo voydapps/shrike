@@ -84,6 +84,7 @@ extension ViewerWindow: ViewerToolbarHost {
         hider.onRailIdle = { [weak self] in self?.contentRoot.railIdleFired() }
         contentRoot.onRailShownFirst = { [weak hider] in hider?.startRailClock() }
         autoHider = hider
+        applyTitlebarLook()
         contentRoot.addTrackingArea(NSTrackingArea(
             rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
             owner: hider, userInfo: nil))
@@ -93,11 +94,25 @@ extension ViewerWindow: ViewerToolbarHost {
         installScrimIfNeeded()
     }
 
+    /// User test 5: while the titlebar auto-hides, the window must not paint
+    /// its own titlebar backdrop or separator under it. Hiding the titlebar
+    /// container took the title away but left a flat grey band at the top of
+    /// the window. The photo canvas already runs to the top edge
+    /// (`imageViewTopToSelf`); with a transparent titlebar the canvas (and
+    /// the black window background) is all that shows there. With auto-hide
+    /// off the titlebar is always up and keeps the system look.
+    func applyTitlebarLook() {
+        let autoHides = autoHider?.isActive == true
+        titlebarAppearsTransparent = autoHides
+        titlebarSeparatorStyle = autoHides ? .none : .automatic
+    }
+
     /// The pref changed (Settings › General): apply it and re-fit once.
     @objc nonisolated func autoHidePrefChanged(_ note: Notification) {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.autoHider?.isEnabled = Prefs.viewerToolbarAutoHide
+            self.applyTitlebarLook()
             self.installScrimIfNeeded()
             // The fit area follows the pref.
             self.contentRoot.needsLayout = true
@@ -135,10 +150,9 @@ extension ViewerWindow: ViewerToolbarHost {
         return true
     }
 
-    // MARK: Titlebar scrim (macOS 26 only)
+    // MARK: Titlebar scrim (every macOS: the titlebar is transparent while auto-hide is on)
 
     func installScrimIfNeeded() {
-        guard #available(macOS 26, *) else { return }
         let wanted = Prefs.viewerToolbarAutoHide && autoHider?.isActive == true
         if !wanted {
             titlebarScrim?.removeFromSuperview()

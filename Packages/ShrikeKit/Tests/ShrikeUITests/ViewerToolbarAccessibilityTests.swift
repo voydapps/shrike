@@ -79,14 +79,19 @@ final class ViewerToolbarAccessibilityTests: XCTestCase {
         return cond()
     }
 
-    /// An 800 × 600 offscreen viewer with a photo on screen. The toolbar
+    /// An 1100 × 600 offscreen viewer (wide enough for the 14 default items) with a photo on screen. The toolbar
     /// stops autosaving, so items a test adds never reach the next test.
     private func makeViewer() async throws -> (ViewerWindow, ViewerWindowToolbar) {
         let url = try writeJPEG("p.jpg")
         let window = ViewerWindow(imageSources: [FileImageSource(url: url)], startIndex: 0, services: try services())
-        window.setContentSize(NSSize(width: 800, height: 600))
+        window.setContentSize(NSSize(width: 1100, height: 600))
         let bar = try XCTUnwrap(window.toolbarController)
         bar.toolbar.autosavesConfiguration = false
+        // "Shown" is part of the toolbar's autosaved state in the xctest
+        // process's defaults, like the item set below. A hidden bar has no
+        // views and no accessibility elements, so run alone every lookup
+        // failed (36 failures). Do not depend on what an earlier run saved.
+        bar.toolbar.isVisible = true
         // AppKit loads the toolbar's autosaved item set from
         // the xctest process's standard defaults, which outlive a run.
         // Some runs had saved a set that pushed Zoom into the overflow
@@ -106,6 +111,7 @@ final class ViewerToolbarAccessibilityTests: XCTestCase {
     private func refresh(_ window: NSWindow, _ bar: ViewerWindowToolbar) {
         bar.validate()
         window.contentView?.superview?.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
     }
 
     /// Waits until the inspector's slide has finished: the canvas width has
@@ -179,27 +185,27 @@ final class ViewerToolbarAccessibilityTests: XCTestCase {
 
         // Optional toggles from the Customize palette.
         let count = bar.toolbar.items.count
-        bar.toolbar.insertItem(withItemIdentifier: ViewerWindowToolbar.ID.histogram, at: count)
-        bar.toolbar.insertItem(withItemIdentifier: ViewerWindowToolbar.ID.filmstrip, at: count + 1)
-        bar.toolbar.insertItem(withItemIdentifier: ViewerWindowToolbar.ID.fullScreen, at: count + 2)
-        defer { for _ in 0..<3 { bar.toolbar.removeItem(at: count) } }
+        // (Histogram is a default item since spec 24 §3.1.)
+        bar.toolbar.insertItem(withItemIdentifier: ViewerWindowToolbar.ID.filmstrip, at: count)
+        // (Full Screen is a default item since the v3 set.)
+        defer { bar.toolbar.removeItem(at: count) }
         refresh(window, bar)
-        XCTAssertEqual(values("Histogram", in: window), "Off")
+        XCTAssertEqual(histogramValue(bar), "Off")
         XCTAssertEqual(values("Filmstrip", in: window), "Off")
-        XCTAssertEqual(values("Full Screen", in: window), "Off")
+        XCTAssertEqual(values("Enter Full Screen", in: window), "Off")
 
         window.dispatch(.toggleHistogram)
         window.dispatch(.toggleFilmstrip)
         refresh(window, bar)
         XCTAssertTrue(window.contentRootForTesting.isHistogramShown)
-        XCTAssertEqual(values("Histogram", in: window), "On")
+        XCTAssertEqual(histogramValue(bar), "On")
         XCTAssertEqual(values("Filmstrip", in: window), "On")
-        XCTAssertEqual(values("Full Screen", in: window), "Off")
+        XCTAssertEqual(values("Enter Full Screen", in: window), "Off")
 
         window.dispatch(.toggleHistogram)
         window.dispatch(.toggleFilmstrip)
         refresh(window, bar)
-        XCTAssertEqual(values("Histogram", in: window), "Off")
+        XCTAssertEqual(histogramValue(bar), "Off")
         XCTAssertEqual(values("Filmstrip", in: window), "Off")
     }
 
@@ -245,35 +251,61 @@ final class ViewerToolbarAccessibilityTests: XCTestCase {
         XCTAssertTrue(overflow.submenu === bar.ratingOverflowMenu)
     }
 
+    /// Opening a viewer must not store the position-pill pref. The pill's
+    /// `autoHides` setter writes the pref; a window that pushed its sampled
+    /// value into it saved the default as the user's choice on every open,
+    /// so the default could never change for existing installs.
+    func testOpeningAViewerDoesNotStoreThePositionPillPref() async throws {
+        Prefs.resetAll()
+        let (window, _) = try await makeViewer()
+        defer { window.close() }
+        XCTAssertNil(ShrikeDefaults.store.object(forKey: Prefs.Key.viewerPositionOverlayAutoHides),
+                     "nothing stored: the default stays the default")
+        XCTAssertTrue(Prefs.viewerPositionOverlayAutoHides)
+    }
+
     /// Never two histograms. With the inspector (which has its
     /// own) open, the floating one hides; it returns when the inspector
     /// hides. The toggle reports the setting throughout.
-    func testFloatingHistogramStepsAsideForTheInspector() async throws {
+    /// User test 6/7 and spec 24 §3.1: one setting hides every histogram,
+    /// the floating one and the inspector's section, in a window. The
+    /// Histogram button is a default item now.
+    /// The Histogram button's AX value. (It is the first item to overflow
+    /// in a narrow window, so it is read from the item, not the AX tree.)
+    private func histogramValue(_ bar: ViewerWindowToolbar) -> String? {
+        let item = bar.item(ViewerWindowToolbar.ID.histogram)
+        return (item?.view as? ToolbarToggleButton)?.cell?.accessibilityValue() as? String
+    }
+
+    func testOneSettingHidesTheFloatingAndTheInspectorHistogram() async throws {
+        Prefs.viewerHistogramVisible = false
         let (window, bar) = try await makeViewer()
         defer { window.close() }
         let content = window.contentRootForTesting
-        let count = bar.toolbar.items.count
-        bar.toolbar.insertItem(withItemIdentifier: ViewerWindowToolbar.ID.histogram, at: count)
-        defer { bar.toolbar.removeItem(at: count) }
+        XCTAssertTrue(bar.toolbar.items.contains { $0.itemIdentifier == ViewerWindowToolbar.ID.histogram })
+        XCTAssertFalse(content.histogramOverlayVisibleForTesting, "off by default")
+        XCTAssertFalse(content.inspectorPanel.histogramSectionShownForTesting)
+        XCTAssertEqual(histogramValue(bar), "Off")
 
         window.dispatch(.toggleHistogram)
         refresh(window, bar)
-        XCTAssertTrue(content.histogramOverlayVisibleForTesting, "shown with no inspector")
+        XCTAssertTrue(content.histogramOverlayVisibleForTesting, "shown")
+        XCTAssertTrue(content.inspectorPanel.histogramSectionShownForTesting)
+        XCTAssertEqual(histogramValue(bar), "On")
 
         window.dispatch(.toggleInspector)
         await waitForInspectorSlide(window, bar)
         XCTAssertTrue(window.splitController?.isInspectorShown ?? false)
-        XCTAssertFalse(content.histogramOverlayVisibleForTesting, "the inspector has its own histogram")
-        XCTAssertEqual(values("Histogram", in: window), "On", "the setting is still on")
-        XCTAssertTrue(content.isHistogramShown)
+        XCTAssertTrue(content.histogramOverlayVisibleForTesting, "a window shows both while on")
 
+        window.dispatch(.toggleHistogram)
+        refresh(window, bar)
+        XCTAssertFalse(content.inspectorPanel.histogramSectionShownForTesting, "the inspector section goes too")
+        XCTAssertFalse(content.histogramOverlayVisibleForTesting)
+        XCTAssertEqual(histogramValue(bar), "Off")
         window.dispatch(.toggleInspector)
         await waitForInspectorSlide(window, bar)
-        // The asserted condition itself, in case the slide's first frame was
-        // slower than the 100 ms the width check waits for.
-        _ = await waitUntil(8) { refresh(window, bar); return content.histogramOverlayVisibleForTesting }
-        XCTAssertTrue(content.histogramOverlayVisibleForTesting, "back when the inspector hides")
-        XCTAssertEqual(values("Histogram", in: window), "On")
+        Prefs.viewerHistogramVisible = false
     }
 
     /// The items keep a text form for the overflow menu, sending the same

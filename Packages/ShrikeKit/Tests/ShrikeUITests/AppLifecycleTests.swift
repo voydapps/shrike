@@ -126,6 +126,52 @@ final class WelcomeWindowTests: XCTestCase {
         XCTAssertEqual(controller.emptyLabel.stringValue, "No recent items")
     }
 
+    func testDeadRecentsAreOnlyThoseWhoseDiskIsStillThere() {
+        let gone: (String) -> Bool = { _ in false }
+        XCTAssertTrue(AppCommands.isDeadRecent(URL(fileURLWithPath: "/Users/x/Pictures/Gone"), fileExists: gone),
+                      "a deleted folder on the startup disk")
+        let diskUp: (String) -> Bool = { $0 == "/Volumes/Photos" }
+        XCTAssertTrue(AppCommands.isDeadRecent(URL(fileURLWithPath: "/Volumes/Photos/Trip"), fileExists: diskUp),
+                      "a deleted folder on a connected disk")
+        XCTAssertFalse(AppCommands.isDeadRecent(URL(fileURLWithPath: "/Volumes/Photos/Trip"), fileExists: gone),
+                       "the disk is unplugged: the item is only dimmed")
+        XCTAssertFalse(AppCommands.isDeadRecent(URL(fileURLWithPath: "/Users/x/Here"), fileExists: { _ in true }))
+    }
+
+    func testWelcomeSkipsAndPrunesRecentsWhoseFolderIsGone() async throws {
+        let live = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-recent-live-\(UUID().uuidString)")
+        let deleted = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-recent-gone-\(UUID().uuidString)")
+        let unplugged = URL(fileURLWithPath: "/Volumes/ShrikeNotMounted-\(UUID().uuidString)/Trip")
+        try FileManager.default.createDirectory(at: live, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: live) }
+        var forgotten: [URL] = []
+        let controller = WelcomeWindowController(
+            recentURLs: { [live, deleted, unplugged] },
+            forgetRecents: { forgotten += $0 })
+        defer { controller.close() }
+        controller.reloadRecents()
+        let settled = await waitFor { controller.shownRecents == [live, unplugged] }
+        XCTAssertTrue(settled, "the deleted folder left the list: \(controller.shownRecents)")
+        XCTAssertEqual(forgotten, [deleted], "and Open Recent forgets it")
+        XCTAssertEqual(controller.recentRows.count, 2)
+        // The unplugged disk's item stays, dimmed, once the check has run.
+        let dimmed = await waitFor { controller.missingRecents.contains(unplugged) }
+        XCTAssertTrue(dimmed)
+        XCTAssertEqual(controller.recentRows[1].alphaValue, 0.5, accuracy: 0.001)
+        // A later reload does not bring the pruned item back.
+        controller.reloadRecents()
+        XCTAssertEqual(controller.shownRecents, [live, unplugged])
+    }
+
+    private func waitFor(_ timeout: TimeInterval = 3, _ cond: @MainActor () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if cond() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return cond()
+    }
+
     func testRecentRowsOpenAndMissingItemsExplain() {
         let present = FileManager.default.temporaryDirectory
         let missing = URL(fileURLWithPath: "/nonexistent-shrike-\(UUID().uuidString)/Trip")

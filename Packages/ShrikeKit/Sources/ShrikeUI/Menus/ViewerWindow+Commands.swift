@@ -42,6 +42,9 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
                 menuItem.title = title
                 menuItem.state = .off
             }
+            // Spec 24: these two exist only when they can apply.
+            if command == .unpinAllPanels { menuItem.isHidden = contentRoot.windowMode != .fullscreen }
+            if command == .toggleRAWFile { menuItem.isHidden = !hasRAWCompanionShown }
             return canPerform(command)
         case NSSelectorFromString("undo:"):
             if contentRoot.isEditModeActive {
@@ -65,8 +68,10 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
 
     // MARK: ShrikeCommandTarget
 
+    /// The file on screen (the RAW while it is shown): Reveal, Copy Path,
+    /// Open With follow it.
     public var commandFileURLs: [URL] {
-        displayedItem.map { [$0.group.primary] } ?? []
+        displayedItem.map { [$0.shownURL] } ?? []
     }
 
     /// Share ▸: the photo on screen with its RAW sibling.
@@ -97,20 +102,24 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         case .revealInFinder, .copy, .copyPath, .share:
             return item != nil
         case .rotateLeft, .rotateRight, .rotate180:
-            return hasPixels
-        case .flipHorizontal, .flipVertical, .loupe, .editImage:
+            return hasPixels && !(item?.isRAWShown ?? false)
+        case .flipHorizontal, .flipVertical:
+            return hasPixels && !edit && !(item?.isRAWShown ?? false)
+        case .loupe:
             return hasPixels && !edit
+        case .editImage:
+            // RAW is never written (spec 24 §4.5): edit the JPEG instead.
+            return hasPixels && !edit && !(item?.isRAWShown ?? false)
         case .zoomIn:
             return hasPixels && contentRoot.imageView.canZoomIn
         case .zoomOut:
             return hasPixels && contentRoot.imageView.canZoomOut
-        case .zoomToFit, .actualSize, .zoom200, .zoom300,
-             .zoomBestFit, .fitWidth, .fitHeight,
-             .editCrop, .editRotate, .editResize, .editColor:
+        case .zoomToFit, .actualSize, .zoom200, .zoom300, .zoomBestFit, .fitWidth, .fitHeight:
             return hasPixels
-        case .levels, .autoContrast, .autoColor:
-            // Viewer only; they land on Levels.
-            return hasPixels
+        case .editCrop, .editRotate, .editResize, .editColor,
+             .levels, .autoContrast, .autoColor:
+            // The edit tools never open on a RAW view (spec 24 §4.5).
+            return hasPixels && !(item?.isRAWShown ?? false)
         case .resetEdits:
             return edit && contentRoot.editModeController.hasPendingEdits
         case .toggleFilmstrip:
@@ -118,6 +127,10 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         case .toggleInspector, .toggleHistogram, .toggleEditRail,
              .toggleFullScreen, .showInBrowser, .goToFolder:
             return true
+        case .unpinAllPanels:
+            return contentRoot.windowMode == .fullscreen && contentRoot.hasPinnedPanels
+        case .toggleRAWFile:
+            return canToggleRAWFile
         case .nextImage:
             return item.map { $0.listIndex < last } ?? false
         case .previousImage, .firstImage:
@@ -234,6 +247,7 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         case .toggleEditRail: return contentRoot.isEditRailShown ? "Hide Edit Rail" : "Show Edit Rail"
         case .toggleFilmstrip: return contentRoot.isFilmstripShown ? "Hide Filmstrip" : "Show Filmstrip"
         case .toggleHistogram: return contentRoot.isHistogramShown ? "Hide Histogram" : "Show Histogram"
+        case .toggleRAWFile: return rawSwitchMenuTitle
         default: return nil
         }
     }

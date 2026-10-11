@@ -41,14 +41,61 @@ final class WindowedViewerChromeTests: XCTestCase {
                             startIndex: 0, services: .makeDefault())
     }
 
-    // 11 default items in order; window setup; subtitle rules.
+    // User test 5: with the titlebar auto-hidden there is no empty band; the
+    // photo canvas runs to the top of the window and the window paints no
+    // titlebar backdrop of its own.
+    func testCanvasExtendsUnderAHiddenTitlebar() throws {
+        let window = try makeViewer()
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        let root = window.contentRootForTesting
+        root.layoutSubtreeIfNeeded()
+        let hider = try XCTUnwrap(window.autoHider)
+        XCTAssertTrue(hider.isActive)
+        hider.hideForTesting()
+        root.layoutSubtreeIfNeeded()
+        XCTAssertTrue(window.titlebarAppearsTransparent, "no system titlebar backdrop while auto-hide is on")
+        XCTAssertEqual(window.titlebarSeparatorStyle, .none)
+        let canvas = root.imageView
+        XCTAssertEqual(canvas.frame.maxY, root.bounds.maxY, accuracy: 0.5, "the canvas reaches the top edge")
+        XCTAssertEqual(window.backgroundColor, .black)
+    }
+
+    /// The Full Screen button: last item before the Inspector, the
+    /// system symbol, the label and tooltip "Enter Full Screen" with the
+    /// live shortcut, and it sends the existing full-screen command.
+    func testTheFullScreenButtonIsTheLastItemBeforeTheInspector() throws {
+        let window = try makeViewer()
+        defer { window.close() }
+        let bar = try XCTUnwrap(window.toolbarController)
+        let ids = bar.toolbar.items.map(\.itemIdentifier)
+        let at = try XCTUnwrap(ids.firstIndex(of: ViewerWindowToolbar.ID.fullScreen))
+        XCTAssertEqual(ids[at + 1], .inspectorTrackingSeparator)
+        XCTAssertEqual(ids[at + 2], ViewerWindowToolbar.ID.inspector)
+        let item = try XCTUnwrap(bar.item(ViewerWindowToolbar.ID.fullScreen))
+        let button = try XCTUnwrap(item.view as? ToolbarToggleButton)
+        XCTAssertEqual(button.command, .toggleFullScreen)
+        XCTAssertEqual(button.accessibilityLabel(), "Enter Full Screen")
+        XCTAssertEqual(item.label, "Enter Full Screen")
+        XCTAssertEqual(item.toolTip, ShortcutTable.tooltip(for: .toggleFullScreen, context: .viewer))
+        XCTAssertTrue(item.toolTip?.hasPrefix("Enter Full Screen") ?? false, item.toolTip ?? "nil")
+        XCTAssertTrue(item.toolTip?.contains("⌃⌘F") ?? false, "the live shortcut: \(item.toolTip ?? "nil")")
+        XCTAssertEqual(button.toolTip, item.toolTip)
+        XCTAssertFalse(ViewerWindowToolbar.optionalButtons.contains { $0.0 == ViewerWindowToolbar.ID.fullScreen },
+                       "listed once in the Customize palette")
+        let allowed = bar.toolbarAllowedItemIdentifiers(bar.toolbar)
+        XCTAssertEqual(allowed.filter { $0 == ViewerWindowToolbar.ID.fullScreen }.count, 1)
+    }
+
+    // 14 default items in order; window setup; subtitle rules.
     func testToolbarWindowSetupAndSubtitle() throws {
         let window = try makeViewer()
         defer { window.close() }
-        XCTAssertEqual(window.toolbar?.identifier, "shrike.viewer.toolbar")
-        XCTAssertEqual(ViewerWindowToolbar.defaultItems.count, 11)
+        XCTAssertEqual(window.toolbar?.identifier, "shrike.viewer.toolbar.v3")
+        XCTAssertEqual(ViewerWindowToolbar.defaultItems.count, 14)
         XCTAssertEqual(window.toolbar?.items.map(\.itemIdentifier), ViewerWindowToolbar.defaultItems)
-        XCTAssertFalse(window.titlebarAppearsTransparent)
+        // Auto-hide is on by default: no titlebar backdrop under a hidden titlebar (user test 5).
+        XCTAssertEqual(window.titlebarAppearsTransparent, window.autoHider?.isActive == true)
         XCTAssertEqual(window.titleVisibility, .visible)
         XCTAssertEqual(window.toolbarStyle, .unified)
         XCTAssertEqual(window.tabbingMode, .disallowed)

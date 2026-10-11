@@ -120,14 +120,50 @@ final class ToolbarItemLookTests: XCTestCase {
         bar.autosavesConfiguration = false
         bar.delegate = delegate
         w.toolbar = bar
-        // The toolbar sizes its items on the first display pass; settle it.
-        for _ in 0..<3 {
-            w.contentView?.superview?.layoutSubtreeIfNeeded()
-            w.displayIfNeeded()
-        }
         window = w
         self.delegate = delegate
+        settle(bar)
         return bar
+    }
+
+    /// The toolbar sizes and draws its items over several run-loop turns
+    /// (one display pass was not always enough, so the glyph pixels of a
+    /// late item could differ). Lay out, draw and spin the run loop until
+    /// every item's control keeps the same frame and the same drawn ink
+    /// for three passes in a row (at most 200 passes, 2 s).
+    private func settle(_ bar: NSToolbar) {
+        guard let w = window else { return }
+        var last: [String] = []
+        var stable = 0
+        for _ in 0..<200 {
+            w.contentView?.superview?.layoutSubtreeIfNeeded()
+            w.displayIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            let now: [String] = bar.items.map { item in
+                guard let c = controlIfReady(bar, item) else { return "\(item.itemIdentifier.rawValue) none" }
+                let drawn = ink(c).map { "\($0.box) \(Int($0.coverage * 100))" } ?? "nil"
+                return "\(item.itemIdentifier.rawValue) \(c.frame) \(drawn)"
+            }
+            stable = now == last ? stable + 1 : 0
+            last = now
+            if stable >= 3 { return }
+        }
+    }
+
+    /// `control(_:_:)` without the failures, for polling.
+    private func controlIfReady(_ bar: NSToolbar, _ item: NSToolbarItem) -> NSControl? {
+        if let view = item.view as? NSControl { return view }
+        guard let root = window?.contentView?.superview else { return nil }
+        func find(_ v: NSView) -> NSControl? {
+            if String(describing: type(of: v)) == "NSToolbarItemViewer",
+               v.responds(to: NSSelectorFromString("item")),
+               (v.value(forKey: "item") as? NSToolbarItem) === item {
+                return v.subviews.compactMap { $0 as? NSControl }.first
+            }
+            for sub in v.subviews { if let hit = find(sub) { return hit } }
+            return nil
+        }
+        return find(root)
     }
 
     /// The control AppKit shows for `id` (a system item's own button, or

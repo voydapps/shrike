@@ -86,11 +86,15 @@ extension ViewerWindow {
         guard let group = list[index] else { return }
         // A late paint from a list that has since changed must not label
         // the screen with the wrong file.
-        if let file = intent.sourceAt(index) as? FileImageSource,
-           GroupList.canonical(file.url) != GroupList.canonical(group.primary) {
-            return
+        // The source that painted is the shown file: the primary, or (spec 24
+        // §4) the group's RAW after ⌥R.
+        var shown = group.primary
+        if let file = intent.sourceAt(index) as? FileImageSource {
+            let painted = GroupList.canonical(file.url)
+            guard let match = group.allURLs.first(where: { GroupList.canonical($0) == painted }) else { return }
+            if group.rawURL == match, match != group.primary { shown = match }
         }
-        let item = DisplayedItem(group: group, listIndex: index, generation: list.generation)
+        let item = DisplayedItem(group: group, listIndex: index, generation: list.generation, shownURL: shown)
         guard item != displayedItem else { return }
         let newFile = displayedItem?.group.primary != group.primary
         if newFile {
@@ -100,7 +104,16 @@ extension ViewerWindow {
             flushPendingOrientation()
             contentRoot.imageView.resetOrientation()
         }
+        let previousShown = displayedItem?.shownURL
         displayedItem = item
+        // The edit tools are off while the RAW is shown (spec 24 §4.5).
+        contentRoot.railToolsBlocked = item.isRAWShown
+        if displayedItem != nil, item.shownURL != previousShown {
+            // The inspector reads the shown file (spec 24 §4.5): the RAW's
+            // name, size, dimensions, type and EXIF while it is on screen.
+            contentRoot.setCurrentURL(item.shownURL)
+            refreshInspectorFileState()
+        }
         // The LIVE badge follows the group; navigation stops
         // and frees any playing movie.
         contentRoot.setLivePhotoMovie(group.livePhotoMovie, newPhoto: newFile)
@@ -117,8 +130,8 @@ extension ViewerWindow {
             representedURL = nil
             return
         }
-        let url = item.group.primary
-        title = item.group.displayName
+        let url = item.shownURL
+        title = url.lastPathComponent
         representedURL = url.isFileURL ? url : nil
         if contentRoot.isEditModeActive {
             subtitle = contentRoot.editModeController.chromeState.subtitle
@@ -163,6 +176,7 @@ extension ViewerWindow {
 
     /// Pushes the current `list` into the decode queue and shows `index`.
     func reloadList(showing index: Int) {
+        // A new list shows every primary again (spec 24 §4.1: the RAW view resets).
         let sources: [any ImageSource] = list.groups.map { FileImageSource(url: $0.primary) }
         guard !sources.isEmpty else {
             displayedItem = nil

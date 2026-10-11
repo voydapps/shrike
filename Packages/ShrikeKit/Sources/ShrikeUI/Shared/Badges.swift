@@ -114,6 +114,43 @@ public enum Badges {
         }
     }
 
+    /// Spec 24 §4.3: the two-part chip `[JPG | RAW]` of a pair. 9 pt
+    /// semibold, 1 pt stroke, corner 3, a 1 pt divider; the part that is on
+    /// screen is `white` on a 20 % white fill, the other `secondary`.
+    public static func pairChipImage(kind: String, rawShown: Bool, fontSize: CGFloat = 9) -> NSImage {
+        let font = NSFont.systemFont(ofSize: fontSize, weight: .semibold)
+        let lit = NSColor.white
+        let dim = NSColor.white.withAlphaComponent(0.55)
+        func text(_ s: String, _ color: NSColor) -> NSAttributedString {
+            NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color])
+        }
+        let left = text(kind, rawShown ? dim : lit)
+        let right = text("RAW", rawShown ? lit : dim)
+        let h = ceil(max(left.size().height, right.size().height) + 2)
+        let leftW = ceil(left.size().width + 6), rightW = ceil(right.size().width + 6)
+        let size = NSSize(width: leftW + rightW + 1, height: h)
+        return NSImage(size: size, flipped: false) { rect in
+            let outline = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 3, yRadius: 3)
+            // The lit part's fill, clipped to the rounded outline.
+            NSGraphicsContext.saveGraphicsState()
+            outline.addClip()
+            lit.withAlphaComponent(0.20).setFill()
+            let fill = rawShown
+                ? NSRect(x: leftW + 1, y: 0, width: rightW, height: h)
+                : NSRect(x: 0, y: 0, width: leftW, height: h)
+            fill.fill()
+            NSGraphicsContext.restoreGraphicsState()
+            outline.lineWidth = 1
+            dim.setStroke()
+            outline.stroke()
+            dim.setFill()
+            NSRect(x: leftW, y: 0, width: 1, height: h).fill()
+            left.draw(at: NSPoint(x: 3, y: (h - left.size().height) / 2))
+            right.draw(at: NSPoint(x: leftW + 1 + 3, y: (h - right.size().height) / 2))
+            return true
+        }
+    }
+
     /// An SF Symbol in one colour.
     public static func symbol(_ name: String, pointSize: CGFloat, color: NSColor,
                               weight: NSFont.Weight = .regular) -> NSImage? {

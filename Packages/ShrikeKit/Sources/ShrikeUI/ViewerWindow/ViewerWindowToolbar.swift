@@ -87,7 +87,7 @@ final class ToolbarToggleButton: NSButton {
 final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NSMenuItemValidation,
                                  NSSharingServicePickerToolbarItemDelegate {
 
-    static let identifier = NSToolbar.Identifier("shrike.viewer.toolbar")
+    static let identifier = NSToolbar.Identifier("shrike.viewer.toolbar.v3")
 
     enum ID {
         static let nav = NSToolbarItem.Identifier("shrike.viewer.nav")
@@ -113,19 +113,30 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
         static let actualSize = NSToolbarItem.Identifier("shrike.viewer.actualSize")
     }
 
-    /// The 11 default items, left to right.
+    /// The 14 default items, left to right (spec 24 §3.1: Show in Browser
+    /// after the nav group; Histogram, then Full Screen, before the
+    /// tracking separator and the Inspector). The
+    /// identifier carries a version so a stored configuration of the old
+    /// set cannot hide them.
     static let defaultItems: [NSToolbarItem.Identifier] = [
-        ID.nav, .flexibleSpace, ID.zoom, ID.rotate, ID.rating, ID.flag, ID.share,
-        ID.edit, ID.trash, .inspectorTrackingSeparator, ID.inspector,
+        ID.nav, ID.showInBrowser, .flexibleSpace, ID.zoom, ID.rotate, ID.rating, ID.flag, ID.share,
+        ID.edit, ID.trash, ID.histogram, ID.fullScreen, .inspectorTrackingSeparator, ID.inspector,
     ]
+
+    /// Overflow order when the window is narrow (spec 24 §3.1): nav, Show
+    /// in Browser and the inspector stay longest; Histogram goes first.
+    static func visibilityPriority(_ id: NSToolbarItem.Identifier) -> NSToolbarItem.VisibilityPriority {
+        switch id {
+        case ID.nav, ID.showInBrowser, ID.inspector: return .high
+        case ID.histogram: return .low
+        default: return .standard
+        }
+    }
 
     /// Optional single-command buttons: identifier, symbol, label, command.
     static let optionalButtons: [(NSToolbarItem.Identifier, String, String, ShrikeCommand)] = [
         (ID.slideshow, "play.rectangle", "Slideshow", .slideshow),
-        (ID.fullScreen, "arrow.up.left.and.arrow.down.right", "Full Screen", .toggleFullScreen),
-        (ID.histogram, "chart.bar.xaxis", "Histogram", .toggleHistogram),
         (ID.filmstrip, "rectangle.bottomthird.inset.filled", "Filmstrip", .toggleFilmstrip),
-        (ID.showInBrowser, "square.grid.2x2", "Show in Browser", .showInBrowser),
         (ID.reveal, "folder", "Reveal in Finder", .revealInFinder),
         (ID.copyTo, "doc.on.doc", "Copy to Folder", .copyToFolder),
         (ID.moveTo, "folder.badge.plus", "Move to Folder", .moveToFolder),
@@ -136,7 +147,10 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
 
     /// Default single-command buttons (flag and inspector change glyph).
     private static let defaultButtons: [(NSToolbarItem.Identifier, String, String, ShrikeCommand)] = [
+        (ID.showInBrowser, "square.grid.2x2", "Show in Browser", .showInBrowser),
         (ID.flag, "flag", "Flag", .toggleFlag),
+        (ID.histogram, "chart.bar.xaxis", "Histogram", .toggleHistogram),
+        (ID.fullScreen, "arrow.up.left.and.arrow.down.right", "Enter Full Screen", .toggleFullScreen),
         (ID.edit, "slider.horizontal.3", "Edit", .editImage),
         (ID.trash, "trash", "Delete", .moveToTrash),
         (ID.inspector, "info.circle", "Inspector", .toggleInspector),
@@ -151,6 +165,7 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
     /// Zoom menu rows after the current-value line (nil = separator).
     static let zoomRows: [ShrikeCommand?] = [
         .zoomIn, .zoomOut, nil, .zoomToFit, .actualSize, .zoom200, .zoom300, nil, .fitWidth, .fitHeight,
+        nil, .toggleHistogram,
     ]
     static let ratingCommands: [ShrikeCommand] = [.rate0, .rate1, .rate2, .rate3, .rate4, .rate5]
 
@@ -208,6 +223,7 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         if flag, let item = built[itemIdentifier] { return item }
         guard let item = makeItem(itemIdentifier) else { return nil }
+        item.visibilityPriority = Self.visibilityPriority(itemIdentifier)
         if flag { built[itemIdentifier] = item }
         return item
     }
@@ -462,6 +478,20 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
         guard let button = item.view as? ToolbarToggleButton else { return }
         if button.isEnabled != enabled { button.isEnabled = enabled }
         button.isOn = on
+        if command == .toggleHistogram { applyHistogramLook(item, button: button, on: on) }
+    }
+
+    /// Spec 24 §3.1: the Histogram button's glyph is accent-coloured while
+    /// the histogram is on, and its tooltip names the next action.
+    private func applyHistogramLook(_ item: NSToolbarItem, button: ToolbarToggleButton, on: Bool) {
+        let tint: NSColor? = on ? .controlAccentColor : nil
+        if button.contentTintColor != tint { button.contentTintColor = tint }
+        let key = Self.keyText(for: .toggleHistogram) ?? ""
+        let tip = "\(on ? "Hide" : "Show") Histogram  ·  \(key)"
+        if item.toolTip != tip {
+            item.toolTip = tip
+            button.toolTip = tip
+        }
     }
 
     /// Current rating from the Rate menu states (0 = unrated).
@@ -524,7 +554,10 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
             menu.addItem(current)
             for row in Self.zoomRows {
                 guard let command = row else { menu.addItem(.separator()); continue }
-                menu.addItem(commandItem(command, title: command.title, host: host, showKey: true))
+                let title = command == .toggleHistogram
+                    ? (host.toolbarToggleIsOn(.toggleHistogram) ? "Hide Histogram" : "Show Histogram")
+                    : command.title
+                menu.addItem(commandItem(command, title: title, host: host, showKey: true))
             }
         } else if menu === ratingMenu || menu === ratingOverflowMenu {
             if menu === ratingMenu { menu.addItem(ratingGlyphRow()) }

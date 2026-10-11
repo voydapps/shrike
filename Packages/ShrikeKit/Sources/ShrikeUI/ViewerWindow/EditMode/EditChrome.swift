@@ -129,7 +129,11 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         doneButton.action = #selector(doneClicked)
         // Return = Done; the key also gives the default button look.
         doneButton.keyEquivalent = "\r"
-        doneButton.bezelColor = .controlAccentColor   // same as the Apply buttons
+        // The same accent call as Apply and the capsule's Done, on every
+        // macOS: one blue per window. (The item's `.prominent` style drew
+        // pure (0, 120, 255) on 26.5 while the buttons drew a paler
+        // violet-blue.)
+        doneButton.useAccentFill()
         // Keys come from the shortcut table.
         LiveTooltips.shared.bind(cancelButton, command: .exitEditMode, context: .editMode, title: "Cancel")
         resetButton.toolTip = "Reset All Edits"
@@ -163,11 +167,8 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         case ItemID.cancel: return viewItem(itemIdentifier, cancelButton, label: "Cancel")
         case ItemID.reset: return viewItem(itemIdentifier, resetButton, label: "Reset")
         case ItemID.done:
-            let item = viewItem(itemIdentifier, doneButton, label: "Done")
-            // No toolbar-item style. `.prominent`
-            // drew its own #007AFF; Done is a plain default push button,
-            // the same fill as every Apply button.
-            return item
+            // The button carries the accent fill itself (`useAccentFill`).
+            return viewItem(itemIdentifier, doneButton, label: "Done")
         case ItemID.tools:
             let tools = EditChromeTools.order
             let group = NSToolbarItemGroup(
@@ -283,7 +284,8 @@ final class EditCapsuleView: HUDSurfaceView {
         // Done is the default button (accent fill on 14/15;
         // Return clicks it once, so the edit keymap never sees Return).
         doneButton.keyEquivalent = "\r"
-        doneButton.bezelColor = .controlAccentColor   // same as the Apply buttons
+        // The system accent fill, the same call as the toolbar's Done and Apply.
+        doneButton.useAccentFill()
         // Keys come from the shortcut table.
         LiveTooltips.shared.bind(cancelButton, command: .exitEditMode, context: .editMode, title: "Cancel")
         resetButton.toolTip = "Reset All Edits"

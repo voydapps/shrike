@@ -112,10 +112,14 @@ final class EditRail: HUDSurfaceView {
     }
 
     /// A decode error shows the rail with its buttons off.
-    func setToolsEnabled(_ enabled: Bool) {
-        for case let button as RailButton in stack.arrangedSubviews where button.isEnabled != enabled {
-            button.isEnabled = enabled
-            button.alphaValue = enabled ? 1 : 0.4
+    /// `reason` (when off) goes into every tool's tooltip.
+    func setToolsEnabled(_ enabled: Bool, reason: String? = nil) {
+        for case let button as RailButton in stack.arrangedSubviews {
+            if button.isEnabled != enabled {
+                button.isEnabled = enabled
+                button.alphaValue = enabled ? 1 : 0.4
+            }
+            button.setDisabledReason(enabled ? nil : reason)
         }
     }
 
@@ -255,7 +259,6 @@ final class EditRail: HUDSurfaceView {
         btn.setAccessibilityIdentifier(
             identifierOverride ?? "editRail.\(action)"
         )
-        btn.target = self
         btn.onClick = { [weak self] act in
             self?.actionDispatcher?(act)
         }
@@ -398,6 +401,33 @@ final class RailButton: NSButton {
     func setLabel(_ text: String) {
         labelField.stringValue = text
         setAccessibilityLabel(text)
+    }
+
+    /// Spec 24 §4.5: why this tool is off. Shown in the tooltip under the
+    /// tool's own text; nil while the tool is on.
+    private(set) var disabledReason: String?
+    /// The tooltip without the reason (the live "Title  ·  key" text).
+    private var baseToolTip: String?
+
+    func setDisabledReason(_ reason: String?) {
+        guard reason != disabledReason else { return }
+        disabledReason = reason
+        super.toolTip = composedToolTip
+    }
+
+    private var composedToolTip: String? {
+        guard let reason = disabledReason else { return baseToolTip }
+        guard let base = baseToolTip, !base.isEmpty else { return reason }
+        return base + "\n" + reason
+    }
+
+    /// `LiveTooltips` rewrites this on a preset change; the reason stays.
+    override var toolTip: String? {
+        get { super.toolTip }
+        set {
+            baseToolTip = newValue
+            super.toolTip = composedToolTip
+        }
     }
 
     /// Labelled 48 × 50 cell, or the compact 36 × 36 icon button.

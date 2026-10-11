@@ -137,6 +137,7 @@ final class BrowserToolbarTests: XCTestCase {
         browser.setMode(.list)
         XCTAssertEqual(group.selectedIndex, 2)
         group.selectedIndex = 1
+        addTeardownBlock { Prefs.browserViewMode = 0 }   // the toolbar choice is saved
         browser.toolbarViewMode(group)
         XCTAssertEqual(browser.contentController.mode, .filmstrip)
     }

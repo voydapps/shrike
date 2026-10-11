@@ -39,12 +39,12 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
     case filter, largerThumbnails, smallerThumbnails
     case zoomIn, zoomOut, zoomToFit, actualSize, zoom200, zoom300, zoomBestFit, fitWidth, fitHeight, loupe
     case toggleSidebar, toggleToolbar, customizeToolbar, toggleInspector, toggleFilmstrip, toggleHistogram, toggleEditRail
-    case slideshow, compare, toggleFullScreen
+    case slideshow, compare, toggleFullScreen, unpinAllPanels
     // Image
     case rotateLeft, rotateRight, rotate180, flipHorizontal, flipVertical
     case rate0, rate1, rate2, rate3, rate4, rate5, toggleFlag
     case editImage, editCrop, editRotate, editResize, editColor, resetEdits
-    case levels, autoContrast, autoColor, batch, showInMaps
+    case levels, autoContrast, autoColor, batch, showInMaps, toggleRAWFile
     // Go
     case nextImage, previousImage, firstImage, lastImage
     case nextFolder, previousFolder, enclosingFolder, back, forward, goToFolder, showInBrowser
@@ -125,6 +125,8 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
         case .slideshow: return "Slideshow…"
         case .compare: return "Compare"
         case .toggleFullScreen: return "Enter Full Screen"
+        case .unpinAllPanels: return "Unpin All Panels"
+        case .toggleRAWFile: return "Show RAW File"
         case .rotateLeft: return "Rotate Left"
         case .rotateRight: return "Rotate Right"
         case .rotate180: return "Rotate 180°"
@@ -468,6 +470,8 @@ public enum ShortcutTable {
         // ⌃H toggles the histogram in both presets.
         add(.toggleHistogram, v, k("h", .control))
         add(.toggleEditRail, v, k("e", cmdShift))
+        // ⌥R: view-only switch between a pair's primary and its RAW.
+        add(.toggleRAWFile, v, k("r", .option))
         add(.toggleFullScreen, v, k("f", ctrlCmd))
         if fs { add(.toggleFullScreen, v, k("f"), k(K.returnKey), k(K.enter)) }
         if fs { add(.actualSize, v, k("1")); add(.zoom200, v, k("2")); add(.zoom300, v, k("3")); add(.zoomToFit, v, k("0")) }
@@ -586,6 +590,8 @@ public enum ShortcutTable {
         if fs { add(.print, b, k("p", .option)) }
         add(.pageSetup, b, k("p", cmdShift))
         add(.showInMaps, b, k("m", ctrlCmd)); if fs { add(.showInMaps, b, k("m", [.control, .shift])) }
+        // ⌥R: view-only switch between the selected pair's JPEG and RAW.
+        add(.toggleRAWFile, b, k("r", .option))
         addExternalEditors(b)
 
         // ---------------- Compare ----------------

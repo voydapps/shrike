@@ -25,6 +25,7 @@ final class ViewerPanInputTests: XCTestCase {
     private var savedInspector = false
     private var savedAutoHide = false
     private var savedFilmstrip = false
+    private var savedWheel = true
 
     override func setUp() async throws {
         dir = FileManager.default.temporaryDirectory
@@ -34,6 +35,10 @@ final class ViewerPanInputTests: XCTestCase {
         savedAutoHide = Prefs.viewerToolbarAutoHide
         savedFilmstrip = Prefs.filmstripVisibleInWindowed
         Prefs.viewerInspectorVisibleWindowed = false
+        // These tests must not read the machine's trackpad / wheel settings.
+        savedWheel = Prefs.scrollWheelNavigates
+        Prefs.scrollWheelNavigates = true
+        MetalImageView.swipeEnabledOverrideForTesting = true
         MetalImageView.reduceMotionOverrideForTesting = false
     }
 
@@ -43,6 +48,8 @@ final class ViewerPanInputTests: XCTestCase {
         Prefs.viewerToolbarAutoHide = savedAutoHide
         Prefs.filmstripVisibleInWindowed = savedFilmstrip
         MetalImageView.reduceMotionOverrideForTesting = nil
+        MetalImageView.swipeEnabledOverrideForTesting = nil
+        Prefs.scrollWheelNavigates = savedWheel
     }
 
     // MARK: Helpers

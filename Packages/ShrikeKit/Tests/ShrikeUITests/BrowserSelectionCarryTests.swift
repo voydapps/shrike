@@ -258,6 +258,46 @@ final class BrowserSelectionCarryTests: XCTestCase {
         XCTAssertEqual(items(grid.selectionIndexPaths), [6])
     }
 
+    // MARK: Plain, ⌘ and ⇧ clicks in every view
+
+    func testPlainCommandAndShiftClicksInGridAndFilmstrip() async throws {
+        let browser = try await browser(count: 8)
+        defer { browser.close() }
+        let content = browser.contentController
+        let grid = content.collectionViewForTesting
+        let window = try XCTUnwrap(browser.window)
+        for command in [ShrikeCommand.viewAsGrid, .viewAsFilmstrip] {
+            browser.perform(command)
+            window.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertTrue(window.makeFirstResponder(grid))
+            let label = "\(command)"
+            grid.selectionIndexPaths = []
+            // Plain clicks on three different photos: one selected each time.
+            for item in [1, 2, 4] {
+                try click(item, in: grid)
+                XCTAssertEqual(items(grid.selectionIndexPaths), [item], "\(label): plain click selects only it")
+                XCTAssertEqual(names(browser).count, 1, label)
+            }
+            // A plain click on an unselected photo while a range is selected.
+            grid.selectionIndexPaths = [ip(2), ip(3)]
+            grid.noteClick(on: ip(2), command: false)
+            try click(4, in: grid)
+            XCTAssertEqual(items(grid.selectionIndexPaths), [4], "\(label): replaces a multi-selection")
+            // ⌘-click toggles.
+            try click(1, in: grid, mods: .command)
+            XCTAssertEqual(items(grid.selectionIndexPaths), [1, 4], "\(label): ⌘ adds")
+            try click(4, in: grid, mods: .command)
+            XCTAssertEqual(items(grid.selectionIndexPaths), [1], "\(label): ⌘ removes")
+            // ⇧-click extends from the last clicked photo.
+            try click(2, in: grid)
+            try click(4, in: grid, mods: .shift)
+            XCTAssertEqual(items(grid.selectionIndexPaths), [2, 3, 4], "\(label): ⇧ ranges")
+            // A plain click afterwards starts over.
+            try click(0, in: grid)
+            XCTAssertEqual(items(grid.selectionIndexPaths), [0], "\(label): plain click after a range")
+        }
+    }
+
     // MARK: ⇧→ after a rating or Q
 
     private static func key(_ chars: String, keyCode: UInt16, mods: NSEvent.ModifierFlags = []) -> NSEvent {

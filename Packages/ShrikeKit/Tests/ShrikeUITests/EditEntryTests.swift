@@ -247,6 +247,22 @@ final class EditEntryTests: XCTestCase {
         XCTAssertTrue(narrow.isEditRailShown, "the setting is kept: the menu reads Hide Edit Rail")
     }
 
+    /// Round 3: a 480-pt-wide window has no rail only because its band is
+    /// shorter than the compact rail (228 pt) once the titlebar, pill and
+    /// docked strip are counted; the 480 pt width itself is allowed. Taller
+    /// at 480 pt wide, the rail shows. Documented in spec 24.
+    func testTheRailAtTheSmallestWindowWidthDependsOnTheBandHeightOnly() {
+        let small = makeViewer(size: NSSize(width: 480, height: 360))
+        XCTAssertGreaterThanOrEqual(small.imageViewForTesting.frame.width, 480,
+                                    "the width is not what hides it")
+        XCTAssertTrue(small.contentRootForTesting.editRailForTesting.isHidden, "480 x 360: band under 228 pt")
+        XCTAssertTrue(small.contentRootForTesting.isEditRailShown, "the setting is kept")
+
+        let tall = makeViewer(size: NSSize(width: 480, height: 560))
+        let rail = tall.contentRootForTesting.editRailForTesting
+        XCTAssertFalse(rail.isHidden, "480 x 560: the rail shows")
+    }
+
     // MARK: Labels, tooltips, VoiceOver
 
     func testV9LabelsAreWholeAndButtonsAreNamed() {
@@ -333,7 +349,7 @@ final class EditEntryTests: XCTestCase {
     // MARK: Full screen, filmstrip, pin, Done, menus
 
     func testV13TheCapsuleHasEditAndTheRailShowsInEditMode() async throws {
-        XCTAssertEqual(ViewerToolbar.symbolNamesForTesting.suffix(3),
+        XCTAssertEqual(ViewerToolbar.symbolNamesForTesting[5...7],
                        ["square.and.arrow.up", "slider.horizontal.3", "trash"])
         XCTAssertEqual(ViewerToolbar.command(for: .openEditMode), .editImage)
         Prefs.editRailPinnedFullscreen = false
@@ -418,9 +434,19 @@ final class EditEntryTests: XCTestCase {
         let content = ViewerContentView(services: .makeDefault())
         let capsule = content.editCapsule
         XCTAssertEqual(capsule.doneButton.keyEquivalent, "\r")
-        // The same accent fill as the Apply buttons.
-        XCTAssertEqual(capsule.doneButton.bezelColor, .controlAccentColor)
+        // The system accent fill, in the capsule and in the edit toolbar.
+        if #available(macOS 26, *) {
+            XCTAssertEqual(capsule.doneButton.tintProminence, .primary)
+            XCTAssertEqual(capsule.cancelButton.tintProminence, .automatic)
+        } else {
+            XCTAssertEqual(capsule.doneButton.bezelColor, .controlAccentColor)
+        }
         XCTAssertNil(capsule.cancelButton.bezelColor)
+        let edit = EditToolbarController()
+        let item = edit.toolbar(edit.toolbar, itemForItemIdentifier: EditToolbarController.ItemID.done,
+                                willBeInsertedIntoToolbar: true)
+        XCTAssertEqual((item?.view as? NSButton)?.keyEquivalent, "\r")
+        if #available(macOS 26, *) { XCTAssertNotEqual(item?.style, .prominent) }
     }
 
     func testV18PanelMenuItemsReadShowOrHideWithNoCheckMark() {

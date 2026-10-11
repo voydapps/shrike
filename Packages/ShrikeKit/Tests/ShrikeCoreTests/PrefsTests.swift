@@ -39,8 +39,8 @@ final class PrefsTests: XCTestCase {
         XCTAssertEqual(Prefs.cacheDiskCeilingBytes, 512 * 1024 * 1024)
         XCTAssertFalse(Prefs.viewerBackgroundAlwaysBlack)
         XCTAssertEqual(Prefs.maxDisplayLongEdge, 4096)
-        XCTAssertFalse(Prefs.viewerPositionOverlayAutoHides,
-                       "position overlay defaults to always-on — fade is opt-in")
+        XCTAssertTrue(Prefs.viewerPositionOverlayAutoHides,
+                      "position pill auto-hides by default (spec 24 §1.2); holding it open is opt-in")
         XCTAssertEqual(Prefs.externalEditors, [])
 
         // Filmstrip + chrome keys.
@@ -114,12 +114,12 @@ final class PrefsTests: XCTestCase {
         Prefs.scrollWheelNavigates = false
         Prefs.showHiddenFiles = true
         Prefs.viewerBackgroundAlwaysBlack = false
-        Prefs.viewerPositionOverlayAutoHides = true
+        Prefs.viewerPositionOverlayAutoHides = false
 
         XCTAssertFalse(Prefs.scrollWheelNavigates)
         XCTAssertTrue(Prefs.showHiddenFiles)
         XCTAssertFalse(Prefs.viewerBackgroundAlwaysBlack)
-        XCTAssertTrue(Prefs.viewerPositionOverlayAutoHides)
+        XCTAssertFalse(Prefs.viewerPositionOverlayAutoHides)
     }
 
     // MARK: - Filmstrip + chrome prefs
@@ -250,7 +250,7 @@ final class PrefsTests: XCTestCase {
         Prefs.cacheDiskCeilingBytes = 2 * 1024 * 1024 * 1024
         Prefs.viewerBackgroundAlwaysBlack = false
         Prefs.maxDisplayLongEdge = 8192
-        Prefs.viewerPositionOverlayAutoHides = true
+        Prefs.viewerPositionOverlayAutoHides = false   // poison (default is on)
         Prefs.selectedPreferencesTabRaw = "advanced"
         Prefs.filmstripVisibleInWindowed = false
         Prefs.filmstripHeightPt = 96
@@ -277,7 +277,7 @@ final class PrefsTests: XCTestCase {
         XCTAssertEqual(Prefs.cacheDiskCeilingBytes, 512 * 1024 * 1024)
         XCTAssertFalse(Prefs.viewerBackgroundAlwaysBlack)
         XCTAssertEqual(Prefs.maxDisplayLongEdge, 4096)
-        XCTAssertFalse(Prefs.viewerPositionOverlayAutoHides)
+        XCTAssertTrue(Prefs.viewerPositionOverlayAutoHides)
         XCTAssertNil(Prefs.selectedPreferencesTabRaw)
         XCTAssertTrue(Prefs.filmstripVisibleInWindowed)
         XCTAssertEqual(Prefs.filmstripHeightPt, 80)

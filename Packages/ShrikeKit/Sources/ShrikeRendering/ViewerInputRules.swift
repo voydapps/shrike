@@ -29,6 +29,12 @@ public struct ScrollInput: Sendable, Equatable {
     public var phaseBegan: Bool
     /// `momentumPhase != []`.
     public var isMomentum: Bool
+    /// `phase` is `.ended` / `.cancelled` (or the momentum ended): the
+    /// gesture is over, so the step counter starts clean.
+    public var phaseEnded: Bool
+    /// `phase != []`. A wheel driver that sends precise deltas usually
+    /// sends no phase at all; a trackpad always does.
+    public var hasPhase: Bool
     /// ⌘ or ⌥ held.
     public var swapsAction: Bool
     /// `NSEvent.timestamp`, seconds.
@@ -36,7 +42,8 @@ public struct ScrollInput: Sendable, Equatable {
 
     public init(isPrecise: Bool, deltaX: Double = 0, deltaY: Double = 0,
                 isDirectionInverted: Bool = false, phaseBegan: Bool = false,
-                isMomentum: Bool = false, swapsAction: Bool = false,
+                isMomentum: Bool = false, phaseEnded: Bool = false,
+                hasPhase: Bool = false, swapsAction: Bool = false,
                 timestamp: TimeInterval = 0) {
         self.isPrecise = isPrecise
         self.deltaX = deltaX
@@ -44,6 +51,8 @@ public struct ScrollInput: Sendable, Equatable {
         self.isDirectionInverted = isDirectionInverted
         self.phaseBegan = phaseBegan
         self.isMomentum = isMomentum
+        self.phaseEnded = phaseEnded
+        self.hasPhase = hasPhase || phaseBegan
         self.swapsAction = swapsAction
         self.timestamp = timestamp
     }
@@ -68,19 +77,29 @@ public enum ScrollAction: Sendable, Equatable {
     case beginSwipe
 }
 
-/// Rules. Holds the wheel accumulator and the 60 ms drop
+/// Rules. Holds the wheel accumulator and the 25 ms drop
 /// window; everything else is decided from the arguments.
 public struct ScrollInputRouter: Sendable {
     /// Points one wheel line pans when zoomed in.
     public static let panPointsPerLine: Double = 24
     /// Zoom per wheel line.
     public static let zoomPerLine: Double = 1.25
-    /// Wheel events inside this window after a change are dropped.
-    public static let dropInterval: TimeInterval = 0.060
+    /// Wheel events inside this window after a change are dropped (a driver that splits one notch into ticks sends them under 15 ms apart; a flick sends notches 20-40 ms apart and each should count).
+    public static let dropInterval: TimeInterval = 0.025
     /// Trackpad points counted as one "line" for ⌘/⌥ + trackpad zoom.
     public static let precisePointsPerLine: Double = 10
+    /// Precise (trackpad or smooth-scrolling wheel) points that change the
+    /// image at Fit. The filmstrip steps once per `cellSize + spacing`
+    /// (72 + 8 = 80 pt by default); the viewer uses the same number so a
+    /// scroll feels alike on the photo and on the strip.
+    public static let preciseNavigatePoints: Double = 80
+    /// A phase-less precise stream pauses this long = a new gesture.
+    public static let preciseGestureGap: TimeInterval = 0.3
 
+    /// Precise points collected toward the next image (signed, physical
+    /// direction). Notched wheels do not use it: one notch = one image.
     public private(set) var accumulator: Double = 0
+    private var lastPreciseTime: TimeInterval = -.infinity
     public private(set) var dropUntil: TimeInterval = -.infinity
 
     public init() {}
@@ -92,7 +111,10 @@ public struct ScrollInputRouter: Sendable {
     public mutating func route(_ e: ScrollInput, atFit: Bool,
                                wheelChangesImage: Bool,
                                swipeEnabled: Bool) -> ScrollAction {
-        if e.isPrecise { return routePrecise(e, atFit: atFit, swipeEnabled: swipeEnabled) }
+        if e.isPrecise {
+            return routePrecise(e, atFit: atFit, wheelChangesImage: wheelChangesImage,
+                                swipeEnabled: swipeEnabled)
+        }
 
         let navigates = wheelChangesImage != e.swapsAction
         if !navigates {
@@ -108,26 +130,49 @@ public struct ScrollInputRouter: Sendable {
             return (dx == 0 && dy == 0) ? .none : .pan(dx: dx, dy: dy)
         }
         if e.timestamp < dropUntil { return .none }   // dropped, not queued
-        accumulator += e.physicalDelta
-        guard abs(accumulator) >= 1.0 else { return .none }
-        let forward = accumulator < 0                  // wheel down = next
-        accumulator = 0
+        // One notch = one image, whatever its size. Many wheels send
+        // 0.1-0.3 per tick at a slow turn; waiting for a full line made
+        // the photo need 4-10 notches per step.
+        let d = e.physicalDelta
+        guard d != 0 else { return .none }
+        let forward = d < 0                            // wheel down = next
         dropUntil = e.timestamp + Self.dropInterval
         return .navigate(forward: forward)
     }
 
-    private func routePrecise(_ e: ScrollInput, atFit: Bool,
-                              swipeEnabled: Bool) -> ScrollAction {
+    private mutating func routePrecise(_ e: ScrollInput, atFit: Bool,
+                                       wheelChangesImage: Bool,
+                                       swipeEnabled: Bool) -> ScrollAction {
         if e.swapsAction && !e.isMomentum {
             let d = e.physicalDelta / Self.precisePointsPerLine
             return d == 0 ? .none : .zoom(factor: pow(Self.zoomPerLine, d))
         }
         if atFit {
-            // Momentum and vertical scroll do nothing at Fit; a horizontal
-            // start hands over to the system swipe tracker.
-            guard !e.isMomentum, e.phaseBegan, swipeEnabled,
-                  abs(e.deltaX) > abs(e.deltaY) else { return .none }
-            return .beginSwipe
+            // Momentum never changes image.
+            guard !e.isMomentum else { return .none }
+            if e.phaseBegan { accumulator = 0 }
+            defer { if e.phaseEnded { accumulator = 0 } }
+            // A horizontal start hands over to the system swipe tracker.
+            if e.phaseBegan, swipeEnabled, abs(e.deltaX) > abs(e.deltaY) {
+                return .beginSwipe
+            }
+            // Vertical scroll (two-finger trackpad, smooth-scrolling
+            // wheel) steps one image per `preciseNavigatePoints`.
+            guard wheelChangesImage, abs(e.deltaY) > abs(e.deltaX) else { return .none }
+            if !e.hasPhase, e.timestamp - lastPreciseTime > Self.preciseGestureGap {
+                accumulator = 0
+            }
+            lastPreciseTime = e.timestamp
+            let d = e.physicalDelta
+            if accumulator != 0, (accumulator < 0) != (d < 0) { accumulator = 0 }
+            accumulator += d
+            let step = Self.preciseNavigatePoints
+            guard abs(accumulator) >= step else { return .none }
+            let forward = accumulator < 0              // down = next
+            accumulator += forward ? step : -step
+            // One image per event; never queue a long backlog.
+            accumulator = min(max(accumulator, -step), step)
+            return .navigate(forward: forward)
         }
         // Zoomed in: pan 1:1 with momentum; never changes image.
         if e.deltaX == 0 && e.deltaY == 0 { return .none }

@@ -1,5 +1,5 @@
 name: Release
-# Push a tag like v0.1 (the number must equal MARKETING_VERSION in project.yml).
+# Push a tag like v0.2.5 (the number must equal MARKETING_VERSION in project.yml).
 # The runner builds the app, signs it ad-hoc (no certificate, so no personal
 # name in the signature), makes the DMG and publishes a GitHub Release.
 # The release is created by github-actions[bot].
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to (re)build, for example v0.1'
+        description: 'Existing tag to (re)build, for example v0.2.5'
         required: true
 
 permissions:
@@ -68,8 +68,19 @@ jobs:
         run: |
           VERSION="${TAG#v}"
           SHA="$(cut -d' ' -f1 dist/Shrike.dmg.sha256)"
+          # The CHANGELOG.md entry that holds this version (a missing entry stops the release).
+          node Scripts/make-changelog-page.mjs --section "$VERSION" > changes.md \
+            || { echo "::error::CHANGELOG.md has no entry for $VERSION"; exit 1; }
           cat > notes.md <<EOF
           Shrike $VERSION for macOS 14 or newer (Apple silicon and Intel).
+
+          ## What changed
+
+          EOF
+          cat changes.md >> notes.md
+          cat >> notes.md <<EOF
+
+          ## Download
 
           Download **Shrike.dmg**, open it, and drag Shrike to Applications.
           The app is not notarized, so macOS asks once before the first

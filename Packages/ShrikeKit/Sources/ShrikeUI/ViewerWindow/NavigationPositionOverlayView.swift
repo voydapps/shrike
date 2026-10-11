@@ -12,9 +12,9 @@
 //    * appears on the first image load AND on every nav event
 //    * stays visible while a hold-to-scroll is draining (updates text in
 //      place instead of fading/restoring per keystroke)
-//    * default (always-on): never fades; remains visible until window closes
-//    * opt-in auto-hide: fades after 1.2 s of nav inactivity (250 ms fade-out)
-//      when `Prefs.viewerPositionOverlayAutoHides` is true
+//    * default (spec 24 §1.2): auto-hide, fades after 2.0 s of nav inactivity
+//      (250 ms fade-out) while `Prefs.viewerPositionOverlayAutoHides` is true
+//    * pref off: never fades; remains visible until window closes
 //    * subtle — SF Mono 13 pt, white-on-translucent-black, 6 pt radius
 //    * 8 pt inset from the corner, above the bottom-toolbar hover zone
 //    * survives the pure-black-fullscreen rule (no materials outside itself)
@@ -82,7 +82,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
 
     static let fadeInDuration: TimeInterval = 0.12
     static let fadeOutDuration: TimeInterval = 0.25
-    static let idleTimeout: TimeInterval = 1.2
+    static let idleTimeout: TimeInterval = 2.0
 
     // MARK: - Hairline motion + layout tokens
 
@@ -151,7 +151,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
     private var fadeOutWorkItem: DispatchWorkItem?
 
     /// When true, `show(...)` schedules a fade-out after `idleTimeout` like
-    /// the original behavior. When false (the default), the overlay stays
+    /// the spec 24 default. When false, the overlay stays
     /// fully visible until `fadeOutNow()` is called (window teardown).
     ///
     /// This is a *computed* property that re-reads the
@@ -359,9 +359,26 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
     private var baseLabelText: String = ""
     /// What the label draws now (tests).
     internal var labelTextForTesting: NSAttributedString { label.attributedStringValue }
+    /// Layout seams (tests): the text label's and the marks label's frames.
+    /// Alignment rects: what the constraints place (a text field's frame is
+    /// 2 pt wider than that on each side).
+    internal var labelFrameForTesting: NSRect {
+        layoutSubtreeIfNeeded(); return label.alignmentRect(forFrame: label.frame)
+    }
+    internal var marksFrameForTesting: NSRect? {
+        layoutSubtreeIfNeeded()
+        return marksLabel.isHidden ? nil : marksLabel.alignmentRect(forFrame: marksLabel.frame)
+    }
+    internal var marksTextWidthForTesting: CGFloat { marksLabel.attributedStringValue.size().width }
 
     /// Stars, flag, tag dots, RAW chip, pencil.
     private let marksLabel = NSTextField(labelWithString: "")
+
+    /// Spec 24 §4.3: the pair chip is the only clickable part of the pill.
+    /// A transparent button over the chip (at least 28 × 22 pt).
+    let chipButton = PillChipButton()
+    /// The chip was clicked: switch between the primary and the RAW.
+    var onToggleRAW: (() -> Void)?
 
     // MARK: - Init
 
@@ -383,6 +400,12 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
         marksLabel.setAccessibilityElement(false)
         addSubview(marksLabel)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        chipButton.target = self
+        chipButton.action = #selector(chipClicked(_:))
+        chipButton.isHidden = true
+        chipButton.setAccessibilityLabel("File type")
+        chipButton.setAccessibilityIdentifier("viewer.pill.fileType")
+        addSubview(chipButton)
         marksLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         marksLabel.setContentHuggingPriority(.required, for: .horizontal)
         NSLayoutConstraint.activate([
@@ -420,8 +443,53 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
 
     // MARK: - Layout
 
+    @objc private func chipClicked(_ sender: Any?) { onToggleRAW?() }
+
+    /// Only the chip takes clicks; the rest of the pill is passive.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === chipButton ? hit : nil
+    }
+
+    /// Puts the chip button over the chip and words its tooltip / value.
+    private func layoutChipButton() {
+        guard let metrics = PillMarks.pairChipMetrics(marks), !marksLabel.isHidden else {
+            chipButton.isHidden = true
+            return
+        }
+        let alignment = marksLabel.alignmentRect(forFrame: marksLabel.frame)
+        let width = max(28, metrics.width)
+        let height: CGFloat = 22
+        let centreX = alignment.minX + metrics.offset + metrics.width / 2
+        let chipFrame = NSRect(x: centreX - width / 2, y: alignment.midY - height / 2,
+                               width: width, height: height)
+        if chipButton.frame != chipFrame {
+            chipButton.frame = chipFrame
+            // The pointing-hand rect follows the chip.
+            chipButton.window?.invalidateCursorRects(for: chipButton)
+        }
+        chipButton.isHidden = false
+        let title = marks.rawShown ? "Show \(marks.pairKind == "JPG" ? "JPEG" : marks.pairKind ?? "primary") File"
+                                   : "Show RAW File"
+        chipButton.toolTip = LiveTooltips.text(.toggleRAWFile, context: .viewer, preset: Prefs.shortcutPreset,
+                                               title: title)
+        chipButton.setAccessibilityValue(marks.rawShown ? "RAW shown, \(marks.pairKind ?? "primary") available"
+                                                         : "\(marks.pairKind ?? "Primary") shown, RAW available")
+    }
+
+    /// Test seams: chip hover without a pointer.
+    internal func setChipHoveredForTesting(_ on: Bool) { chipButton.setHovered(on) }
+    internal var chipPlatterAlphaForTesting: CGFloat { chipButton.platterAlphaForTesting }
+
+    /// Test seam: the chip button's frame (nil when hidden).
+    internal var chipButtonFrameForTesting: NSRect? {
+        layoutSubtreeIfNeeded()
+        return chipButton.isHidden ? nil : chipButton.frame
+    }
+
     override func layout() {
         super.layout()
+        layoutChipButton()
         layoutHairlineLayer()
     }
 
@@ -1547,6 +1615,24 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
         setAccessibilityValue(accessibilityValueString())
     }
 
+    /// The pointer moved over the canvas of a window (spec 24 §5.1): an
+    /// auto-hiding pill shows and fades again after 2.0 s without movement.
+    /// Nothing before the first photo, while the capsule holds the pill
+    /// (full screen) or while the load hairline is up.
+    func pointerMoved() {
+        guard autoHides, !isHeldByCapsule, !isHairlineVisible, !baseLabelText.isEmpty else { return }
+        if isHidden { isHidden = false; alphaValue = 0 }
+        if alphaValue < 1 {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = Self.fadeInDuration
+                animator().alphaValue = 1
+            }
+        }
+        fadeOutWorkItem?.cancel()
+        fadeOutWorkItem = nil
+        scheduleFadeOut()
+    }
+
     /// A rating / flag changed: show the pill for 1.5 s if it auto-hides.
     func flashMarks() {
         guard autoHides, !isHairlineVisible else { return }
@@ -1668,9 +1754,37 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
         fireVoiceOverAnnouncementIfPermitted()
     }
 
+    // MARK: - Held open by the capsule (spec 24 §1.2)
+
+    /// The full-screen capsule shows: the pill shows with it and hides
+    /// with it. While held, no idle fade is scheduled.
+    private(set) var isHeldByCapsule = false
+
+    func setHeldByCapsule(_ held: Bool) {
+        guard held != isHeldByCapsule else { return }
+        isHeldByCapsule = held
+        if held {
+            fadeOutWorkItem?.cancel()
+            fadeOutWorkItem = nil
+            // Nothing to show before the first photo.
+            guard !baseLabelText.isEmpty else { return }
+            if isHidden { isHidden = false; alphaValue = 0 }
+            if alphaValue < 1 {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = Self.fadeInDuration
+                    animator().alphaValue = 1
+                }
+            }
+        } else if autoHides, !isHairlineVisible, !isHidden {
+            fadeOutNow()
+        }
+    }
+
     // MARK: - Private pill fade helpers
 
     private func scheduleFadeOut(after delay: TimeInterval = idleTimeout) {
+        // Held by the capsule: it hides with the capsule, not on a timer.
+        guard !isHeldByCapsule else { return }
         let item = DispatchWorkItem { [weak self] in
             self?.runFadeOut()
         }
@@ -1694,6 +1808,73 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
     }
 }
 
+// MARK: - Pair chip button
+
+/// Spec 24 §4.3: the pill's one clickable part. Transparent over the chip;
+/// on hover a white 10 % platter (radius 6) and the pointing hand.
+@MainActor
+final class PillChipButton: NSButton {
+
+    static let platterAlpha: CGFloat = 0.10
+    static let platterRadius: CGFloat = 6
+
+    private let platter = CALayer()
+    private var tracking: NSTrackingArea?
+    private(set) var isHovered = false
+
+    init() {
+        super.init(frame: .zero)
+        title = ""
+        isBordered = false
+        isTransparent = true
+        wantsLayer = true
+        platter.cornerRadius = Self.platterRadius
+        platter.backgroundColor = NSColor.white.withAlphaComponent(Self.platterAlpha).cgColor
+        platter.opacity = 0
+        layer?.insertSublayer(platter, at: 0)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        platter.frame = bounds
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
+
+    override var isHidden: Bool {
+        didSet { if isHidden { setHovered(false) } }
+    }
+
+    func setHovered(_ on: Bool) {
+        guard on != isHovered else { return }
+        isHovered = on
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        platter.opacity = on ? 1 : 0
+        CATransaction.commit()
+    }
+
+    /// The platter's white alpha as drawn: 0.10 hovered, else 0.
+    var platterAlphaForTesting: CGFloat { platter.opacity > 0 ? Self.platterAlpha : 0 }
+}
+
 // MARK: - Pill marks
 
 /// What the position pill draws after "43 / 180 — name": stars, flag,
@@ -1705,14 +1886,22 @@ public struct PillMarks: Equatable, Sendable {
     public var tags: [FinderTag]
     /// Has a backup chain: "edited, original kept".
     public var edited: Bool
+    /// A pair (primary + RAW companion): the primary's kind for the chip's
+    /// left part ("JPG"); nil for a single file.
+    public var pairKind: String?
+    /// The RAW file is the one on screen (the chip's right part is lit).
+    public var rawShown: Bool
 
     public init(rating: Int = 0, flagged: Bool = false, hasRAW: Bool = false,
-                tags: [FinderTag] = [], edited: Bool = false) {
+                tags: [FinderTag] = [], edited: Bool = false,
+                pairKind: String? = nil, rawShown: Bool = false) {
         self.rating = rating
         self.flagged = flagged
         self.hasRAW = hasRAW
         self.tags = tags
         self.edited = edited
+        self.pairKind = pairKind
+        self.rawShown = rawShown
     }
 
     public init(_ badges: ItemBadges) {
@@ -1791,6 +1980,25 @@ public struct PillMarks: Equatable, Sendable {
     /// `secondaryLabelColor` on the dark HUD.
     @MainActor static var secondaryOnHUD: NSColor { NSColor.white.withAlphaComponent(0.55) }
 
+    /// Marks the pair chip's attachment in the marks text.
+    static let pairChipKey = NSAttributedString.Key("shrike.pairChip")
+
+    /// Where the pair chip sits inside the marks text: its x offset from the
+    /// text start and its width; nil without a pair.
+    @MainActor
+    static func pairChipMetrics(_ marks: PillMarks) -> (offset: CGFloat, width: CGFloat)? {
+        guard marks.pairKind != nil else { return nil }
+        let text = marksText(marks)
+        var found: NSRange?
+        text.enumerateAttribute(pairChipKey, in: NSRange(location: 0, length: text.length)) { value, range, stop in
+            if value != nil { found = range; stop.pointee = true }
+        }
+        guard let range = found else { return nil }
+        let before = text.attributedSubstring(from: NSRange(location: 0, length: range.location)).size().width
+        let width = text.attributedSubstring(from: range).size().width
+        return (before, width)
+    }
+
     /// The marks alone, each after an 8 pt gap. Empty when nothing is
     /// set. Drawn in their own label so the file name truncates first.
     @MainActor
@@ -1817,7 +2025,14 @@ public struct PillMarks: Equatable, Sendable {
             out.append(gap)
             out.append(attachment(image, centredOn: capMid))
         }
-        if marks.hasRAW {
+        if let kind = marks.pairKind {
+            // Spec 24 §4.3: [JPG | RAW], the file on screen lit.
+            out.append(gap)
+            let chip = NSMutableAttributedString(attributedString: attachment(
+                Badges.pairChipImage(kind: kind, rawShown: marks.rawShown), centredOn: capMid))
+            chip.addAttribute(pairChipKey, value: true, range: NSRange(location: 0, length: chip.length))
+            out.append(chip)
+        } else if marks.hasRAW {
             out.append(gap)
             out.append(attachment(Badges.rawChipImage(fontSize: 9, color: secondary), centredOn: capMid))
         }

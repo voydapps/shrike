@@ -46,7 +46,8 @@ final class HUDGeometryTests: XCTestCase {
     }
 
     private func showAll(_ content: ViewerContentView) {
-        content.togglePanel(.filmstrip)   // strip + capsule
+        content.togglePanel(.filmstrip)   // pinned strip
+        content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))   // the pointer rests in the bottom zone: capsule + strip
         content.togglePanel(.editRail)
         content.togglePanel(.inspector)
         _ = content.histogramOverlayFrameForTesting()

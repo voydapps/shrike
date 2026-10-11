@@ -31,6 +31,10 @@ struct GeneralTab: View {
                     Text("Show as one item").tag(true)
                     Text("Show both files").tag(false)
                 }
+                Text("Press \u{2325}R in the viewer to see the RAW file.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Toggle("Store ratings and flags with the file", isOn: store.metadataWriteFileAttributes)
                 Text("Keeps them when the file is moved or renamed in Finder.")

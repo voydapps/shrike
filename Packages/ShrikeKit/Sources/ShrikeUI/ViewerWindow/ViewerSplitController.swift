@@ -68,7 +68,14 @@ final class ViewerSplitController: NSSplitViewController {
     let inspectorController: ViewerInspectorViewController
     /// Told when the inspector opens or closes (first open enables the
     /// shared model's header reads; the image re-fits on its own).
-    var onInspectorShownChanged: ((Bool) -> Void)?
+    ///
+    /// Assigning the callback replays the current state: `viewDidLoad` opens
+    /// the inspector from the pref before any owner can set this, so without
+    /// the replay a window that opens with the inspector already shown never
+    /// enabled the header reads (empty File / Capture rows).
+    var onInspectorShownChanged: ((Bool) -> Void)? {
+        didSet { if isInspectorShown { onInspectorShownChanged?(true) } }
+    }
     /// The collapsed state to restore when full screen ends.
     private var collapsedBeforeFullScreen: Bool?
 

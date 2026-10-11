@@ -81,7 +81,7 @@ final class BrowserSmallFeaturesTests: XCTestCase {
         XCTAssertEqual(InspectorState.multipleHeader(3), "3 items selected")
 
         // Nothing selected: the folder, never the first photo.
-        browser.contentController.select(urls: [])
+        browser.contentController.deselectAll()
         browser.updateInspectorFromSelection()
         var state = browser.inspectorStateForTesting
         XCTAssertEqual(state.count, 0)
@@ -101,7 +101,7 @@ final class BrowserSmallFeaturesTests: XCTestCase {
     func testAStarClickWithNothingSelectedRatesNothing() async throws {
         let browser = try await browser(["a.jpg", "b.jpg"])
         defer { browser.close() }
-        browser.contentController.select(urls: [])
+        browser.contentController.deselectAll()
         browser.updateInspectorFromSelection()
         // The inspector's star row calls onRate; with no selection it
         // must not rate the first photo.
@@ -178,6 +178,32 @@ final class BrowserSmallFeaturesTests: XCTestCase {
         let inset = WindowCoordinator.pairedViewerFrame(over: full, visible: full)
         XCTAssertEqual(inset, NSRect(x: 24, y: 0, width: 1416, height: 851))
         XCTAssertTrue(full.contains(inset))
+    }
+
+    /// A short or narrow Browser (1986 x 580 in the check) does not give
+    /// its size to the viewer: the 1200 x 800 default, centred on it.
+    func testPairedViewerNeverTakesATooSmallBrowserFrame() {
+        let visible = NSRect(x: 0, y: 0, width: 2560, height: 1415)
+        let short = NSRect(x: 100, y: 600, width: 1986, height: 480)
+        let frame = WindowCoordinator.pairedViewerFrame(over: short, visible: visible)
+        XCTAssertEqual(frame.size, NSSize(width: 1200, height: 800))
+        XCTAssertEqual(frame.midX, short.midX, accuracy: 0.5)
+        XCTAssertEqual(frame.midY, short.midY, accuracy: 0.5)
+        XCTAssertTrue(visible.contains(frame))
+
+        let narrow = NSRect(x: 50, y: 50, width: 700, height: 900)
+        let second = WindowCoordinator.pairedViewerFrame(over: narrow, visible: visible)
+        XCTAssertEqual(second.size, NSSize(width: 1200, height: 800))
+        XCTAssertTrue(visible.contains(second), "pushed back on the screen: \(second)")
+
+        // Exactly the floor still cascades like any other Browser.
+        let floor = NSRect(x: 100, y: 100, width: 800, height: 500)
+        XCTAssertEqual(WindowCoordinator.pairedViewerFrame(over: floor, visible: visible),
+                       NSRect(x: 124, y: 76, width: 800, height: 500))
+        // A small screen limits the default size.
+        let tiny = NSRect(x: 0, y: 0, width: 1000, height: 700)
+        let fitted = WindowCoordinator.pairedViewerFrame(over: NSRect(x: 0, y: 0, width: 600, height: 400), visible: tiny)
+        XCTAssertTrue(tiny.contains(fitted))
     }
 
     // MARK: (h) No window tabs

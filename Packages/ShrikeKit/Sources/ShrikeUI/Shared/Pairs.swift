@@ -15,10 +15,13 @@ public enum PairCopy {
     /// "Also: DSC_0042.ORF (24.1 MB)" under the file name in the
     /// inspector. Lists the RAW companions (not sidecars or the MOV);
     /// nil when the group has none. Reads file sizes from disk.
-    public static func alsoLine(for group: ImageGroup) -> String? {
+    public static func alsoLine(for group: ImageGroup, shownURL: URL? = nil) -> String? {
         let raws = group.rawURLs.filter { $0 != group.primary }
         guard !raws.isEmpty else { return nil }
-        let parts = raws.map { url -> String in
+        // Spec 24 §4.5: the shown file is never listed; with the RAW shown
+        // the line names the primary instead.
+        let others = (shownURL != nil && shownURL != group.primary) ? [group.primary] : raws
+        let parts = others.map { url -> String in
             let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? nil
             guard let bytes else { return url.lastPathComponent }
             let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)

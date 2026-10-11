@@ -217,6 +217,10 @@ public final class MetalImageView: NSView {
         set { ReduceMotion.overrideForTesting = newValue }
     }
 
+    /// Test seam: forces the system's "Swipe between pages" setting on or
+    /// off (nil = read the machine).
+    internal static var swipeEnabledOverrideForTesting: Bool?
+
     /// Reduce Motion, read each time.
     static var reduceMotion: Bool { ReduceMotion.isOn }
 
@@ -1849,13 +1853,16 @@ public final class MetalImageView: NSView {
             isDirectionInverted: event.isDirectionInvertedFromDevice,
             phaseBegan: event.phase == .began,
             isMomentum: event.momentumPhase != [],
+            phaseEnded: event.phase == .ended || event.phase == .cancelled,
+            hasPhase: event.phase != [],
             swapsAction: !event.modifierFlags.intersection([.command, .option]).isEmpty,
             timestamp: event.timestamp
         )
         let action = scrollRouter.route(
             input, atFit: isAtFit,
             wheelChangesImage: Prefs.scrollWheelNavigates,
-            swipeEnabled: NSEvent.isSwipeTrackingFromScrollEventsEnabled
+            swipeEnabled: Self.swipeEnabledOverrideForTesting
+                ?? NSEvent.isSwipeTrackingFromScrollEventsEnabled
         )
         switch action {
         case .none:

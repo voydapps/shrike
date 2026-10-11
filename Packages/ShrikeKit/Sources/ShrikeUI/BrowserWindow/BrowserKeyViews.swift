@@ -26,6 +26,98 @@ final class BrowserCollectionView: NSCollectionView {
         super.keyDown(with: event)
     }
 
+    // MARK: Hover (spec 24 §2, the filmstrip view's strip)
+    //
+    // One tracking area over the whole collection. Only the filmstrip view
+    // turns it on; the grid keeps its plain look. The thumbnail under the
+    // pointer (not a selected one) shows the ring and the veil.
+
+    /// Set by the Browser in filmstrip mode.
+    var hoverEnabled = false {
+        didSet {
+            guard hoverEnabled != oldValue else { return }
+            if !hoverEnabled { clearHover() }
+            updateTrackingAreas()
+            window?.invalidateCursorRects(for: self)
+            for case let item as ThumbnailItem in visibleItems() { item.view.window?.invalidateCursorRects(for: item.view) }
+        }
+    }
+    private var hoverTracking: NSTrackingArea?
+    private(set) var hoveredIndexPath: IndexPath?
+    private var hoverWindowPoint: NSPoint?
+    private let hoverObservers = StripObserverBag()
+    private var windowObservers = StripObserverBag()
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTracking { removeTrackingArea(hoverTracking) }
+        hoverTracking = nil
+        guard hoverEnabled else { return }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverTracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { hoverPointer(atWindowPoint: event.locationInWindow) }
+    override func mouseMoved(with event: NSEvent) { hoverPointer(atWindowPoint: event.locationInWindow) }
+    override func mouseExited(with event: NSEvent) { clearHover() }
+
+    func hoverPointer(atWindowPoint point: NSPoint) {
+        guard hoverEnabled else { return }
+        hoverWindowPoint = point
+        setHovered(indexPathForItem(at: convert(point, from: nil)))
+    }
+
+    func clearHover() {
+        hoverWindowPoint = nil
+        setHovered(nil)
+    }
+
+    /// The items moved under a still pointer (scroll, reload): hit-test again.
+    func refreshHover() {
+        guard hoverEnabled, let point = hoverWindowPoint else { setHovered(nil); return }
+        setHovered(indexPathForItem(at: convert(point, from: nil)))
+    }
+
+    private func setHovered(_ indexPath: IndexPath?) {
+        guard indexPath != hoveredIndexPath else { return }
+        if let old = hoveredIndexPath { (item(at: old) as? ThumbnailItem)?.setHovered(false) }
+        hoveredIndexPath = indexPath
+        if let new = indexPath { (item(at: new) as? ThumbnailItem)?.setHovered(true) }
+    }
+
+    override func layout() {
+        super.layout()
+        if hoverEnabled { refreshHover() }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        windowObservers.removeAll()
+        clearHover()
+        guard let window else { return }
+        windowObservers.add(NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.clearHover() }
+        })
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        hoverObservers.removeAll()
+        guard let clip = superview as? NSClipView else { return }
+        clip.postsBoundsChangedNotifications = true
+        hoverObservers.add(NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: clip, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshHover() }
+        })
+    }
+
     // MARK: ⇧-arrows
     //
     // NSCollectionView keeps its own private anchor for ⇧-arrows, and any
@@ -62,6 +154,15 @@ final class BrowserCollectionView: NSCollectionView {
     /// far end of the run of selected items through it.
     var keyRange: (anchor: IndexPath, lead: IndexPath)? {
         resolvedKeyRange().map { ($0.anchor, $0.lead) }
+    }
+
+    /// True when the moving end is known (the selection is the one the
+    /// last click or ⇧-arrow made); false after a select-all or any other
+    /// change, where `keyRange` only guesses.
+    var hasKeyMovingEnd: Bool {
+        guard let keySelection, keySelection == selectionIndexPaths,
+              let anchor = selectionAnchor, let lead = keyLead else { return false }
+        return keySelection.contains(anchor) && keySelection.contains(lead)
     }
 
     private func resolvedKeyRange() -> (anchor: IndexPath, lead: IndexPath, base: Set<IndexPath>)? {
@@ -110,8 +211,17 @@ final class BrowserCollectionView: NSCollectionView {
         apply(selection: range.base.union(Self.range(range.anchor, lead)))
         keyLead = lead
         keySelection = selectionIndexPaths
-        scrollToItems(at: [lead], scrollPosition: horizontal ? .nearestHorizontalEdge : .nearestVerticalEdge)
+        reveal(lead, horizontal: horizontal)
         return true
+    }
+
+    /// Set by the Browser: brings the moving end into view (centred, as the
+    /// plain arrow keys do). Without it the item scrolls to the nearest edge.
+    var revealLead: ((IndexPath) -> Void)?
+
+    private func reveal(_ lead: IndexPath, horizontal: Bool) {
+        if let revealLead { revealLead(lead); return }
+        scrollToItems(at: [lead], scrollPosition: horizontal ? .nearestHorizontalEdge : .nearestVerticalEdge)
     }
 
     /// Items in the grid's first row (the step of ⇧↑ / ⇧↓).
@@ -134,7 +244,12 @@ final class BrowserCollectionView: NSCollectionView {
     /// before the anchor was set (empty after a plain click).
     private var anchorBase: Set<IndexPath> = []
 
+    /// A click anywhere in the view is the user's choice (it ends the
+    /// automatic first-photo selection even when it hits the selected cell).
+    var onUserMouseDown: (() -> Void)?
+
     override func mouseDown(with event: NSEvent) {
+        onUserMouseDown?()
         let point = convert(event.locationInWindow, from: nil)
         let hit = indexPathForItem(at: point)
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -151,6 +266,14 @@ final class BrowserCollectionView: NSCollectionView {
         let plain = mods.intersection([.shift, .command, .control, .option]).isEmpty
         pendingSingleSelect = nil
         dragBegan = false
+        // A plain click on a photo that is not selected selects only it, in
+        // every view (grid, filmstrip). Done here, so it does not depend on
+        // how AppKit reads the modifier state of the press (⌘ and ⇧ keep
+        // their toggle and range meaning above and in AppKit).
+        if event.clickCount == 1, plain, let hit, !selectionIndexPaths.contains(hit),
+           !selectionIndexPaths.isEmpty {
+            apply(selection: [hit])
+        }
         let narrowTo: IndexPath? = if event.clickCount == 1, plain, let hit,
             selectionIndexPaths.count > 1, selectionIndexPaths.contains(hit) { hit } else { nil }
         if let track = mouseTrackingForTesting { track(event) } else { super.mouseDown(with: event) }
@@ -183,6 +306,7 @@ final class BrowserCollectionView: NSCollectionView {
     func noteDragBegan() {
         dragBegan = true
         pendingSingleSelect = nil
+        clearHover()
     }
     /// Test seam: stands in for AppKit's own press tracking.
     var mouseTrackingForTesting: ((NSEvent) -> Void)?
@@ -251,6 +375,7 @@ final class BrowserCollectionView: NSCollectionView {
         apply(selection: anchorBase.union(Self.range(anchor, target)))
         keyLead = target
         keySelection = selectionIndexPaths
+        reveal(target, horizontal: (collectionViewLayout as? NSCollectionViewFlowLayout)?.scrollDirection == .horizontal)
     }
 
     private func apply(selection new: Set<IndexPath>) {
@@ -273,6 +398,9 @@ final class BrowserCollectionView: NSCollectionView {
         anchorBase = []
         keyLead = nil
         keySelection = nil
+        // The cells are rebuilt (their hover resets on reuse); the next
+        // layout re-hit-tests under a still pointer.
+        hoveredIndexPath = nil
         super.reloadData()
     }
 }

@@ -31,6 +31,8 @@ public final class BrowserWindowController: NSWindowController {
     let contentController: BrowserContentViewController
     private let inspectorController: InspectorPaneController
     private var inspectorInfoTask: Task<Void, Never>?
+    /// The ⌥R check of a RAW file in flight (BrowserWindowController+RAW).
+    var rawSwitchTask: Task<Void, Never>?
     private var inspectorTimeoutTask: Task<Void, Never>?
     /// Header reads of recent selections.
     let photoInfoCache = PhotoInfoCache()
@@ -53,6 +55,8 @@ public final class BrowserWindowController: NSWindowController {
 
     /// Toolbar items the controller keeps in step. Weak:
     /// the toolbar owns them, and Customize Toolbar can remove them.
+    /// The visible hover platter of the toolbar (macOS 26+).
+    var toolbarHover: ToolbarHover?
     weak var historyGroup: NSToolbarItemGroup?
     weak var viewModeGroup: NSToolbarItemGroup?
     weak var sortToolbarItem: NSMenuToolbarItem?
@@ -182,7 +186,8 @@ public final class BrowserWindowController: NSWindowController {
 
         // Controllers — constructed programmatically.
         self.treeController = FolderTreeViewController()
-        self.contentController = BrowserContentViewController(services: services)
+        self.contentController = BrowserContentViewController(
+            services: services, initialMode: Self.savedViewMode)
         self.inspectorController = InspectorPaneController()
 
         // Split view controller holds all three panes.
@@ -287,9 +292,12 @@ public final class BrowserWindowController: NSWindowController {
             window.center()
         }
         // A frame saved before the minimum grew.
-        if window.frame.width < window.minSize.width {
+        if window.frame.width < window.minSize.width || window.frame.height < window.minSize.height {
             var frame = window.frame
-            frame.size.width = window.minSize.width
+            let height = max(frame.height, window.minSize.height)
+            frame.origin.y -= height - frame.height
+            frame.size.width = max(frame.width, window.minSize.width)
+            frame.size.height = height
             window.setFrame(frame, display: false)
         }
         updateToolbarRoom()
@@ -359,7 +367,12 @@ public final class BrowserWindowController: NSWindowController {
         splitController.addSplitViewItem(centerItem)
         splitController.addSplitViewItem(rightItem)
         // A new name, so a stored 160 pt sidebar does not win.
-        splitController.splitView.autosaveName = "shrike.browser.split.v2"
+        // Not under XCTest: the runner's defaults keep the pane sizes and
+        // collapsed flags of earlier test windows, and a new window then
+        // started with a collapsed sidebar at random.
+        if !ShrikeDataPaths.isRunningTests {
+            splitController.splitView.autosaveName = "shrike.browser.split.v2"
+        }
     }
 
     // MARK: - Toolbar
@@ -399,6 +412,7 @@ public final class BrowserWindowController: NSWindowController {
 
         window?.toolbarStyle = .unified
         window?.toolbar = toolbar
+        if let window { toolbarHover = ToolbarHover.install(in: window) }
     }
 
     // MARK: - Delegate wiring
@@ -428,14 +442,39 @@ public final class BrowserWindowController: NSWindowController {
         inspectorController.onAddTag = { [weak self] anchor in
             self?.showTagEditor(anchor: anchor)
         }
-        // The preview starts from the grid's thumbnail
-        // when it is in memory (no decode), then the sharper read.
-        inspectorController.quickThumbnail = { [weak self] in
-            guard let self, self.contentController.mode != .list else { return nil }
+        // The panel's picture: the sharp one from the cache when it is
+        // there (read ahead for the neighbours), else the grid's small
+        // thumbnail as a stand-in while the sharp one is read.
+        inspectorController.panelLookups = { [weak self] in
+            guard let self else { return nil }
             let cache = self.services.thumbnailCache
-            let size = self.contentController.mode == .filmstrip ? 120 : self.contentController.thumbnailPixelSize
-            return { url in cache.cachedThumbnail(for: FileImageSource(url: url), maxPixelSize: size) }
+            let px = InspectorPreviewImageView.maxPixelSize
+            var quick: InspectorPreviewImageView.QuickThumbnail?
+            if self.contentController.mode != .list {
+                let size = self.contentController.mode == .filmstrip ? 120 : self.contentController.thumbnailPixelSize
+                quick = { url in cache.cachedThumbnail(for: FileImageSource(url: url), maxPixelSize: size) }
+            }
+            return InspectorPreviewImageView.Lookups(
+                quick: quick,
+                cachedSharp: { url in cache.cachedThumbnail(for: FileImageSource(url: url), maxPixelSize: px) },
+                loadSharp: { url in
+                    try? await cache.thumbnail(for: FileImageSource(url: url), maxPixelSize: px,
+                                               priority: .visible)
+                })
         }
+    }
+
+    /// The next and the previous photo's panel picture, read ahead (low
+    /// priority), so a step shows it sharp at once.
+    private func prefetchPanelImages(around items: [BrowserItem]) {
+        guard items.count == 1, let url = items.first?.url else { return }
+        let all = contentController.visibleItems
+        guard let index = all.firstIndex(where: { $0.url == url }) else { return }
+        let near = [index + 1, index - 1].filter { all.indices.contains($0) }
+        let sources: [any ImageSource] = near.map { all[$0].imageSource }
+        let cache = services.thumbnailCache
+        let px = InspectorPreviewImageView.maxPixelSize
+        Task.detached(priority: .utility) { await cache.prefetch(sources, maxPixelSize: px) }
     }
 
     /// The inspector pane (tests drive its chip callbacks).
@@ -474,7 +513,21 @@ public final class BrowserWindowController: NSWindowController {
     }
 
     private func setupFirstResponder() {
-        window?.initialFirstResponder = contentController.view
+        window?.initialFirstResponder = contentController.focusView
+    }
+
+    /// A Browser that has just opened (or loaded a folder) has no focused
+    /// view, so the arrow keys did nothing until the user clicked a photo.
+    /// The grid / strip / list takes the keys, but only from nobody (no
+    /// responder, the window, the content container): never from the
+    /// sidebar, the search field or a sheet.
+    func claimKeysForContentIfIdle() {
+        guard let window, window.attachedSheet == nil else { return }
+        window.initialFirstResponder = contentController.focusView
+        let current = window.firstResponder
+        let idle = current == nil || current === window || current === contentController.view
+        guard idle, current !== contentController.focusView else { return }
+        window.makeFirstResponder(contentController.focusView)
     }
 
     // MARK: - Toolbar actions
@@ -759,7 +812,12 @@ public final class BrowserWindowController: NSWindowController {
         } else if !reselect.isEmpty,
                   folder == currentFolder {
             contentController.select(urls: reselect)
+        } else if liveSelection == nil {
+            // A folder opened: the first photo is selected in every view
+            // (the Filmstrip shows it large; the arrow keys start there).
+            contentController.selectFirstOnOpen()
         }
+        claimKeysForContentIfIdle()
         treeController.select(folder)
         bottomBar.setFolder(folder)
         startWatching(folder)
@@ -967,6 +1025,17 @@ public final class BrowserWindowController: NSWindowController {
         }
     }
 
+    /// Another window (the viewer) moved these photos to the Trash: drop
+    /// them from every view at once. Keeps the selection when it is not
+    /// affected, else selects the item after the last removed one.
+    func dropTrashedItems(_ primaries: Set<URL>) {
+        let visible = contentController.visibleItems.map(\.url)
+        let kept = contentController.selectedItems.map(\.url).filter { !primaries.contains($0) }
+        let next = kept.isEmpty ? Self.selectionAfterRemoving(Array(primaries), from: visible) : nil
+        removeFromList(primaries, next: next)
+        if !kept.isEmpty { _ = contentController.select(urls: kept) }
+    }
+
     func removeFromList(_ primaries: Set<URL>, next: URL?) {
         guard !primaries.isEmpty else { return }
         contentController.setItems(contentController.allItems.filter { !primaries.contains($0.group.primary) })
@@ -1032,7 +1101,7 @@ public final class BrowserWindowController: NSWindowController {
             bottomBar.setStatus(sortProgressText)
             return
         }
-        let selected = contentController.selectedItems
+        let selected = contentController.shownItems
         guard selected.count == 1, let item = selected.first,
               item.pixelWidth == nil || item.pixelHeight == nil else {
             bottomBar.setStatus(BrowserBottomBar.statusText(selected))
@@ -1054,7 +1123,7 @@ public final class BrowserWindowController: NSWindowController {
     /// them in place when the read ends: the section never goes away and
     /// comes back between two photos.
     func updateInspectorFromSelection() {
-        let items = contentController.selectedItems
+        let items = contentController.shownItems
         let state: InspectorState
         if items.isEmpty {
             // The folder, never the first photo.
@@ -1228,9 +1297,9 @@ public final class BrowserWindowController: NSWindowController {
         case .selectAll:         contentController.selectAll()
         case .deselectAll:       contentController.deselectAll()
         case .focusSearch:       focusSearch()
-        case .viewModeGrid:      setMode(.grid)
-        case .viewModeFilmstrip: setMode(.filmstrip)
-        case .viewModeList:      setMode(.list)
+        case .viewModeGrid:      chooseMode(.grid)
+        case .viewModeFilmstrip: chooseMode(.filmstrip)
+        case .viewModeList:      chooseMode(.list)
         case .cycleSort:         cycleSortKey()
         case .rate(let n):       applyRating(n, to: contentController.selectedItems)
         case .toggleFlag:        toggleFlagOnSelection()
@@ -1248,6 +1317,7 @@ public final class BrowserWindowController: NSWindowController {
         case .toggleViewer:      openSelectionInViewer()
         case .openExternalEditor(let slot): openSelectionInExternalEditor(slot: slot)
         case .showInMaps:        showSelectionInMaps()
+        case .toggleRAWFile:     toggleRAWFile()
         case .compare:           openCompare()
         case .print:             printSelection()
         }
@@ -1292,6 +1362,24 @@ public final class BrowserWindowController: NSWindowController {
     private func openMaps(_ coordinate: PhotoInfo.Coordinate?, file: URL) {
         if let coordinate, ShowInMaps.open(coordinate, file: file) { return }
         toast(ShowInMaps.noLocation)
+    }
+
+    /// Under XCTest a window starts in Grid unless a test turns this on: the
+    /// view commands many tests run would otherwise change the next test's
+    /// window (the same reason the split's autosave is off under XCTest).
+    nonisolated(unsafe) static var restoresViewModeUnderTests = false
+
+    /// The mode a new window starts in: the last one the user chose.
+    static var savedViewMode: BrowserViewMode {
+        if ShrikeDataPaths.isRunningTests && !restoresViewModeUnderTests { return .grid }
+        return BrowserViewMode(rawValue: Prefs.browserViewMode) ?? .grid
+    }
+
+    /// The user picked a view (menu, key, toolbar): shown, and kept for the
+    /// next window and the next launch (`Prefs.browserViewMode`).
+    func chooseMode(_ mode: BrowserViewMode) {
+        setMode(mode)
+        Prefs.browserViewMode = mode.rawValue
     }
 
     func setMode(_ mode: BrowserViewMode) {
@@ -1600,7 +1688,7 @@ extension BrowserWindowController: NSToolbarDelegate, NSToolbarItemValidation {
 
     @objc func toolbarViewMode(_ sender: Any?) {
         guard let mode = BrowserViewMode(rawValue: clickedIndex(sender, in: viewModeGroup)) else { return }
-        setMode(mode)
+        chooseMode(mode)
     }
 
     @objc func toolbarToggleInspector(_ sender: Any?) {
@@ -1694,6 +1782,7 @@ extension BrowserWindowController: BrowserContentDelegate {
         let signpost = ShrikeSignposts.browser.begin("browserSelectionChange")
         defer { ShrikeSignposts.browser.end("browserSelectionChange", signpost) }
         refreshSelectionInfo()
+        prefetchPanelImages(around: items)
     }
 
     public func browserContentDidOpen(_ items: [BrowserItem], startingAt index: Int) {

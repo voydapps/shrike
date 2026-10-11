@@ -154,7 +154,7 @@ final class SlideshowSheet: NSObject, NSTextFieldDelegate {
         cancel.keyEquivalent = "\u{1b}"
         let start = NSButton(title: "Start", target: self, action: #selector(startClicked))
         start.keyEquivalent = "\r"
-        start.bezelColor = .controlAccentColor   // one accent
+        start.useAccentFill()   // one accent
         startButton = start
         let buttons = NSStackView(views: [cancel, start])
         buttons.spacing = 12

@@ -52,7 +52,8 @@ final class GlassHUDTests: XCTestCase {
 
     /// Shows every HUD.
     private func revealEverything(_ content: ViewerContentView) {
-        content.togglePanel(.filmstrip)          // filmstrip + capsule
+        content.togglePanel(.filmstrip)          // pinned strip
+        content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))   // the pointer rests in the bottom zone: capsule + strip
         content.togglePanel(.editRail)
         content.togglePanel(.inspector)
         _ = content.histogramOverlayFrameForTesting()   // builds it
@@ -158,6 +159,7 @@ final class GlassHUDTests: XCTestCase {
         content.togglePanel(.filmstrip)
         content.togglePanel(.editRail)
         content.togglePanel(.inspector)
+        content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))   // the pointer rests in the bottom zone: capsule + strip
         content.layoutSubtreeIfNeeded()
 
         let strip = content.filmstripForTesting.frame
@@ -362,8 +364,15 @@ final class GlassHUDTests: XCTestCase {
         let edit = EditToolbarController()
         let done = edit.toolbar(edit.toolbar, itemForItemIdentifier: EditToolbarController.ItemID.done,
                                 willBeInsertedIntoToolbar: true)
-        XCTAssertNotEqual(done?.style, .prominent, "no own blue")
-        XCTAssertEqual((done?.view as? NSButton)?.bezelColor, .controlAccentColor)
+        // Done is the default action: the system accent fill, from the same
+        // call as Apply (`useAccentFill`), so it follows the user's accent.
+        XCTAssertEqual((done?.view as? NSButton)?.keyEquivalent, "\r")
+        if #available(macOS 26, *) {
+            XCTAssertNotEqual(done?.style, .prominent)
+            XCTAssertEqual((done?.view as? NSButton)?.tintProminence, .primary)
+        } else {
+            XCTAssertEqual((done?.view as? NSButton)?.bezelColor, .controlAccentColor)
+        }
         let cancel = edit.toolbar(edit.toolbar, itemForItemIdentifier: EditToolbarController.ItemID.cancel,
                                   willBeInsertedIntoToolbar: true)
         XCTAssertEqual(cancel?.style, .plain)
@@ -401,8 +410,9 @@ final class GlassHUDTests: XCTestCase {
         XCTAssertFalse(buttons.isEmpty)
         for button in buttons {
             XCTAssertFalse(button.isBordered)
-            XCTAssertEqual(button.frame.width, 28, accuracy: 0.5)
-            XCTAssertEqual(button.frame.height, 28, accuracy: 0.5)
+            // 32 pt buttons (the zoom pull-down is 48 pt wide), spec 24 §1.3.
+            XCTAssertTrue([32, ViewerToolbar.zoomMenuWidth].contains(button.frame.width), "\(button.frame)")
+            XCTAssertEqual(button.frame.height, 32, accuracy: 0.5)
             XCTAssertEqual(button.contentTintColor, .labelColor)
         }
         let button = try XCTUnwrap(buttons.first)

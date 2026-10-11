@@ -93,6 +93,106 @@ final class TrashFlowTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: urls[4].path))
     }
 
+    // MARK: - Filmstrip follows deletes
+
+    private func stripNames(_ viewer: ViewerWindow) -> [String] {
+        let map = viewer.contentRootForTesting.filmstripForTesting.cellFileNamesForTesting
+        return map.keys.sorted().map { map[$0]! }
+    }
+
+    private func pillText(_ viewer: ViewerWindow) -> String {
+        viewer.contentRootForTesting.navigationPositionOverlayForTesting
+            .labelTextForTesting.string
+    }
+
+    private func names(_ viewer: ViewerWindow) -> [String] {
+        viewer.groups.map(\.primary.lastPathComponent)
+    }
+
+    // Delete drops the cell at once, the pill count follows, undo re-adds it.
+    func testFilmstripDropsDeletedCellAndPillCountFollows_undoBringsItBack() async throws {
+        let urls = try makeFiles((1...10).map { String(format: "img%02d.jpg", $0) })
+        let viewer = viewer(urls, start: 4, ops: fakeOps())
+        defer { viewer.close() }
+        await viewer.updateFilmstrip(centeredOn: 4)
+        XCTAssertEqual(stripNames(viewer), names(viewer))
+
+        viewer.dispatch(.deleteToTrash)
+        let dropped = await waitUntil { self.stripNames(viewer) == self.names(viewer) && viewer.groups.count == 9 }
+        XCTAssertTrue(dropped, "strip: \(stripNames(viewer))")
+        XCTAssertFalse(stripNames(viewer).contains("img05.jpg"))
+        let pill = await waitUntil { self.pillText(viewer).hasPrefix("5 / 9") }
+        XCTAssertTrue(pill, pillText(viewer))
+
+        await viewer.waitForPendingTrash()
+        viewer.performUndo()
+        let back = await waitUntil { viewer.groups.count == 10 && self.stripNames(viewer) == self.names(viewer) }
+        XCTAssertTrue(back, "strip: \(stripNames(viewer))")
+        XCTAssertTrue(stripNames(viewer).contains("img05.jpg"))
+        let pill10 = await waitUntil { self.pillText(viewer).hasPrefix("5 / 10") }
+        XCTAssertTrue(pill10, pillText(viewer))
+    }
+
+    // Several deletes in a row, the last photo, and a RAW+JPEG group.
+    func testFilmstripAfterSeveralDeletesAndAPairedGroup() async throws {
+        let urls = try makeFiles(["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg", "p.cr2", "p.jpg"])
+        let groups = [urls[0], urls[1], urls[2], urls[3], urls[4]].map { ImageGroup(primary: $0) }
+            + [ImageGroup(primary: urls[6], companions: [.init(url: urls[5], kind: .raw)])]
+        let viewer = ViewerWindow(groups: groups, startIndex: 1, services: services())
+        viewer.fileOps = fakeOps()
+        defer { viewer.close() }
+        viewer.markDisplayedForTesting(1)
+        await viewer.updateFilmstrip(centeredOn: 1)
+
+        viewer.dispatch(.deleteToTrash)            // b
+        viewer.markDisplayedForTesting(1)
+        viewer.dispatch(.deleteToTrash)            // c
+        let two = await waitUntil { self.stripNames(viewer) == ["a.jpg", "d.jpg", "e.jpg", "p.jpg"] }
+        XCTAssertTrue(two, "strip: \(stripNames(viewer))")
+        XCTAssertTrue(self.pillText(viewer).isEmpty == false)
+
+        viewer.markDisplayedForTesting(3)
+        viewer.dispatch(.deleteToTrash)            // the RAW+JPEG group, last
+        let three = await waitUntil { self.stripNames(viewer) == ["a.jpg", "d.jpg", "e.jpg"] }
+        XCTAssertTrue(three, "strip: \(stripNames(viewer))")
+        await viewer.waitForPendingTrash()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: urls[5].path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: urls[6].path))
+        let pill = await waitUntil { self.pillText(viewer).hasPrefix("3 / 3") }
+        XCTAssertTrue(pill, pillText(viewer))
+    }
+
+    // Browser: grid, filmstrip and list all drop the trashed items, and
+    // undo brings them back.
+    func testBrowserViewsDropTrashedItemsInEveryMode() async throws {
+        let urls = try makeFiles(["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"])
+        let browser = BrowserWindowController(services: services(), initialFolder: dir)
+        defer { browser.close() }
+        browser.fileOps = fakeOps()
+        let content = browser.contentController
+        let listed = await waitUntil { content.visibleItems.count == 5 }
+        XCTAssertTrue(listed)
+
+        for mode in [BrowserViewMode.grid, .filmstrip, .list] {
+            content.setMode(mode)
+            let toTrash = content.visibleItems.filter { $0.url == urls[1] || $0.url == urls[2] }
+            XCTAssertEqual(toTrash.count, 2, "\(mode)")
+            browser.trash(toTrash)
+            await browser.waitForPendingTrash()
+            XCTAssertEqual(content.visibleItems.map(\.url.lastPathComponent), ["a.jpg", "d.jpg", "e.jpg"], "\(mode)")
+            switch mode {
+            case .grid, .filmstrip:
+                XCTAssertEqual(content.collectionViewForTesting.numberOfItems(inSection: 0), 3, "\(mode)")
+            case .list:
+                XCTAssertEqual(content.tableViewForTesting.numberOfRows, 3)
+            }
+            // Put them back for the next mode.
+            browser.window?.undoManager?.undo()
+            let back = await waitUntil { content.visibleItems.count == 5 }
+            XCTAssertTrue(back, "undo in \(mode)")
+        }
+    }
+
     // Presses queue in order; each targets the item shown at press time.
     func testQueuedPressesEachTargetTheItemShownThen() async throws {
         let urls = try makeFiles(["a.jpg", "b.jpg", "c.jpg", "d.jpg"])

@@ -256,6 +256,8 @@ final class ExternalEditorsUITests: XCTestCase {
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
         defer { browser.close() }
         _ = await waitUntil { browser.contentController.visibleItems.count == 3 }
+        XCTAssertTrue(browser.canPerform(.openExternalEditor1), "the first photo is selected on open")
+        browser.contentController.deselectAll()
         XCTAssertFalse(browser.canPerform(.openExternalEditor1), "nothing selected")
         XCTAssertTrue(browser.contentController.select(urls: [urls[0], urls[2]]))
         XCTAssertTrue(browser.canPerform(.openExternalEditor1))

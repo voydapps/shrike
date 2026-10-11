@@ -209,17 +209,16 @@ final class NavigationFeedbackStateTests: XCTestCase {
         let state = NavigationFeedbackState()
         XCTAssertEqual(state.spinnerDelay, 0.200, accuracy: 0.001)
         XCTAssertEqual(state.thumbBudget, 0.200, accuracy: 0.001)
-        XCTAssertEqual(state.overlayIdleTimeout, 1.2, accuracy: 0.001)
+        XCTAssertEqual(state.overlayIdleTimeout, 2.0, accuracy: 0.001)
     }
 
-    func testDefaultOverlayAutoHides_IsFalse() {
-        // Always-on is the default so a user who opens a single file sees
-        // their position without having to trigger a nav event.
+    func testDefaultOverlayAutoHides_IsTrue() {
+        // Spec 24 §1.2: the pill fades by default; held open is opt-in.
         let state = NavigationFeedbackState()
-        XCTAssertFalse(state.overlayAutoHides)
+        XCTAssertTrue(state.overlayAutoHides)
     }
 
-    // MARK: - Position overlay visibility — always-on mode (default)
+    // MARK: - Position overlay visibility — held-open mode (pref off)
 
     func testOverlay_AlwaysOnMode_StaysVisibleAfterIdleTimeout() {
         let state = NavigationFeedbackState(overlayAutoHides: false)

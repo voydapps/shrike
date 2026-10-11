@@ -52,6 +52,13 @@ public enum ViewerAction: Sendable, Hashable {
     case toggleFilmstrip
     case toggleHistogram
     case toggleMagnifierHold(Bool)   // true: pressed, false: released
+    /// Full-screen capsule's zoom pull-down (tooltips only; the button
+    /// opens a menu instead of dispatching).
+    case zoomMenu
+    /// ⌥R: view-only switch between a pair's primary file and its RAW.
+    case toggleRAWFile
+    /// View ▸ Unpin All Panels (full screen).
+    case unpinAllPanels
 
     // Rating / flag / tags
     case rate(Int)         // 0-5
@@ -302,6 +309,8 @@ public enum ViewerKeyMap {
         case .toggleFilmstrip: return .toggleFilmstrip
         case .toggleHistogram: return .toggleHistogram
         case .toggleEditRail: return .toggleEditRail
+        case .toggleRAWFile: return .toggleRAWFile
+        case .unpinAllPanels: return .unpinAllPanels
         case .toggleFullScreen: return .toggleFullscreen
         case .slideshow: return .slideshow
         case .batch: return .batch

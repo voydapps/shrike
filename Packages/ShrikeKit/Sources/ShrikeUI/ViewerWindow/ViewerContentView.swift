@@ -93,6 +93,8 @@ public final class ViewerContentView: NSView {
         installCapsule(capsule)
         return capsule
     }
+    /// Builds the zoom pull-down's menu for the capsule (set by the window).
+    let capsuleZoomMenu = CapsuleZoomMenuSource()
     /// True once the capsule exists (tests).
     internal var isCapsuleBuiltForTesting: Bool { capsuleStorage != nil }
     private let editRail: EditRail
@@ -1006,7 +1008,11 @@ public final class ViewerContentView: NSView {
         addSubview(zoomBadge)
         NSLayoutConstraint.activate([
             zoomBadge.centerXAnchor.constraint(equalTo: centerXAnchor),
-            zoomBadge.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -96),
+            // Spec 24 §1.5: top centre, 12 pt below the content top (the
+            // same reference the rail band uses), in a window and in full
+            // screen. It never meets the capsule, strip, pill or inspector.
+            zoomBadge.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor,
+                                           constant: Self.zoomBadgeTopInset),
         ])
 
         // Histogram overlay: built on its first show (`installHistogramOverlay`).
@@ -1018,6 +1024,9 @@ public final class ViewerContentView: NSView {
 
         // Toast.
         toastHost.install(in: self)
+        // Spec 24 §1.5: the zoom HUD owns the top centre; a toast never
+        // lands on it, whatever the safe area is.
+        toastHost.keepBelow(zoomBadge, gap: 12)
 
         // Page indicator.
         pageIndicator.translatesAutoresizingMaskIntoConstraints = false
@@ -1251,6 +1260,7 @@ public final class ViewerContentView: NSView {
 
         switch windowMode {
         case .windowed:
+            endTeachOnce(update: false)
             filmstrip.setMode(.windowed)
             let pt = CGFloat(Prefs.filmstripHeightPt)
             filmstripHeightConstraint?.constant = pt
@@ -1311,13 +1321,17 @@ public final class ViewerContentView: NSView {
             editRail.setPinGlyphHidden(false)
             // Full screen keeps the labelled rail, centred.
             editRail.setCompact(false)
-            editRail.setToolsEnabled(true)
+            applyRailToolState()
             railAppliedTarget = nil
             if editRailFullscreenConstraints.count > 1 { editRailFullscreenConstraints[1].constant = 0 }
             fullscreenRowBottom = HUDGlass.windowInset
 
             // Position overlay: bottom-left, moves with the bottom stack
             navOverlayBottomToPanel?.isActive = true
+
+            // Spec 24 §1.1: the first full screen of the run shows the
+            // capsule (and with it the pill) for 2 s.
+            beginTeachOnceIfNeeded()
 
             // All panels start hidden; edge hover (or pin) reveals.
             for panel in PanelKind.allCases {
@@ -1326,6 +1340,7 @@ public final class ViewerContentView: NSView {
             placeBottomStack(animated: false)
         }
 
+        syncPillHold()
         for surface in hudSurfaces { applySurfaceLook(surface) }
         needsLayout = true
         positionHistogram(animated: false)
@@ -1526,14 +1541,19 @@ public final class ViewerContentView: NSView {
 
     /// Rating / flag / RAW marks in the position pill.
     /// `flash` shows an auto-hidden pill for 1.5 s.
+    /// Test seam: the marks the pill draws.
+    internal var positionPillMarksForTesting: PillMarks { navPositionOverlay.marks }
+
+    /// The pill's pair chip was clicked.
+    var onToggleRAW: (() -> Void)? {
+        get { navPositionOverlay.onToggleRAW }
+        set { navPositionOverlay.onToggleRAW = newValue }
+    }
+
     public func setPositionMarks(_ marks: PillMarks, flash: Bool = false) {
         navPositionOverlay.marks = marks
         inspector.updateMarks(marks)
         if flash { navPositionOverlay.flashMarks() }
-    }
-
-    public func setPositionOverlayAutoHides(_ autoHides: Bool) {
-        navPositionOverlay.autoHides = autoHides
     }
 
     public func scheduleHairlineIndicator(predicted: TimeInterval) {
@@ -1967,6 +1987,35 @@ public final class ViewerContentView: NSView {
         persistPinState(panel)
         updatePanelVisibility()
         syncPinGlyphs()
+        toast(Self.pinToast(panel, pinned: pinnedPanels.contains(panel)))
+    }
+
+    /// Spec 24 §1.4: every pin and unpin says so, and how to undo it.
+    static func pinToast(_ panel: PanelKind, pinned: Bool) -> String {
+        let (name, command): (String, ShrikeCommand) = {
+            switch panel {
+            case .filmstrip: return ("Filmstrip", .toggleFilmstrip)
+            case .editRail: return ("Edit rail", .toggleEditRail)
+            case .inspector: return ("Inspector", .toggleInspector)
+            case .toolbar: return ("Toolbar", .toggleFullScreen)
+            }
+        }()
+        guard pinned else { return "\(name) unpinned." }
+        let key = ViewerWindowToolbar.keyText(for: command) ?? ""
+        return "\(name) pinned. Press \(key) to unpin."
+    }
+
+    /// View ▸ Unpin All Panels (full screen).
+    var hasPinnedPanels: Bool { !pinnedPanels.subtracting([.toolbar]).isEmpty }
+
+    func unpinAllPanels() {
+        guard windowMode == .fullscreen, hasPinnedPanels else { return }
+        let pinned = pinnedPanels
+        pinnedPanels.removeAll()
+        for panel in pinned { persistPinState(panel) }
+        updatePanelVisibility()
+        syncPinGlyphs()
+        toast("All panels unpinned.")
     }
 
     /// The bottom of the capsule / pill row in full screen (set by
@@ -2037,9 +2086,31 @@ public final class ViewerContentView: NSView {
         return !railIdleHidden || railHeld()
     }
 
+    /// The RAW file of a pair is on screen: the rail's tools are off.
+    var railToolsBlocked = false {
+        didSet {
+            guard railToolsBlocked != oldValue else { return }
+            applyRailToolState()
+        }
+    }
+
+    /// Why the rail's tools are off, for their tooltips (spec 24 §4.5).
+    static let railDecodeErrorReason = "This photo can\u{2019}t be opened, so there is nothing to edit."
+
+    /// Tools on, or off with the reason in every tooltip.
+    private func applyRailToolState() {
+        if railToolsBlocked {
+            editRail.setToolsEnabled(false, reason: ViewerWindow.rawEditBlockedCopy)
+        } else if isShowingDecodeError {
+            editRail.setToolsEnabled(false, reason: Self.railDecodeErrorReason)
+        } else {
+            editRail.setToolsEnabled(true)
+        }
+    }
+
     private func refreshWindowedRail() {
         guard windowMode == .windowed else { return }
-        editRail.setToolsEnabled(!isShowingDecodeError)
+        applyRailToolState()
         let target = windowedRailTarget()
         guard target != railAppliedTarget else { return }
         railAppliedTarget = target
@@ -2193,11 +2264,8 @@ public final class ViewerContentView: NSView {
     }
 
     private func wireHistogram() {
-        histogram.isWanted = { [weak self] in
-            guard let self else { return false }
-            return Prefs.viewerHistogramVisible || !self.inspector.isHidden
-                || (self.windowMode == .windowed && self.windowedInspectorShown)
-        }
+        // One setting decides (overlay and inspector section alike).
+        histogram.isWanted = { Prefs.viewerHistogramVisible }
         histogram.onChange = { [weak self] state in
             self?.histogramStorage?.apply(state)
             self?.inspector.updateHistogram(state)
@@ -2245,6 +2313,18 @@ public final class ViewerContentView: NSView {
             editPanelConstraints.append(clear)
         }
         view.onCycleMode = { [weak self] in self?.histogram.cycleMode() }
+        view.onClose = { [weak self, weak view] in
+            guard let self, let view else { return }
+            if Prefs.viewerHistogramVisible { self.toggleHistogramOverlay() }
+            // Focus goes back to the photo if the click left it inside the
+            // fading panel (or nowhere), so ⌃H works at once.
+            if let window = self.window {
+                let responder = window.firstResponder
+                if responder === window || (responder as? NSView)?.isDescendant(of: view) == true {
+                    window.makeFirstResponder(self)
+                }
+            }
+        }
         view.apply(histogram.state)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0
@@ -2263,16 +2343,18 @@ public final class ViewerContentView: NSView {
     /// Shown when toggled on; in full screen it also fades with the
     /// chrome (hidden after the idle delay, back on pointer movement).
     private func updateHistogramVisibility(animated: Bool) {
+        inspector.updateHistogramVisible(Prefs.viewerHistogramVisible)
         // Windowed: the docked split inspector shows its own histogram, so
         // the floating one steps aside. Full screen: the floating one is a
         // user toggle; it stays until toggled off and sits beside the
         // inspector.
         let fits = canvasFitsHistogram
         lastCanvasFitsHistogram = fits
+        // Spec 24 §1.3: the setting alone decides. In a window the docked
+        // inspector's own section follows the same setting; in full screen
+        // the overlay steps aside while the HUD inspector shows.
         let show = Prefs.viewerHistogramVisible && fits && !isCropToolActive
-            && (windowMode == .windowed
-                ? !windowedInspectorShown
-                : true)
+            && !(windowMode == .fullscreen && fullscreenTarget(.inspector))
         // Built on the first show; never built just to stay hidden.
         guard let view = show ? histogramOverlay : histogramStorage else { return }
         // Building the overlay lays the view out, which can size the
@@ -2405,8 +2487,8 @@ public final class ViewerContentView: NSView {
             return true
         case .toolbar:
             if isEditModeActive { return false }
-            return hoveredPanels.contains(.toolbar) || pinnedPanels.contains(.filmstrip)
-                || (capsuleStorage?.holdsOpen ?? false)
+            // Spec 24 §1.2: a pinned strip no longer carries the capsule.
+            return hoveredPanels.contains(.toolbar) || (capsuleStorage?.holdsOpen ?? false) || teachOnceHold
         default:
             return hoveredPanels.contains(panel) || pinnedPanels.contains(panel)
         }
@@ -2472,7 +2554,12 @@ public final class ViewerContentView: NSView {
     /// a newer one early.
     private var zoomBadgePulse = 0
 
-    /// Shows the zoom HUD for 1.5 s. The number is the photo's pixel
+    /// The zoom HUD sits this far below the top of the content area.
+    static let zoomBadgeTopInset: CGFloat = 12
+    /// It stays this long after the last zoom change.
+    static let zoomBadgeLifetime: TimeInterval = 1.2
+
+    /// Shows the zoom HUD for 1.2 s. The number is the photo's pixel
     /// percent (`pixelScale`: 100 % = one image pixel per screen pixel),
     /// the same as the title, the toolbar Zoom menu and VoiceOver, never
     /// the texture zoom.
@@ -2481,7 +2568,7 @@ public final class ViewerContentView: NSView {
         zoomBadge.alphaValue = 1
         zoomBadgePulse &+= 1
         let pulse = zoomBadgePulse
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.zoomBadgeLifetime) { [weak self] in
             guard let self, self.zoomBadgePulse == pulse else { return }
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.3
@@ -2529,6 +2616,8 @@ public final class ViewerContentView: NSView {
 
         let localPoint = convert(event.locationInWindow, from: nil)
         evaluateZones(at: localPoint)
+        // In a window the pill shows on pointer movement too (spec 24 §5.1).
+        if windowMode == .windowed { navPositionOverlay.pointerMoved() }
         kickIdleTimer()
         livePhotoPointerMoved(to: localPoint)
 
@@ -2558,13 +2647,17 @@ public final class ViewerContentView: NSView {
     /// the view, on panel callbacks (so clicking a filmstrip cell keeps
     /// the strip visible), and by `ViewerWindow` on every nav keypress
     /// (so holding an arrow doesn't let the panel strobe out mid-nav).
+    /// Spec 24 §1.2: a still pointer hides the capsule and strip after 2 s,
+    /// even inside the bottom zone (but never while it is over them).
+    static let idleHideDelay: TimeInterval = 2.0
+
     func kickIdleTimer() {
         chromeIdleTimer?.invalidate()
         // Idle auto-hide applies wherever an edge-hover panel can be on
         // screen. That includes windowed mode (editRail
         // overlay), not just fullscreen. The exit-grace path also drives
         // hides on its own; this is the secondary "user idled away" timer.
-        let delay = TimeInterval(Prefs.chromeFadeOutDelayMs) / 1000.0
+        let delay = Self.idleHideDelay
         chromeIdleTimer = Timer.scheduledTimer(
             withTimeInterval: delay,
             repeats: false
@@ -2581,11 +2674,16 @@ public final class ViewerContentView: NSView {
         let dismissible = hoveredPanels.subtracting(pinnedPanels)
         guard !dismissible.isEmpty else { return }
         // A panel under the pointer stays (it hides only
-        // once the pointer leaves the zone and the panel).
+        // once the pointer leaves the panel). Spec 24 §1.2: the bottom stack
+        // (capsule + strip) also fades after 2 s without movement when the
+        // pointer rests in the reveal zone, so it counts only as "over the
+        // capsule or strip" itself: no 24 pt margin and no zone. A move in
+        // the zone brings it back (`evaluateZones` -> rest -> reveal).
         let pointer = pointerInView()
         let kept = hoveredPanels.filter { panel in
             guard let pointer else { return false }
-            return pointerKeeps(panel, pointer)
+            let bottomStack = windowMode == .fullscreen && (panel == .filmstrip || panel == .toolbar)
+            return bodyContains(panel, pointer, margin: bottomStack ? 0 : Zone.bodyMargin)
         }
         guard kept != hoveredPanels else { return }
         hoveredPanels = kept
@@ -2811,9 +2909,9 @@ public final class ViewerContentView: NSView {
         return convert(mouseLoc, from: nil)
     }
 
-    /// The pointer is over `panel` or within 24 pt of it.
+    /// The pointer is over `panel` or within `margin` (24 pt) of it.
     /// In full screen the filmstrip and the capsule count as one stack.
-    private func bodyContains(_ panel: PanelKind, _ p: NSPoint) -> Bool {
+    private func bodyContains(_ panel: PanelKind, _ p: NSPoint, margin: CGFloat = Zone.bodyMargin) -> Bool {
         var panels: [PanelKind] = [panel]
         if windowMode == .fullscreen, panel == .filmstrip || panel == .toolbar {
             panels = [.filmstrip, .toolbar]
@@ -2821,13 +2919,71 @@ public final class ViewerContentView: NSView {
         return panels.contains { kind in
             if kind == .toolbar, capsuleStorage == nil { return false }
             let v = view(for: kind)
-            return !v.isHidden && v.frame.insetBy(dx: -Zone.bodyMargin, dy: -Zone.bodyMargin).contains(p)
+            return !v.isHidden && v.frame.insetBy(dx: -margin, dy: -margin).contains(p)
         }
     }
 
     /// Test seam — whether there's an active exit-grace timer for `panel`.
     internal func panelExitGraceActiveForTesting(_ panel: PanelKind) -> Bool {
         panelExitGraceWorkItems[panel] != nil
+    }
+
+    // MARK: Teach once (spec 24 §1.1)
+
+    /// True once any viewer entered full screen in this run. Tests start
+    /// "taught" so the many full-screen tests see a clean start; the
+    /// teach-once tests reset it.
+    static var teachOnceDone = ShrikeDataPaths.isRunningTests
+    static let teachOnceDuration: TimeInterval = 2.0
+    /// The capsule (and the pill with it) is held open by the first entry.
+    private var teachOnceHold = false
+    private var teachOnceWorkItem: DispatchWorkItem?
+
+    private func beginTeachOnceIfNeeded() {
+        guard !Self.teachOnceDone, !isEditModeActive else { return }
+        Self.teachOnceDone = true
+        teachOnceHold = true
+        // Builds the capsule now: it must exist to show.
+        _ = toolbar
+        // The 2 s start when the window has landed in full screen
+        // (`fullScreenDidEnter`); this longer clock only covers a landing
+        // that never reports.
+        scheduleTeachOnceEnd(after: Self.teachOnceDuration + 3.0)
+    }
+
+    private func scheduleTeachOnceEnd(after delay: TimeInterval) {
+        teachOnceWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in self?.endTeachOnce(update: true) }
+        }
+        teachOnceWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    /// The window finished its full-screen animation: the lesson's 2 s
+    /// start now, so the user sees the whole 2 s.
+    func fullScreenDidEnter() {
+        guard teachOnceHold else { return }
+        scheduleTeachOnceEnd(after: Self.teachOnceDuration)
+    }
+
+    private func endTeachOnce(update: Bool) {
+        teachOnceWorkItem?.cancel()
+        teachOnceWorkItem = nil
+        guard teachOnceHold else { return }
+        teachOnceHold = false
+        if update { updatePanelVisibility() }
+    }
+
+    /// Test seams.
+    internal static func resetTeachOnceForTesting(taught: Bool) { teachOnceDone = taught }
+    internal var teachOnceActiveForTesting: Bool { teachOnceHold }
+    internal func fireTeachOnceExpiryForTesting() { endTeachOnce(update: true) }
+
+    /// Spec 24 §1.2: the position pill shows while the capsule shows and
+    /// hides with it.
+    private func syncPillHold() {
+        navPositionOverlay.setHeldByCapsule(windowMode == .fullscreen && fullscreenTarget(.toolbar))
     }
 
     private func updatePanelVisibility() {
@@ -2842,6 +2998,7 @@ public final class ViewerContentView: NSView {
             }
             setPanel(panel, visible: shouldShow)
         }
+        syncPillHold()
         updateHistogramVisibility(animated: true)
         positionHistogram(animated: true)
         histogram.wantedDidChange()
@@ -2872,6 +3029,7 @@ public final class ViewerContentView: NSView {
         capsule.actionDispatcher = { [weak self] action in
             self?.actionDispatcher?(action)
         }
+        capsule.zoomMenuProvider = { [weak self] in self?.capsuleZoomMenu.makeMenu() }
         capsule.onHoldChanged = { [weak self] in
             self?.updatePanelVisibility()
         }

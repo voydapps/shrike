@@ -54,7 +54,7 @@ public enum ShrikeAlert {
             switch spec.role {
             case .default:
                 button.keyEquivalent = "\r"
-                button.bezelColor = .controlAccentColor   // one accent
+                button.useAccentFill()   // one accent
             case .cancel:
                 button.keyEquivalent = "\u{1b}"
             case .destructive:

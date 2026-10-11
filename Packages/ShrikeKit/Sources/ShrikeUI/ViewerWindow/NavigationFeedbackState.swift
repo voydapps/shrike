@@ -14,7 +14,7 @@
 //       `ThumbnailCache` and paint it as a placeholder. Swap to full-res
 //       when the decode resolves.
 //    2. **Position overlay** — "43 / 180 — DSC_0042.jpg" in the bottom-left
-//       corner on every nav event, fades after ~1.2 s of idle. Integrates
+//       corner on every nav event, fades after ~2.0 s of idle. Integrates
 //       a hairline loading indicator along its bottom edge for slow decodes
 //    3. **Canvas dim** — deferred 120 ms after nav; applied only on slow
 //       decodes, cleared on first paint.
@@ -83,15 +83,15 @@ public final class NavigationFeedbackState {
 
     /// How long the position overlay stays fully visible after the last
     /// nav event before it starts fading.
-    public static let defaultOverlayIdleTimeout: TimeInterval = 1.2
+    public static let defaultOverlayIdleTimeout: TimeInterval = 2.0
 
     public let spinnerDelay: TimeInterval
     public let thumbBudget: TimeInterval
     public let overlayIdleTimeout: TimeInterval
 
     /// When true, the position overlay fades out after `overlayIdleTimeout`
-    /// seconds of nav inactivity (original behavior). When false, the
-    /// overlay is always-on for the life of the viewer window.
+    /// seconds of nav inactivity (the default, spec 24 §1.2). When false, the
+    /// overlay is held open for the life of the viewer window.
     ///
     /// Mirrored from `Prefs.viewerPositionOverlayAutoHides` by the viewer at
     /// construction time so the pure-logic layer can be exercised without
@@ -104,7 +104,7 @@ public final class NavigationFeedbackState {
     /// True while the position overlay is currently visible. Flipped to true
     /// by `didShowOverlay()` on each nav event (or initial-image show) and
     /// back to false by `overlayIdleTimeoutFired(...)` — but only if
-    /// `overlayAutoHides` is true. In always-on mode the flag never returns
+    /// `overlayAutoHides` is true. When it is off the flag never returns
     /// to false short of an explicit `forceOverlayHidden()` (window teardown).
     public private(set) var overlayVisible: Bool = false
 
@@ -117,7 +117,7 @@ public final class NavigationFeedbackState {
         spinnerDelay: TimeInterval = NavigationFeedbackState.defaultSpinnerDelay,
         thumbBudget: TimeInterval = NavigationFeedbackState.defaultThumbBudget,
         overlayIdleTimeout: TimeInterval = NavigationFeedbackState.defaultOverlayIdleTimeout,
-        overlayAutoHides: Bool = false
+        overlayAutoHides: Bool = true
     ) {
         self.spinnerDelay = spinnerDelay
         self.thumbBudget = thumbBudget
@@ -244,7 +244,7 @@ public final class NavigationFeedbackState {
     /// Called by the idle-fade task after `overlayIdleTimeout` elapses.
     /// Returns `true` if the caller should actually animate the fade-out.
     /// Returns `false` when:
-    ///   * `overlayAutoHides` is false (always-on mode; the task should
+    ///   * `overlayAutoHides` is false (held-open mode; the task should
     ///     never have been scheduled, but we guard defensively),
     ///   * a newer `didShowOverlay()` call has since reset the idle timer,
     ///   * the overlay has already been force-hidden.

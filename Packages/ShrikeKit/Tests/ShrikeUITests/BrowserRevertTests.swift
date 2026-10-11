@@ -80,6 +80,9 @@ final class BrowserRevertTests: XCTestCase {
         let (browser, _, _) = try await makeBrowser()
         defer { browser.close() }
         let a = dir.appendingPathComponent("a.jpg"), b = dir.appendingPathComponent("b.jpg")
+        // The first photo (a.jpg, edited) is selected on open.
+        XCTAssertTrue(browser.canPerform(.revertToOriginal), "the first photo is selected on open")
+        browser.contentController.deselectAll()
         XCTAssertFalse(browser.canPerform(.revertToOriginal), "nothing selected")
         XCTAssertTrue(browser.contentController.select(urls: [b]))
         XCTAssertFalse(browser.canPerform(.revertToOriginal), "not edited")

@@ -175,6 +175,37 @@ public final class AppCommands: NSObject, NSMenuItemValidation {
 
     /// Open Recent's list: the document controller's
     /// recents, capped at `Prefs.recentFoldersLimit`.
+    /// A Recent item whose file or folder is gone while its disk is still
+    /// there (deleted or moved). An unmounted disk is not dead: that item
+    /// stays, dimmed, and comes back with the disk. `volumeMounted` gets
+    /// the `/Volumes/<name>` of an external disk.
+    nonisolated static func isDeadRecent(
+        _ url: URL,
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> Bool {
+        let path = url.standardizedFileURL.path
+        guard !fileExists(path) else { return false }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+        if parts.count >= 2, parts[0] == "Volumes" {
+            return fileExists("/Volumes/\(parts[1])")
+        }
+        return true
+    }
+
+    /// Takes dead items out of Open Recent. The document controller can
+    /// only clear the whole list, so the live items go back in, oldest
+    /// first, which keeps their order.
+    @MainActor
+    public static func forgetRecents(_ dead: [URL]) {
+        guard !dead.isEmpty else { return }
+        let controller = NSDocumentController.shared
+        let gone = Set(dead.map(\.standardizedFileURL))
+        let keep = controller.recentDocumentURLs.filter { !gone.contains($0.standardizedFileURL) }
+        guard keep.count != controller.recentDocumentURLs.count else { return }
+        controller.clearRecentDocuments(nil)
+        for url in keep.reversed() { controller.noteNewRecentDocumentURL(url) }
+    }
+
     public static func recentURLs() -> [URL] {
         let limit = max(0, Prefs.recentFoldersLimit)
         return Array(NSDocumentController.shared.recentDocumentURLs.prefix(limit))

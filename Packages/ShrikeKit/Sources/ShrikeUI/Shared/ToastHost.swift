@@ -192,11 +192,20 @@ public final class ToastHostView: HUDSurfaceView {
         container.addSubview(self)
         let top = topAnchor.constraint(equalTo: container.topAnchor,
                                        constant: placement.topOffset(safeAreaTop: 0))
+        // Below required, so a `keepBelow` rule can push the toast down.
+        top.priority = .defaultHigh
         topConstraint = top
         NSLayoutConstraint.activate([
             centerXAnchor.constraint(equalTo: container.centerXAnchor),
             top,
         ])
+    }
+
+    /// The toast never sits on `other` (e.g. the viewer's zoom HUD at the
+    /// top centre): its top stays at least `gap` below `other`'s bottom.
+    /// Both views must share a superview, and `install(in:)` must have run.
+    public func keepBelow(_ other: NSView, gap: CGFloat = 12) {
+        topAnchor.constraint(greaterThanOrEqualTo: other.bottomAnchor, constant: gap).isActive = true
     }
 
     // MARK: - Show / dismiss

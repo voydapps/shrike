@@ -48,12 +48,19 @@ final class FilmstripView: HUDSurfaceView {
     /// whatever its own show / hide code asks for, and the asked-for state
     /// comes back when the empty state goes away.
     var isSuppressed = false {
-        didSet { super.isHidden = wantsHidden || isSuppressed }
+        didSet {
+            super.isHidden = wantsHidden || isSuppressed
+            if isSuppressed { clearHover() }
+        }
     }
     private var wantsHidden = false
     override var isHidden: Bool {
         get { super.isHidden }
-        set { wantsHidden = newValue; super.isHidden = newValue || isSuppressed }
+        set {
+            wantsHidden = newValue
+            super.isHidden = newValue || isSuppressed
+            if newValue || isSuppressed { clearHover() }
+        }
     }
 
     enum Mode: Sendable, Hashable {
@@ -82,7 +89,7 @@ final class FilmstripView: HUDSurfaceView {
     private let topHairline = TokenBackgroundView(fillColor: NSColor.white.withAlphaComponent(0.08))
 
     private let scrollView: FilmstripScrollView
-    private let stackView = NSStackView()
+    private let stackView = StripStackView()
 
     /// Pin glyph far-corner convention. Top-right, 8 pt inset.
     /// Replaces the 20 pt pin strip
@@ -140,6 +147,11 @@ final class FilmstripView: HUDSurfaceView {
         return (cell.shownMarks.rating, cell.shownMarks.flagged, cell.flagDrawnForTesting, cell.starsDrawnForTesting)
     }
 
+    /// Test seam: the file each live cell shows, by global index.
+    var cellFileNamesForTesting: [Int: String] {
+        cellsByIndex.mapValues { ($0.source as? FileImageSource)?.url.lastPathComponent ?? $0.source.id }
+    }
+
     /// Test seam: the cell view drawn for `globalIndex`, if it is built.
     func cellViewForTesting(_ globalIndex: Int) -> NSView? { cellsByIndex[globalIndex] }
 
@@ -191,6 +203,8 @@ final class FilmstripView: HUDSurfaceView {
         scrollView.filmstrip = self
         setupBackdrops()
         setupLayout()
+        installHoverObservers()
+        stackView.onLaidOut = { [weak self] in self?.refreshHover() }
         setupPinOverlay()
         applyMode()
         // Install the aspect-cache hook — every time a cell settles its
@@ -403,13 +417,24 @@ final class FilmstripView: HUDSurfaceView {
         let scale = backingScaleFactorForRequests()
         let pixelSize = Int(ceil(cellSize * scale))
         let incomingIndices = Set(neighbors.map(\.idx))
+        let incomingIDs = Dictionary(neighbors.map { ($0.idx, $0.source.id) },
+                                     uniquingKeysWith: { a, _ in a })
 
-        // 1. Remove cells whose indices left the window.
-        for (idx, cell) in cellsByIndex where !incomingIndices.contains(idx) {
+        // 1. Remove cells whose indices left the window, and cells whose
+        //    index now holds another photo. After a delete (or an undo)
+        //    the list shifts: the same index points at the next photo, so
+        //    a cell kept by index alone would keep showing the deleted
+        //    one's thumbnail and the strip would never lose a cell.
+        var listShifted = false
+        for (idx, cell) in cellsByIndex
+        where !incomingIndices.contains(idx) || incomingIDs[idx] != cell.source.id {
+            if incomingIndices.contains(idx) { listShifted = true }
             stackView.removeArrangedSubview(cell)
             cell.removeFromSuperview()
             cellsByIndex.removeValue(forKey: idx)
         }
+        // Cached aspects are keyed by index: stale once the list shifted.
+        if listShifted { recentAspects.removeAll() }
 
         // 2. For each incoming slot, ensure a cell exists at the right
         //    position in the stack. Survivors just shift position;
@@ -434,6 +459,7 @@ final class FilmstripView: HUDSurfaceView {
                 cell.dragItemProvider = { [weak self] globalIndex in
                     self?.dragItem(for: globalIndex)
                 }
+                cell.onDragBegan = { [weak self] in self?.clearHover() }
                 // Fix #3 — if this index was previously in the neighbor
                 // window and had its aspect resolved, seed the cell's
                 // width constraint from the cached value right now so
@@ -445,6 +471,8 @@ final class FilmstripView: HUDSurfaceView {
                 }
                 stackView.insertArrangedSubview(cell, at: offset)
                 cellsByIndex[pair.idx] = cell
+                // The hand cursor for a cell that scrolled in.
+                window?.invalidateCursorRects(for: cell)
                 cell.requestThumbnail(
                     services: services,
                     fallbackFor: pair.source,
@@ -465,6 +493,8 @@ final class FilmstripView: HUDSurfaceView {
         //    rebuild is firing on top of a very recent selection
         //    (arrow-key burst).
         centerSelectedCell(animated: shouldAnimateSelection())
+        // Cells came and went: the hover follows the pointer again.
+        refreshHover()
 
         // 5. Evict far-out aspect cache entries so we don't grow
         //    unbounded across a long navigation session. Keep ±(count×3)
@@ -618,6 +648,139 @@ final class FilmstripView: HUDSurfaceView {
     /// (see `handleScrollWheel`).
     private var scrollAccumulator: CGFloat = 0
 
+    // MARK: - Hover (spec 24 §2)
+    //
+    // One tracking area for the whole strip. `mouseMoved` hit-tests the
+    // cells; the cell under the pointer (not the selected one) shows the
+    // ring and the veil. Only one cell is hovered at a time.
+
+    private var hoverTracking: NSTrackingArea?
+    /// The cell under the pointer, by global index.
+    private(set) var hoveredGlobalIndex: Int?
+    /// The pointer in window coordinates while it is inside the strip.
+    private var hoverWindowPoint: NSPoint?
+    private let scrollObservers = StripObserverBag()
+    private var windowObservers = StripObserverBag()
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTracking { removeTrackingArea(hoverTracking) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverTracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { hoverPointer(atWindowPoint: event.locationInWindow) }
+    override func mouseMoved(with event: NSEvent) { hoverPointer(atWindowPoint: event.locationInWindow) }
+    override func mouseExited(with event: NSEvent) { clearHover() }
+
+    func hoverPointer(atWindowPoint point: NSPoint) {
+        hoverWindowPoint = point
+        applyHover(at: point)
+    }
+
+    /// The pointer left, a drag started, the strip hid or the window lost key.
+    func clearHover() {
+        hoverWindowPoint = nil
+        setHovered(index: nil)
+    }
+
+    /// The cells moved under a still pointer (scroll, new neighbours):
+    /// hit-test again.
+    func refreshHover() {
+        if let point = hoverWindowPoint { applyHover(at: point) } else { setHovered(index: nil) }
+    }
+
+    private func applyHover(at point: NSPoint) {
+        guard !isHidden, scrollView.frame.contains(convert(point, from: nil)) else {
+            setHovered(index: nil)
+            return
+        }
+        // The cell is found by its column: the strip's top and bottom
+        // padding, the gap between two cells and the side padding all belong
+        // to the nearest cell, so the hover shows on the very first pointer
+        // move into the strip, not only once the pointer is exactly on a cell.
+        let inStack = stackView.convert(point, from: nil)
+        setHovered(index: nearestCellIndex(atStackX: inStack.x))
+    }
+
+    /// The cell whose column is closest to `x` (stack coordinates); a point
+    /// inside a cell or its half gap is at distance 0.
+    private func nearestCellIndex(atStackX x: CGFloat) -> Int? {
+        let slack = stackView.spacing / 2
+        var best: (index: Int, distance: CGFloat)?
+        for (index, cell) in cellsByIndex {
+            let frame = cell.frame
+            let distance = max(frame.minX - slack - x, x - (frame.maxX + slack), 0)
+            if best == nil || distance < best!.distance
+                || (distance == best!.distance && index < best!.index) {
+                best = (index, distance)
+            }
+        }
+        // Only the strip's own padding counts, not empty room past the
+        // last cell (a short folder).
+        guard let best, best.distance <= stackView.edgeInsets.left else { return nil }
+        return best.index
+    }
+
+    private func setHovered(index: Int?) {
+        let valid = index.flatMap { cellsByIndex[$0] != nil ? $0 : nil }
+        guard valid != hoveredGlobalIndex else { return }
+        if let old = hoveredGlobalIndex { cellsByIndex[old]?.setHovered(false) }
+        hoveredGlobalIndex = valid
+        if let new = valid { cellsByIndex[new]?.setHovered(true) }
+    }
+
+    private func installHoverObservers() {
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        scrollObservers.add(NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshHover() }
+        })
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        windowObservers.removeAll()
+        clearHover()
+        guard let window else { return }
+        windowObservers.add(NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.clearHover() }
+        })
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        clearHover()
+    }
+
+    /// Test seams.
+    internal var hoveredGlobalIndexForTesting: Int? { hoveredGlobalIndex }
+    internal func hoverLookForTesting(_ cell: NSView)
+        -> (ringWidth: CGFloat, ringColor: CGColor?, ringOpacity: Float, overlayAlpha: CGFloat)? {
+        (cell as? ThumbCell)?.hoverLookForTesting
+    }
+    /// The centre of the cell for `globalIndex`, in window coordinates.
+    internal func cellCenterInWindowForTesting(_ globalIndex: Int) -> NSPoint? {
+        guard let cell = cellsByIndex[globalIndex] else { return nil }
+        return cell.convert(NSPoint(x: cell.bounds.midX, y: cell.bounds.midY), to: nil)
+    }
+    internal func hoverFadeForTesting(_ cell: NSView) -> CAAnimation? { (cell as? ThumbCell)?.hoverFadeForTesting }
+    internal func cellToolTipForTesting(_ cell: NSView) -> String? { cell.toolTip }
+    /// Scrolls the strip sideways by `dx` points (clip-view bounds change).
+    internal func scrollForTesting(by dx: CGFloat) {
+        let clip = scrollView.contentView
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x + dx, y: clip.bounds.origin.y))
+        scrollView.reflectScrolledClipView(clip)
+    }
+    internal func dragBeganOnCellForTesting(_ globalIndex: Int) { cellsByIndex[globalIndex]?.onDragBegan?() }
+
     // MARK: - Test seams
 
     /// Test seam — returns the ordered list of global indices currently
@@ -688,6 +851,7 @@ final class FilmstripView: HUDSurfaceView {
         let cell = ThumbCell(globalIndex: globalIndex, source: SyntheticPlaceholderSource(id: "t\(globalIndex)"))
         cell.setCellSize(cellSize)
         cell.overrideAspectForTesting(aspect)
+        cell.onDragBegan = { [weak self] in self?.clearHover() }
         cellsByIndex[globalIndex] = cell
         stackView.addArrangedSubview(cell)
         return cell
@@ -855,7 +1019,50 @@ private final class ThumbCell: NSView, NSDraggingSource {
             guard isSelected != oldValue else { return }
             highlight.layer?.borderWidth = isSelected ? Self.selectionRingWidth : 0
             needsDisplay = true
+            // The selected look wins over the hover look.
+            applyHover(animated: false)
         }
+    }
+
+    // MARK: Hover (spec 24 §2)
+
+    /// A white 10 % veil on the photo, below the stars and the flag.
+    private let hoverOverlay = StripPassThroughView()
+    /// The hover ring, inside the cell edge.
+    private let hoverRing = StripPassThroughView()
+    /// The pointer is over this cell. The strip owns the tracking.
+    private(set) var isHovered = false
+    /// Fired when this cell starts a drag out: the strip clears the hover.
+    var onDragBegan: (() -> Void)?
+
+    func setHovered(_ on: Bool, animated: Bool = true) {
+        guard on != isHovered else { return }
+        isHovered = on
+        applyHover(animated: animated)
+    }
+
+    /// Hover shows only on a cell that is not selected.
+    private var showsHover: Bool { isHovered && !isSelected }
+
+    private func applyHover(animated: Bool) {
+        guard let ring = hoverRing.layer, let veil = hoverOverlay.layer else { return }
+        StripHoverLook.fade(ring, visible: showsHover, animated: animated)
+        StripHoverLook.fade(veil, visible: showsHover, animated: animated)
+    }
+
+    /// Test seam: what the hover draws now (target state).
+    var hoverLookForTesting: (ringWidth: CGFloat, ringColor: CGColor?, ringOpacity: Float, overlayAlpha: CGFloat) {
+        let veil = hoverOverlay.layer
+        let veilAlpha = (veil?.opacity ?? 0) > 0 ? (veil?.backgroundColor?.alpha ?? 0) : 0
+        return (hoverRing.layer?.borderWidth ?? 0, hoverRing.layer?.borderColor, hoverRing.layer?.opacity ?? 0,
+                veilAlpha)
+    }
+
+    /// Test seam: the fade running on the ring, if any.
+    var hoverFadeForTesting: CAAnimation? { hoverRing.layer?.animation(forKey: "shrike.stripHover") }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 
     private var colorObserver: LiveColorObserver?
@@ -870,6 +1077,11 @@ private final class ThumbCell: NSView, NSDraggingSource {
         highlight.layer?.borderColor = isSelected
             ? NSColor.controlAccentColor.resolvedCGColor(for: appearance) : nil
         highlight.layer?.borderWidth = isSelected ? Self.selectionRingWidth : 0
+        // Hover: ring colour and width resolve here (Increase Contrast,
+        // appearance); the veil colour is plain white.
+        hoverRing.layer?.borderColor = StripHoverLook.ringColor(for: appearance)
+        hoverRing.layer?.borderWidth = StripHoverLook.ringWidth
+        hoverOverlay.layer?.backgroundColor = StripHoverLook.overlayColor
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -894,10 +1106,27 @@ private final class ThumbCell: NSView, NSDraggingSource {
         imageView.imageScaling = .scaleProportionallyUpOrDown
         addSubview(imageView)
 
+        // Hover veil: above the photo, below the stars and the flag.
+        hoverOverlay.wantsLayer = true
+        hoverOverlay.translatesAutoresizingMaskIntoConstraints = false
+        hoverOverlay.layer?.cornerRadius = StripHoverLook.cornerRadius
+        hoverOverlay.layer?.masksToBounds = true
+        hoverOverlay.layer?.backgroundColor = StripHoverLook.overlayColor
+        hoverOverlay.layer?.opacity = 0
+        addSubview(hoverOverlay)
+
         highlight.wantsLayer = true
         highlight.translatesAutoresizingMaskIntoConstraints = false
         highlight.layer?.cornerRadius = 6
         addSubview(highlight)
+
+        hoverRing.wantsLayer = true
+        hoverRing.translatesAutoresizingMaskIntoConstraints = false
+        hoverRing.layer?.cornerRadius = StripHoverLook.cornerRadius
+        hoverRing.layer?.borderWidth = StripHoverLook.ringWidth
+        hoverRing.layer?.opacity = 0
+        addSubview(hoverRing)
+        if let url = (source as? FileImageSource)?.url { toolTip = url.lastPathComponent }
 
         starsLabel.translatesAutoresizingMaskIntoConstraints = false
         starsLabel.font = .systemFont(ofSize: 8)
@@ -932,6 +1161,15 @@ private final class ThumbCell: NSView, NSDraggingSource {
             highlight.bottomAnchor.constraint(equalTo: bottomAnchor, constant: 2),
             highlight.leadingAnchor.constraint(equalTo: leadingAnchor, constant: -2),
             highlight.trailingAnchor.constraint(equalTo: trailingAnchor, constant: 2),
+            hoverOverlay.topAnchor.constraint(equalTo: topAnchor),
+            hoverOverlay.bottomAnchor.constraint(equalTo: bottomAnchor),
+            hoverOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hoverOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+            // The hover ring sits inside the cell edge.
+            hoverRing.topAnchor.constraint(equalTo: topAnchor),
+            hoverRing.bottomAnchor.constraint(equalTo: bottomAnchor),
+            hoverRing.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hoverRing.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
 
         // Resolve aspect from the image header (header-only properties
@@ -958,6 +1196,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
         guard hypot(point.x - start.x, point.y - start.y) >= 4,
               let item = dragItemProvider?(globalIndex) else { return }
         mouseDownPoint = nil
+        onDragBegan?()
         let dragging = NSDraggingItem(pasteboardWriter: item)
         dragging.setDraggingFrame(bounds, contents: imageView.image)
         beginDraggingSession(with: [dragging], event: event, source: self)
@@ -1200,5 +1439,17 @@ extension FilmstripView: PinCornerOverlayDelegate {
         // `pinned` flag will be updated via `setPinned(_:)` on the next
         // state sync, so we don't pre-emptively flip it here.
         onTogglePin?()
+    }
+}
+
+/// The strip's row of cells. Tells the strip after every layout pass, so the
+/// hover follows cells that moved under a still pointer (a thumbnail arrived
+/// and changed a cell's width).
+@MainActor
+private final class StripStackView: NSStackView {
+    var onLaidOut: (() -> Void)?
+    override func layout() {
+        super.layout()
+        onLaidOut?()
     }
 }

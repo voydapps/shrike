@@ -198,8 +198,15 @@ public final class WindowCoordinator {
     private func noteRecents(_ urls: [URL], after delay: TimeInterval) {
         guard !urls.isEmpty else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            for url in urls { NSDocumentController.shared.noteNewRecentDocumentURL(url) }
+            for url in urls { Self.noteRecent(url) }
         }
+    }
+
+    /// Open Recent. Tests open folders in scratch directories that are
+    /// deleted at the end of the run; those must not reach the user's list.
+    static func noteRecent(_ url: URL) {
+        guard !ShrikeDataPaths.isRunningTests else { return }
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
     }
 
     /// Opens `urls` from Finder, the Dock, an Open panel or a drop.
@@ -380,7 +387,7 @@ public final class WindowCoordinator {
         if let cascadeFrom { controller.cascade(from: cascadeFrom) }
         browsers.append(controller)
         track(controller.window)
-        if let folder { NSDocumentController.shared.noteNewRecentDocumentURL(folder) }
+        if let folder { Self.noteRecent(folder) }
         onWindowOpened?()
         return controller
     }
@@ -412,8 +419,29 @@ public final class WindowCoordinator {
     /// the viewer gives up those 24 pt of size instead.
     nonisolated static let pairedViewerOffset: CGFloat = 24
 
+    /// A Browser smaller than this (a wide strip, a narrow column) does not
+    /// give its frame to the viewer: the viewer opens at its default size,
+    /// centred on the Browser (spec 19 s3.1 keeps the Browser's frame when
+    /// it is a sensible viewer size).
+    nonisolated static let pairedViewerMinimum = NSSize(width: 800, height: 500)
+    nonisolated static let pairedViewerDefault = NSSize(width: 1200, height: 800)
+
     nonisolated static func pairedViewerFrame(over browser: NSRect, visible: NSRect?) -> NSRect {
         let step = pairedViewerOffset
+        if browser.width < pairedViewerMinimum.width || browser.height < pairedViewerMinimum.height {
+            var size = pairedViewerDefault
+            if let visible {
+                size.width = min(size.width, visible.width)
+                size.height = min(size.height, visible.height)
+            }
+            var frame = NSRect(x: browser.midX - size.width / 2, y: browser.midY - size.height / 2,
+                               width: size.width, height: size.height)
+            if let visible {
+                frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+                frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+            }
+            return frame
+        }
         var frame = browser.offsetBy(dx: step, dy: -step)
         guard let visible else { return frame }
         if frame.maxX > visible.maxX {

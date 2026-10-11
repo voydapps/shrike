@@ -222,6 +222,13 @@ final class InspectorPanel: HUDSurfaceView {
 
     /// Rating, flag, tags and the edited state of the displayed item.
     /// Histogram band (248 × 96).
+    /// Test seam: the Histogram section is drawn.
+    var histogramSectionShownForTesting: Bool { viewModel.histogramVisible }
+
+    func updateHistogramVisible(_ visible: Bool) {
+        if viewModel.histogramVisible != visible { viewModel.histogramVisible = visible }
+    }
+
     func updateHistogram(_ state: HistogramDisplayState) {
         if viewModel.histogram != state { viewModel.histogram = state }
     }
@@ -281,6 +288,9 @@ final class InspectorViewModel: ObservableObject {
     @Published var marks = PillMarks()
     @Published var originalKeptSince: String?
     @Published var histogram = HistogramDisplayState()
+    /// The one histogram setting (⌃H / View menu / toolbar): off hides this
+    /// section as well as the floating overlay.
+    @Published var histogramVisible = Prefs.viewerHistogramVisible
 
     /// Height of the scrolled content (padding included), reported by the
     /// SwiftUI content after every layout. Not `@Published`: it feeds an
@@ -361,6 +371,7 @@ struct InspectorContent: View {
                     }
                 }
 
+                if model.histogramVisible {
                 VStack(alignment: .leading, spacing: 6) {
                     header("Histogram")
                     // As wide as the column (248 pt at the
@@ -369,6 +380,7 @@ struct InspectorContent: View {
                     HistogramBand(state: model.histogram)
                         .frame(maxWidth: .infinity)
                         .frame(height: 96)
+                }
                 }
 
                 Spacer(minLength: 0)

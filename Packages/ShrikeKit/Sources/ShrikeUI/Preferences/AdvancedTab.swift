@@ -33,7 +33,7 @@ struct AdvancedTab: View {
                 Toggle("Position overlay auto-hides after idle",
                        isOn: store.viewerPositionOverlayAutoHides)
                     .accessibilityHint(
-                        "When on, the bottom-left filename pill fades after 1.2 s. Off (default) keeps it always visible."
+                        "On (default): the bottom-left filename pill fades after 2 s. Off keeps it always visible."
                     )
             } header: {
                 Text("Viewer").font(.headline)

@@ -100,7 +100,7 @@ final class RenameSheet: NSObject, NSTextFieldDelegate {
         cancelButton.target = self
         cancelButton.action = #selector(cancel(_:))
         renameButton.keyEquivalent = "\r"
-        renameButton.bezelColor = .controlAccentColor   // one accent
+        renameButton.useAccentFill()   // one accent
         renameButton.target = self
         renameButton.action = #selector(rename(_:))
         let buttons = NSStackView(views: [cancelButton, renameButton])

@@ -121,7 +121,13 @@ final class BrowserBottomBarTests: XCTestCase {
         XCTAssertNil(bar.subviews.first { $0 is NSVisualEffectView }, "no custom grey strip")
 
         // Status follows the selection.
-        XCTAssertEqual(browser.statusTextForTesting, "")
+        // The first photo is selected when the folder opens, at once. Its
+        // status text comes once the header read (JPEG listings have no
+        // pixel size) ends or times out, so wait for it.
+        XCTAssertEqual(browser.contentController.selectedItems.map(\.displayName), ["a.jpg"],
+                       "first photo is selected when the folder opens")
+        _ = await waitUntil { browser.statusTextForTesting.hasPrefix("a.jpg") }
+        XCTAssertTrue(browser.statusTextForTesting.hasPrefix("a.jpg"), browser.statusTextForTesting)
         browser.contentController.selectAll()
         browser.browserContentDidSelect(browser.contentController.selectedItems)
         XCTAssertTrue(browser.statusTextForTesting.hasPrefix("2 selected · "), browser.statusTextForTesting)

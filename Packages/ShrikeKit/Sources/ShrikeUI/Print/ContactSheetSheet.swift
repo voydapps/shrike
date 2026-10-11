@@ -195,7 +195,7 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
         cancel.keyEquivalent = "\u{1b}"
         let export = NSButton(title: "Export…", target: self, action: #selector(exportClicked))
         export.keyEquivalent = "\r"
-        export.bezelColor = .controlAccentColor   // one accent
+        export.useAccentFill()   // one accent
         let buttons = NSStackView(views: [cancel, export])
         buttons.spacing = 12
 

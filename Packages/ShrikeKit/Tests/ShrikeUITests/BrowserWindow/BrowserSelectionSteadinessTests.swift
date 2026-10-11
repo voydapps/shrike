@@ -113,6 +113,9 @@ final class BrowserSelectionSteadinessTests: XCTestCase {
         let b = try writeJPEG("b.jpg", width: 48, height: 64)
         let browser = try await makeBrowser(count: 2)
         defer { browser.close() }
+        // The first photo is selected on open: start from a clean selection.
+        browser.contentController.deselectAll()
+        await browser.waitForInspectorInfo()
         let pane = browser.inspectorForTesting
         var published: [InspectorState] = []
         pane.onPublishForTesting = { published.append($0) }
@@ -189,7 +192,9 @@ final class BrowserSelectionSteadinessTests: XCTestCase {
         XCTAssertEqual(preview.shownURL, a)
 
         try click(b, in: browser)
-        XCTAssertTrue(preview.image === imageA, "A stays until B is ready")
+        // A stays until B is ready, or B is there at once when it was read ahead.
+        XCTAssertNotNil(preview.image)
+        XCTAssertTrue(preview.image === imageA || preview.shownURL == b, "A stays, or B has replaced it")
         await browser.waitForInspectorInfo()
         layOutInspector(browser)
         XCTAssertEqual(preview.shownURL, b)
@@ -214,6 +219,9 @@ final class BrowserSelectionSteadinessTests: XCTestCase {
         defer { browser.close() }
         XCTAssertNil(browser.contentController.allItems.first?.pixelWidth, "a JPEG listing has no size")
         let bar = browser.bottomBar
+        // The first photo is selected on open: start from a clean selection.
+        browser.contentController.deselectAll()
+        await browser.waitForInspectorInfo()
         for (step, url) in [a, b, a].enumerated() {
             let before = bar.statusChanges
             try click(url, in: browser)

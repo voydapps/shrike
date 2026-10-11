@@ -87,6 +87,8 @@ public final class ViewerWindow: NSWindow {
     var pendingSwipeHandOver: (index: Int, handOver: SwipeHandOver)?
     /// Trims the decode cache a while after the viewer is hidden.
     var hiddenTrimTask: Task<Void, Never>?
+    /// The ⌥R readability check (spec 24 §4).
+    var rawSwitchTask: Task<Void, Never>?
     /// FastStone preset: Esc in paired full screen also returns to the Browser.
     var returnToBrowserAfterFullScreenExit = false
     /// Go ▸ Go to Folder… while its sheet is up.
@@ -287,7 +289,9 @@ public final class ViewerWindow: NSWindow {
             if shown { self?.contentRoot.inspectorPanel.headerReadsEnabled = true }
             self?.contentRoot.setWindowedInspectorShown(shown)
         }
-        // The split read the pref in viewDidLoad, before this callback.
+        // The split read the pref in viewDidLoad, before this callback; assigning
+        // the callback replays that state (so the header reads are on). This call
+        // only syncs the content view's layout with it.
         contentRoot.setWindowedInspectorShown(split.isInspectorShown)
         ShrikeSignposts.launch.end("viSplit", viSplit)
         // The toolbar, built once per window.
@@ -296,6 +300,7 @@ public final class ViewerWindow: NSWindow {
         toolbarController = bar
         toolbar = bar.toolbar
         bar.host = self
+        toolbarHover = ToolbarHover.install(in: self)
         ShrikeSignposts.launch.end("viToolbar", viBar)
         acceptsMouseMovedEvents = true
         contentRoot.menu = contextMenu.menu
@@ -325,6 +330,8 @@ public final class ViewerWindow: NSWindow {
         contentRoot.actionDispatcher = { [weak self] action in
             self?.dispatch(action)
         }
+        contentRoot.capsuleZoomMenu.host = self
+        contentRoot.onToggleRAW = { [weak self] in self?.toggleRAWFile() }
         // New decodes use the canvas size
         // (under the long-edge ceiling); a grown canvas fetches the shown
         // photo again at the larger size.
@@ -379,7 +386,9 @@ public final class ViewerWindow: NSWindow {
                 self.coalesceNav { [weak self] in await self?.retreat() }
             }
         }
-        contentRoot.setPositionOverlayAutoHides(feedbackState.overlayAutoHides)
+        // The pill reads `Prefs.viewerPositionOverlayAutoHides` live. Do not
+        // push the value back into it here: its setter stores the pref, so
+        // every window open would save the default as a user choice.
 
         // Register for NSWindow fullscreen notifications so we can flip
         // `contentRoot.windowMode`. windowed mode docks the
@@ -453,6 +462,8 @@ public final class ViewerWindow: NSWindow {
     // Windowed chrome (ViewerWindow+Chrome.swift).
     var splitController: ViewerSplitController?
     var toolbarController: ViewerWindowToolbar?
+    /// The visible hover platter of the toolbar (macOS 26+).
+    var toolbarHover: ToolbarHover?
     var autoHider: TitlebarAutoHider?
     var titlebarScrim: TitlebarScrimView?
     /// Step 1 (reveal the hidden titlebar on a strip click).
@@ -588,6 +599,8 @@ public final class ViewerWindow: NSWindow {
             return
         }
 
+        // Leaving a photo that shows its RAW: its slot is the primary again.
+        await restorePrimarySourcesBeforeLeaving(to: target.index)
         let generation = feedbackState.beginNavigation()
         // What a completed swipe already put on screen.
         let handOver = takeSwipeHandOver(for: target.index)
@@ -1292,6 +1305,7 @@ public final class ViewerWindow: NSWindow {
     @objc private func handleDidEnterFullScreen(_ notification: Notification) {
         // Textures follow the full-screen canvas.
         contentRoot.updateTextureLongEdge()
+        contentRoot.fullScreenDidEnter()
     }
 
     @objc private func handleWillExitFullScreen(_ notification: Notification) {
@@ -1348,6 +1362,8 @@ public final class ViewerWindow: NSWindow {
     }
 
     internal func dispatch(_ action: ViewerAction) {
+        // RAW files are never written: refuse edits and rotates on that view.
+        if refuseWriteWhileRAWShown(action) { return }
         // Any action during a swipe finishes it at once.
         contentRoot.imageView.finishActiveSwipe()
         // Leaving the photo while editing asks first
@@ -1427,6 +1443,12 @@ public final class ViewerWindow: NSWindow {
             contentRoot.togglePanel(.filmstrip)
         case .toggleHistogram:
             contentRoot.toggleHistogramOverlay()
+        case .zoomMenu:
+            break   // the capsule opens its own menu
+        case .toggleRAWFile:
+            toggleRAWFile()
+        case .unpinAllPanels:
+            contentRoot.unpinAllPanels()
         case .toggleMagnifierHold(let pressed):
             contentRoot.setLoupeActive(pressed)
         case .rate(let stars):
@@ -1660,7 +1682,7 @@ public final class ViewerWindow: NSWindow {
 
     /// The displayed file — never the decode cursor.
     private func currentFileURL() async -> URL? {
-        displayedItem?.group.primary
+        displayedItem?.shownURL
     }
 
     private func copyCurrentPath() {

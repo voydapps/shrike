@@ -91,12 +91,20 @@ final class BrowserEmptyFolderTests: XCTestCase {
     /// root here): its subfolders are in the sidebar, and the copy says so.
     /// With the sidebar closed it only counts them.
     func testEmptyFolderWithSubfoldersPointsToTheSidebar() async throws {
+        // An earlier test window left the sidebar collapsed in AppKit's
+        // autosave; a new window must not read it (that made this test
+        // fail at random).
+        let splitKey = "NSSplitView Subview Frames shrike.browser.split.v2"
+        UserDefaults.standard.set(["0, 0, 208, 676, YES, NO", "208, 0, 832, 676, NO, NO",
+                                   "1040, 0, 240, 676, NO, NO"], forKey: splitKey)
+        defer { UserDefaults.standard.removeObject(forKey: splitKey) }
         let folder = try makeFolder("Trips")
         _ = try makeFolder("Trips/2025")
         let start = try makeFolder("Start")
         try Data("x".utf8).write(to: start.appendingPathComponent("a.txt"))
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: start)
         defer { browser.close() }
+        XCTAssertFalse(browser.splitController.splitViewItems[0].isCollapsed, "a new Browser starts with the sidebar open")
         let tree = browser.treeController
         tree.dataSource.roots.append(FolderTreeNode(url: root, title: "Test Root"))
         tree.reload()

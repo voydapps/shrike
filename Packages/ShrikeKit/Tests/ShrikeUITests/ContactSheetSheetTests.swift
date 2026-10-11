@@ -170,7 +170,7 @@ final class ContactSheetSheetTests: XCTestCase {
 
         browser.perform(.exportContactSheet)
         await browser.waitForContactSheet()
-        XCTAssertEqual(seenScope, ContactSheetScope(allCount: 180, folderName: "Italy 2026", selectedCount: 0))
+        XCTAssertEqual(seenScope, ContactSheetScope(allCount: 180, folderName: "Italy 2026", selectedCount: 1))
         XCTAssertEqual(seenInitial?.title, "Italy 2026")
         XCTAssertEqual(seenInitial?.columns, 5)
         XCTAssertEqual(names.first, "Italy 2026 contact sheet.pdf")

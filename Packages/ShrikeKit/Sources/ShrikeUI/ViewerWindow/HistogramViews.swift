@@ -103,6 +103,19 @@ enum HistogramPlot {
         return bins.map { min(1, CGFloat($0) / CGFloat(scaleMax)) }
     }
 
+    /// The clipped share is written next to a lit triangle above this
+    /// (percent). A spike at 0 or 255 always draws at full height, so the
+    /// number is what tells 3 % from 18 % (user test, 2026-10-10).
+    static let labelThresholdPercent = 0.5
+
+    /// "12 %" (rounded) from 10 up, "0.7 %" below; nil at or under the
+    /// threshold.
+    static func clipLabel(percent: Double) -> String? {
+        guard percent > labelThresholdPercent else { return nil }
+        if percent >= 10 { return "\(Int(percent.rounded())) %" }
+        return String(format: "%.1f %%", percent)
+    }
+
     static func showsShadowClip(_ data: HistogramData) -> Bool {
         data.anyChannelShadowsClippedPercent > clipThresholdPercent
     }
@@ -142,6 +155,10 @@ final class HistogramPlotView: NSView {
     /// Inset of the plot inside this view (the overlay passes 0; its
     /// container already insets).
     var plotInset: CGFloat = 0
+
+    /// The highlight mark (top right) moves this far left (the overlay's
+    /// close button sits in that corner; spec 24 §3.3).
+    var highlightMarkTrailingInset: CGFloat = 0
 
     /// Draw one channel alone, in its colour (the Levels panel's Red /
     /// Green / Blue view). nil = the `state.mode` drawing.
@@ -249,12 +266,28 @@ final class HistogramPlotView: NSView {
             ctx.closePath()
             ctx.fillPath()
         }
+        let right = plot.maxX - highlightMarkTrailingInset
         if HistogramPlot.showsHighlightClip(data) {
-            ctx.move(to: CGPoint(x: plot.maxX, y: plot.maxY))
-            ctx.addLine(to: CGPoint(x: plot.maxX - 6, y: plot.maxY))
-            ctx.addLine(to: CGPoint(x: plot.maxX, y: plot.maxY - 6))
+            ctx.move(to: CGPoint(x: right, y: plot.maxY))
+            ctx.addLine(to: CGPoint(x: right - 6, y: plot.maxY))
+            ctx.addLine(to: CGPoint(x: right, y: plot.maxY - 6))
             ctx.closePath()
             ctx.fillPath()
+        }
+        // The clipped share, beside each lit triangle.
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.9),
+        ]
+        if HistogramPlot.showsShadowClip(data),
+           let text = HistogramPlot.clipLabel(percent: data.anyChannelShadowsClippedPercent) {
+            NSAttributedString(string: text, attributes: attributes)
+                .draw(at: NSPoint(x: plot.minX + 9, y: plot.maxY - 11))
+        }
+        if HistogramPlot.showsHighlightClip(data),
+           let text = HistogramPlot.clipLabel(percent: data.anyChannelHighlightsClippedPercent) {
+            let label = NSAttributedString(string: text, attributes: attributes)
+            label.draw(at: NSPoint(x: right - 9 - label.size().width, y: plot.maxY - 11))
         }
     }
 }
@@ -287,6 +320,9 @@ final class HistogramOverlayView: HUDSurfaceView {
 
     /// The chip was clicked (the controller cycles and persists the mode).
     var onCycleMode: (() -> Void)?
+    /// The × was clicked: hide the histogram (the same as ⇧⌘J).
+    var onClose: (() -> Void)?
+    let closeButton = HistogramCloseButton()
 
     init() {
         super.init(frame: NSRect(origin: .zero, size: Self.size))
@@ -304,7 +340,13 @@ final class HistogramOverlayView: HUDSurfaceView {
             label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
             label.textColor = .secondaryLabelColor
         }
-        for view in [plotView, modeChip, lowLabel, highLabel] as [NSView] {
+        plotView.highlightMarkTrailingInset = 24
+        closeButton.target = self
+        closeButton.action = #selector(closeClicked(_:))
+        LiveTooltips.shared.bind(closeButton, command: .toggleHistogram, context: .viewer,
+                                 title: "Hide Histogram")
+        closeButton.setAccessibilityLabel("Hide Histogram")
+        for view in [plotView, modeChip, lowLabel, highLabel, closeButton] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -312,6 +354,11 @@ final class HistogramOverlayView: HUDSurfaceView {
             modeChip.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             modeChip.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             modeChip.heightAnchor.constraint(equalToConstant: 16),
+            // 28 pt hit area, 20 pt visible, 6 pt in from the corner.
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            closeButton.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            closeButton.widthAnchor.constraint(equalToConstant: 28),
+            closeButton.heightAnchor.constraint(equalToConstant: 28),
             plotView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             plotView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             plotView.topAnchor.constraint(equalTo: modeChip.bottomAnchor, constant: 4),
@@ -336,6 +383,59 @@ final class HistogramOverlayView: HUDSurfaceView {
     internal var stateForTesting: HistogramDisplayState { plotView.state }
 
     @objc private func chipClicked(_ sender: Any?) { onCycleMode?() }
+    @objc private func closeClicked(_ sender: Any?) { onClose?() }
+}
+
+/// The × in the overlay's top-right corner: `xmark` 9 pt semibold, 28 pt hit
+/// area with a 20 pt platter (radius 6, white 10 %) on hover.
+@MainActor
+final class HistogramCloseButton: NSButton {
+    private var tracking: NSTrackingArea?
+    private var hovered = false { didSet { needsDisplay = true; updateTint() } }
+
+    init() {
+        super.init(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
+        isBordered = false
+        title = ""
+        imagePosition = .imageOnly
+        image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Hide Histogram")
+        symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+        setButtonType(.momentaryPushIn)
+        setAccessibilityIdentifier("viewer.histogram.close")
+        updateTint()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsetsZero }
+
+    /// A click never moves keyboard focus here: the photo keeps it, so keys
+    /// (⌃H, arrows) still reach the window right after the click, and the
+    /// button does not hold focus while its panel fades away.
+    override var acceptsFirstResponder: Bool { false }
+    override var refusesFirstResponder: Bool { get { true } set {} }
+
+    private func updateTint() { contentTintColor = hovered ? .labelColor : .secondaryLabelColor }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if hovered {
+            NSColor.white.withAlphaComponent(0.10).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 4), xRadius: 6, yRadius: 6).fill()
+        }
+        super.draw(dirtyRect)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovered = true }
+    override func mouseExited(with event: NSEvent) { hovered = false }
 }
 
 // MARK: - Inspector band (248 × 96)

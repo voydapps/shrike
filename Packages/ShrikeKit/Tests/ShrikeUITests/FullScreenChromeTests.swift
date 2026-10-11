@@ -82,14 +82,17 @@ final class FullScreenChromeTests: XCTestCase {
         XCTAssertTrue(content.toolbarForTesting.isHidden, "and hides once the menu closes")
     }
 
-    func testPinnedFilmstripShowsTheCapsuleAndTheCapsuleIsNeverPinned() {
+    /// Spec 24 §1.2: a pinned strip no longer carries the capsule.
+    func testPinnedFilmstripDoesNotShowTheCapsuleAndTheCapsuleIsNeverPinned() {
         let content = makeContent()
         content.togglePanel(.toolbar)
         XCTAssertFalse(content.isPinnedForTesting(.toolbar), "no capsule pin")
         XCTAssertTrue(content.toolbarForTesting.isHidden)
         content.togglePanel(.filmstrip)
         XCTAssertFalse(content.filmstripForTesting.isHidden)
-        XCTAssertFalse(content.toolbarForTesting.isHidden, "a pinned filmstrip shows the capsule")
+        XCTAssertTrue(content.toolbarForTesting.isHidden, "a pinned filmstrip leaves the capsule hidden")
+        content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))
+        XCTAssertFalse(content.toolbarForTesting.isHidden, "the pointer in the bottom zone shows it")
         content.togglePanel(.filmstrip)
     }
 
@@ -142,6 +145,47 @@ final class FullScreenChromeTests: XCTestCase {
         XCTAssertFalse(content.zoneRestPendingForTesting(.filmstrip))
         try await Task.sleep(for: .milliseconds(250))
         XCTAssertFalse(content.isHoveredForTesting(.filmstrip), "a pass-through does not reveal")
+    }
+
+    /// 0.2.4 smoke: could a pointer move wake the capsule and strip after
+    /// they faded? A real `mouseMoved` NSEvent goes in through the method
+    /// AppKit's tracking area calls. (Headless AppKit makes no tracking-area
+    /// moves from `sendEvent`, so the tracking area itself is checked for
+    /// the options that make AppKit send them.)
+    func testARealMouseMovedWakesTheCapsuleAndStripAfterTheyFaded() async throws {
+        let content = makeContent()
+        let areas = content.trackingAreas.filter { $0.owner === content }
+        XCTAssertEqual(areas.count, 1, "one tracking area for the content view")
+        let options = try XCTUnwrap(areas.first).options
+        XCTAssertTrue(options.contains(.mouseMoved), "it reports moves")
+        XCTAssertTrue(options.contains(.activeAlways), "also while the app is inactive")
+        XCTAssertTrue(options.contains(.inVisibleRect), "over the whole view")
+
+        func move(to p: NSPoint) throws {
+            content.mouseMoved(with: try XCTUnwrap(NSEvent.mouseEvent(
+                with: .mouseMoved, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: 0, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)))
+        }
+        let bottom = NSPoint(x: 720, y: 50)
+
+        // Shown by a first move, then faded by the idle clock.
+        try move(to: bottom)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(content.alphaForTesting(.toolbar), 1)
+        XCTAssertEqual(content.alphaForTesting(.filmstrip), 1)
+        content.forceIdleFireForTesting()
+        XCTAssertEqual(content.alphaForTesting(.toolbar), 0, "the capsule faded")
+        XCTAssertEqual(content.alphaForTesting(.filmstrip), 0, "the strip faded")
+
+        // One small move in the same zone brings both back after the rest.
+        try move(to: NSPoint(x: 724, y: 52))
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertTrue(content.isHoveredForTesting(.toolbar))
+        XCTAssertTrue(content.isHoveredForTesting(.filmstrip))
+        XCTAssertEqual(content.alphaForTesting(.toolbar), 1, "the capsule is back")
+        XCTAssertEqual(content.alphaForTesting(.filmstrip), 1, "the strip is back")
+        XCTAssertFalse(content.toolbarForTesting.isHidden)
+        XCTAssertFalse(content.filmstripForTesting.isHidden)
     }
 
     func testZoneSizes() {
@@ -224,7 +268,7 @@ final class FullScreenChromeTests: XCTestCase {
         content.forceIdleFireForTesting()
         XCTAssertFalse(content.filmstripForTesting.isHidden, "stays after the pointer leaves")
         XCTAssertEqual(pin.symbolNameForTesting, "pin.fill")
-        XCTAssertEqual(pin.glyphTintForTesting, .labelColor)
+        XCTAssertEqual(pin.glyphTintForTesting, .controlAccentColor)
         XCTAssertEqual(pin.accessibilityLabel(), "Pin Filmstrip")
         XCTAssertEqual(pin.accessibilityValue() as? String, "Pinned")
         XCTAssertEqual(pin.toolTip, "Unpin Filmstrip")
@@ -245,6 +289,7 @@ final class FullScreenChromeTests: XCTestCase {
         let name = String(repeating: "LongName_", count: 6) + "123456.jpg"   // 64 characters
         content.navigationPositionOverlayForTesting.show(index: 43, total: 180, filename: name)
         content.togglePanel(.filmstrip)
+        content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))
         content.layoutSubtreeIfNeeded()
         let pill = content.pillFrameForTesting
         let capsule = content.capsuleFrameForTesting
@@ -279,8 +324,8 @@ final class FullScreenChromeTests: XCTestCase {
         let histogram = content.histogramOverlayFrameForTesting()
         XCTAssertTrue(content.histogramOverlayVisibleForTesting, "the histogram shows")
         XCTAssertTrue(content.bounds.contains(histogram), "on screen: \(histogram)")
-        XCTAssertEqual(histogram.minY, content.capsuleFrameForTesting.maxY + 12, accuracy: 1,
-                       "12 pt above the stack")
+        XCTAssertEqual(histogram.minY, content.filmstripForTesting.frame.maxY + 12, accuracy: 1,
+                       "12 pt above the pinned strip (no capsule rides with it)")
         XCTAssertEqual(histogram.maxX, 1440 - 12, accuracy: 1)
         content.togglePanel(.inspector)
         content.layoutSubtreeIfNeeded()
@@ -296,7 +341,10 @@ final class FullScreenChromeTests: XCTestCase {
         for name in ViewerToolbar.symbolNamesForTesting {
             XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil), name)
         }
-        XCTAssertTrue(ViewerToolbar.symbolNamesForTesting.contains("chart.bar.xaxis"))
+        // Spec 24 §1.3: the histogram and flag buttons left the capsule.
+        XCTAssertFalse(ViewerToolbar.symbolNamesForTesting.contains("chart.bar.xaxis"))
+        XCTAssertFalse(ViewerToolbar.symbolNamesForTesting.contains("flag"))
+        XCTAssertEqual(ViewerToolbar.symbolNamesForTesting.count, 11)
         XCTAssertFalse(ViewerToolbar.symbolNamesForTesting.contains("waveform"))
         let toolbar = ViewerToolbar()
         let inspector = toolbar.buttonWithIdentifierForTesting("toolbar.toggleInspector")

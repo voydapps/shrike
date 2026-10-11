@@ -28,6 +28,9 @@ extension ViewerWindow {
         let folder = group.primary.deletingLastPathComponent()
         evictFromDecodeCache(group.primary)
         showAfterRemoval(at: index, folder: folder)
+        // The folder watcher ignores Shrike's own trash, so a Browser
+        // listing this folder would keep the photo until a folder switch.
+        for browser in browsersListing(folder) { browser.dropTrashedItems([group.primary]) }
 
         let ops = fileOps
         let previous = trashChain
@@ -90,9 +93,25 @@ extension ViewerWindow {
         ))
     }
 
+    /// The Browsers that list `folder`: the paired one and any other open one.
+    func browsersListing(_ folder: URL) -> [BrowserWindowController] {
+        var all: [BrowserWindowController] = []
+        if let paired = pairedBrowser { all.append(paired) }
+        for browser in WindowCoordinator.shared.browsers where !all.contains(where: { $0 === browser }) {
+            all.append(browser)
+        }
+        return all.filter {
+            guard let current = $0.currentFolder else { return false }
+            return GroupList.canonical(current) == GroupList.canonical(folder)
+        }
+    }
+
     /// Puts removed groups back at their old indices and shows the first.
     func reinsert(_ removed: [RemovedGroup]) {
         guard let first = removed.first else { return }
+        // The files are back (restore or failed trash): Browsers list them again.
+        let folder = first.group.primary.deletingLastPathComponent()
+        for browser in browsersListing(folder) { browser.reloadCurrentFolder() }
         list.insert(removed)
         hideEmptyState()
         reloadList(showing: min(first.index, list.count - 1))

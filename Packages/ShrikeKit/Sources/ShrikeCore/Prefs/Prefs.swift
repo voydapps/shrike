@@ -60,6 +60,7 @@ public enum Prefs {
         static let thumbnailSizePt            = "shrike.thumbnails.sizePt"
         static let browserSortKey             = "shrike.browser.sortKey"
         static let browserSortAscending       = "shrike.browser.sortAscending"
+        static let browserViewMode            = "shrike.browser.viewMode"
         static let scrollWheelNavigates       = "shrike.input.scrollWheelNavigates"
         static let externalEditors            = "shrike.editors.slots"
         static let recentFoldersLimit         = "shrike.recent.foldersLimit"
@@ -121,6 +122,7 @@ public enum Prefs {
             thumbnailSizePt,
             browserSortKey,
             browserSortAscending,
+            browserViewMode,
             scrollWheelNavigates,
             externalEditors,
             recentFoldersLimit,
@@ -216,6 +218,14 @@ public enum Prefs {
     public static var browserSortAscending: Bool {
         get { defaults.object(forKey: Key.browserSortAscending) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Key.browserSortAscending) }
+    }
+
+    /// View ▸ as Grid (0) / as Filmstrip (1) / as List (2). One global
+    /// setting, like the sort: a new Browser window and the next launch
+    /// start in the last mode the user chose.
+    public static var browserViewMode: Int {
+        get { defaults.object(forKey: Key.browserViewMode) as? Int ?? 0 }
+        set { defaults.set(newValue, forKey: Key.browserViewMode) }
     }
 
     // MARK: Input
@@ -314,16 +324,15 @@ public enum Prefs {
     }
 
     /// When true, the bottom-left position overlay ("N / M — filename") fades
-    /// out after `NavigationFeedbackState.overlayIdleTimeout` seconds of nav
-    /// inactivity — the original behavior. When false (the default), the
-    /// overlay is always visible for the life of the viewer window so the
-    /// user can glance down and see their folder position at any moment.
+    /// out after `NavigationFeedbackState.overlayIdleTimeout` (2.0 s) of nav
+    /// inactivity, in a window and in full screen (spec 24 §1.2). This is the
+    /// default: nothing is registered or stored, so a user who never touched
+    /// the switch gets it. When false, the overlay is held open for the life
+    /// of the viewer window so the user can glance down and see their folder
+    /// position at any moment.
     public static var viewerPositionOverlayAutoHides: Bool {
         get {
-            if defaults.object(forKey: Key.viewerPositionOverlayAutoHides) == nil {
-                return false
-            }
-            return defaults.bool(forKey: Key.viewerPositionOverlayAutoHides)
+            defaults.object(forKey: Key.viewerPositionOverlayAutoHides) as? Bool ?? true
         }
         set { defaults.set(newValue, forKey: Key.viewerPositionOverlayAutoHides) }
     }

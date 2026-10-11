@@ -7,12 +7,12 @@ photo is already on screen.
 macOS 14 or newer · Apple silicon and Intel · MIT license
 
 <p align="center">
-  <img src="site/img/shot-viewer.webp" alt="Shrike showing one photo in a window with a thin toolbar" width="760">
+  <img src="site/screenshots/viewer.webp" alt="Shrike showing one photo in a window with a thin toolbar" width="760">
 </p>
 
 <p align="center">
-  <img src="site/img/shot-fullscreen.webp" alt="Shrike full screen with the info panel and histogram over the photo" width="370">
-  <img src="site/img/shot-browser.webp" alt="Shrike's browser with a folder list, a grid of thumbnails and star ratings" width="370">
+  <img src="site/screenshots/info-histogram.webp" alt="Shrike full screen with the info panel and histogram over the photo" width="370">
+  <img src="site/screenshots/browser.webp" alt="Shrike's browser with a folder list, a grid of thumbnails and star ratings" width="370">
 </p>
 
 ## What it does

@@ -28,6 +28,11 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
     public var onClose: (() -> Void)?
 
     private let recentURLs: @MainActor () -> [URL]
+    /// Forgets Recent items whose folder is gone (tests pass a stub, so
+    /// the shared document controller is not touched).
+    private let forgetRecents: @MainActor ([URL]) -> Void
+    /// Items found dead and pruned in this window: never shown again.
+    private(set) var prunedRecents: Set<URL> = []
 
     let openButton = NSButton(title: "Open…", target: nil, action: nil)
     let openFolderButton = NSButton(title: "Open Folder…", target: nil, action: nil)
@@ -43,8 +48,12 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
     private(set) var shownRecents: [URL] = []
     private(set) var missingRecents: Set<URL> = []
 
-    public init(recentURLs: @escaping @MainActor () -> [URL] = AppCommands.recentURLs) {
+    public init(
+        recentURLs: @escaping @MainActor () -> [URL] = AppCommands.recentURLs,
+        forgetRecents: @escaping @MainActor ([URL]) -> Void = AppCommands.forgetRecents
+    ) {
         self.recentURLs = recentURLs
+        self.forgetRecents = forgetRecents
         let window = WelcomeWindow(
             contentRect: NSRect(origin: .zero, size: Self.size),
             styleMask: [.titled, .closable, .fullSizeContentView],
@@ -94,7 +103,8 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
 
     func reloadRecents() {
         recentRows.forEach { $0.removeFromSuperview() }
-        shownRecents = Array(recentURLs().prefix(max(1, Prefs.recentFoldersLimit)))
+        shownRecents = Array(recentURLs().filter { !prunedRecents.contains($0) }
+            .prefix(max(1, Prefs.recentFoldersLimit)))
         missingRecents = []
         recentRows = shownRecents.enumerated().map { index, url in
             makeRow(for: url, index: index)
@@ -138,8 +148,18 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
         Task.detached(priority: .utility) { [weak self] in
             let missing = urls.filter { !FileManager.default.fileExists(atPath: $0.path) }
             guard !missing.isEmpty else { return }
-            await self?.markMissing(missing)
+            let dead = missing.filter { AppCommands.isDeadRecent($0) }
+            await self?.handleMissing(missing, dead: dead)
         }
+    }
+
+    /// Deleted folders leave the list (and Open Recent); an unplugged disk's
+    /// items stay, dimmed.
+    func handleMissing(_ missing: [URL], dead: [URL]) {
+        guard !dead.isEmpty else { markMissing(missing); return }
+        prunedRecents.formUnion(dead)
+        forgetRecents(dead)
+        reloadRecents()
     }
 
     /// Tab order: Open…, Open Folder…, the Recent list (one stop; ↑/↓

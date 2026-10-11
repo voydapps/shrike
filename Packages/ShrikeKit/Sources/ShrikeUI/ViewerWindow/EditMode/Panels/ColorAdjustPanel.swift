@@ -135,7 +135,7 @@ final class ColorAdjustPanel: NSView {
         applyButton.translatesAutoresizingMaskIntoConstraints = false
         applyButton.bezelStyle = .rounded
         applyButton.keyEquivalent = "\r"
-        applyButton.bezelColor = .controlAccentColor   // one accent
+        applyButton.useAccentFill()   // one accent
         applyButton.target = self
         applyButton.action = #selector(handleApply(_:))
 

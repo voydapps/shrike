@@ -68,7 +68,7 @@ final class DestinationMenusTests: XCTestCase {
         viewer.contextMenu.prepareForTesting()
         let titles = viewer.contextMenu.menu.items.map { $0.isSeparatorItem ? "—" : $0.title }
         XCTAssertEqual(titles, [
-            "Open With", "Open in External Editor", "Reveal in Finder", "Show in Browser", titles[4], "—",
+            "Open With", "Open in External Editor", ShrikeCommand.toggleRAWFile.title, "Reveal in Finder", "Show in Browser", titles[5], "—",
             "Rotate Left", "Rotate Right", "—",
             "Rating", ShrikeCommand.toggleFlag.title, ShrikeCommand.tags.title, "—",
             ShrikeCommand.copyToFolder.title, ShrikeCommand.moveToFolder.title,

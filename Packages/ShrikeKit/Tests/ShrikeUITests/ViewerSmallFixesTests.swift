@@ -154,7 +154,10 @@ final class ViewerSmallFixesTests: XCTestCase {
         return (window, content)
     }
 
-    func testTheBottomStackStaysWhileThePointerRestsAtTheBottomEdge() {
+    /// Spec 24 §1.2 (UX-02 P2-1): the old rule kept the stack for as long as
+    /// the pointer rested at the bottom edge. It now fades after the idle
+    /// delay, and a move in the zone brings it back.
+    func testTheBottomStackFadesWhileThePointerRestsAtTheBottomEdgeAndReturnsOnMove() {
         let (window, content) = fullScreenContent()
         defer { window.close() }
         let edge = NSPoint(x: 720, y: 0)
@@ -162,14 +165,15 @@ final class ViewerSmallFixesTests: XCTestCase {
         content.evaluateZonesForTesting(at: edge)
         XCTAssertTrue(content.isHoveredForTesting(.filmstrip))
         XCTAssertTrue(content.isHoveredForTesting(.toolbar))
-        for _ in 0..<3 { content.forceIdleFireForTesting() }
-        XCTAssertTrue(content.isHoveredForTesting(.filmstrip), "the pointer still rests in the zone")
-        XCTAssertTrue(content.isHoveredForTesting(.toolbar))
-        // Away from the zone and the panels, the idle hides them.
-        content.cursorLocationOverrideForTesting = NSPoint(x: 720, y: 500)
         content.forceIdleFireForTesting()
-        XCTAssertFalse(content.isHoveredForTesting(.filmstrip))
+        XCTAssertFalse(content.isHoveredForTesting(.filmstrip), "faded: the pointer rests below the strip")
         XCTAssertFalse(content.isHoveredForTesting(.toolbar))
+        // Moving inside the zone brings the stack back.
+        let moved = NSPoint(x: 730, y: 2)
+        content.cursorLocationOverrideForTesting = moved
+        content.evaluateZonesForTesting(at: moved)
+        XCTAssertTrue(content.isHoveredForTesting(.filmstrip), "a move in the zone reveals again")
+        XCTAssertTrue(content.isHoveredForTesting(.toolbar))
     }
 
     func testOnlyTheRightEdgeRevealsTheInspector() {
@@ -182,7 +186,9 @@ final class ViewerSmallFixesTests: XCTestCase {
         XCTAssertEqual(ViewerContentView.zonePanels(at: NSPoint(x: 1435, y: 450), in: content.bounds), [.inspector])
     }
 
-    func testFullScreenHistogramFloatsBesideTheInspector() {
+    /// Spec 24 §1.3: the floating histogram steps aside while the HUD
+    /// inspector shows (it has the same graph) and comes back after.
+    func testFullScreenHistogramStepsAsideWhileTheInspectorShows() {
         Prefs.viewerHistogramVisible = true
         let (window, content) = fullScreenContent()
         defer { window.close() }
@@ -191,10 +197,12 @@ final class ViewerSmallFixesTests: XCTestCase {
         XCTAssertTrue(content.histogramOverlayVisibleForTesting)
         content.evaluateZonesForTesting(at: NSPoint(x: 1435, y: 450))
         XCTAssertTrue(content.isHoveredForTesting(.inspector))
-        XCTAssertTrue(content.histogramOverlayVisibleForTesting, "the toggled histogram stays beside the inspector")
-        let hist = content.histogramOverlayFrameForTesting()
-        let insp = content.inspectorForTesting.frame
-        XCTAssertGreaterThanOrEqual(insp.minX - hist.maxX, 11.5, "12 pt gap")
+        XCTAssertFalse(content.histogramOverlayVisibleForTesting, "hidden while the inspector shows")
+        XCTAssertTrue(Prefs.viewerHistogramVisible, "the setting is untouched")
+        content.cursorLocationOverrideForTesting = NSPoint(x: 720, y: 450)
+        content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 450))
+        content.forceExitGraceFireForTesting(.inspector)
+        XCTAssertTrue(content.histogramOverlayVisibleForTesting, "back when the inspector hides")
     }
 
     // MARK: 2.4 Rail

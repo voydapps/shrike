@@ -17,12 +17,20 @@ public struct DisplayedItem: Equatable, Sendable {
     public let listIndex: Int
     /// List generation at paint time (bumps on every list mutation).
     public let generation: UInt64
+    /// The file on screen: the primary, or the group's RAW while the view
+    /// is switched to it (spec 24 §4). Rate / flag / trash / move act on the
+    /// group; Reveal, Copy Path and Open With act on this file.
+    public let shownURL: URL
 
-    public init(group: ImageGroup, listIndex: Int, generation: UInt64) {
+    public init(group: ImageGroup, listIndex: Int, generation: UInt64, shownURL: URL? = nil) {
         self.group = group
         self.listIndex = listIndex
         self.generation = generation
+        self.shownURL = shownURL ?? group.primary
     }
+
+    /// The RAW companion is on screen instead of the primary.
+    public var isRAWShown: Bool { shownURL != group.primary }
 }
 
 /// A window's list of groups plus a generation counter that bumps on

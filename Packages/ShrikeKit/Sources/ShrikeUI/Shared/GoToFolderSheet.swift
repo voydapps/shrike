@@ -177,7 +177,7 @@ final class GoToFolderSheet: NSObject, NSTextFieldDelegate {
         cancelButton.target = self
         cancelButton.action = #selector(cancel(_:))
         goButton.keyEquivalent = "\r"
-        goButton.bezelColor = .controlAccentColor   // one accent
+        goButton.useAccentFill()   // one accent
         goButton.target = self
         goButton.action = #selector(go(_:))
         let buttons = NSStackView(views: [cancelButton, goButton])

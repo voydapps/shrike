@@ -36,7 +36,7 @@
   d.body.appendChild(dlg);
   var img = dlg.querySelector('img'), cap = dlg.querySelector('figcaption'), cnt = dlg.querySelector('.v-count');
   function info(a) {
-    var t = a.querySelector('img'), card = a.closest('.card'), h = card && card.querySelector('h3');
+    var t = a.querySelector('img'), card = a.closest('.card, .tile'), h = card && card.querySelector('h3, strong');
     // The link target is the full-size WebP of the thumbnail.
     var s = a.getAttribute('href');
     return { src: s, alt: t.alt, cap: h ? h.textContent : t.alt };

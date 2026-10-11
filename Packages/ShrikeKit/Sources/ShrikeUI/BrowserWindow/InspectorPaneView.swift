@@ -174,9 +174,9 @@ public final class InspectorPaneController: NSViewController {
 
     /// Gives the grid's in-memory thumbnail lookup.
     /// Called on the main thread; the lookup it returns runs off it.
-    var quickThumbnail: (@MainActor () -> InspectorPreviewImageView.QuickThumbnail?)? {
-        get { stateBox.quickThumbnail }
-        set { stateBox.quickThumbnail = newValue }
+    var panelLookups: (@MainActor () -> InspectorPreviewImageView.Lookups?)? {
+        get { stateBox.panelLookups }
+        set { stateBox.panelLookups = newValue }
     }
 
     public override func loadView() {
@@ -265,7 +265,7 @@ public final class InspectorPaneController: NSViewController {
 final class InspectorStateBox: ObservableObject {
     @Published var state: InspectorState = .empty
     /// Not published: read when the preview updates.
-    var quickThumbnail: (@MainActor () -> InspectorPreviewImageView.QuickThumbnail?)?
+    var panelLookups: (@MainActor () -> InspectorPreviewImageView.Lookups?)?
 }
 
 // MARK: - SwiftUI
@@ -285,7 +285,7 @@ private struct InspectorRoot: View {
                 if state.state.count == 0, state.state.folderSummary != nil {
                     FolderHeaderSection(state: state.state)
                 } else {
-                    PreviewSection(state: state.state, quickThumbnail: state.quickThumbnail)
+                    PreviewSection(state: state.state, panelLookups: state.panelLookups)
                 }
                 // Nothing selected: no file rows and no controls, so a
                 // star click can never rate a photo that is not selected.
@@ -372,16 +372,16 @@ private struct FolderHeaderSection: View {
     }
 }
 
-private struct PreviewSection: View {
+struct PreviewSection: View {
     let state: InspectorState
-    let quickThumbnail: (@MainActor () -> InspectorPreviewImageView.QuickThumbnail?)?
+    let panelLookups: (@MainActor () -> InspectorPreviewImageView.Lookups?)?
     var body: some View {
         VStack(spacing: 8) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color.black.opacity(0.4))
                 if let url = state.previewURL {
-                    PreviewImageView(url: url, quick: quickThumbnail?())
+                    PreviewImageView(url: url, lookups: panelLookups?())
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else {
@@ -410,19 +410,19 @@ private struct PreviewSection: View {
                 Text(InspectorState.multipleHeader(state.count))
                     .font(.callout.weight(.medium))
             } else if let name = state.commonName {
+                // Fixed heights (two name lines, one "Also" line, used or
+                // not): the rows below never move between two photos.
                 Text(name)
                     .font(.callout.weight(.medium))
-                    .lineLimit(2)
+                    .lineLimit(2, reservesSpace: true)
                     .truncationMode(.middle)
                     .multilineTextAlignment(.center)
                 // "Also: DSC_0042.ORF (24.1 MB)".
-                if let also = state.alsoLine {
-                    Text(also)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+                Text(state.alsoLine ?? " ")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
     }
@@ -431,14 +431,14 @@ private struct PreviewSection: View {
 /// The preview photo, aspect-fit inside the 180 pt box.
 private struct PreviewImageView: NSViewRepresentable {
     let url: URL
-    let quick: InspectorPreviewImageView.QuickThumbnail?
+    let lookups: InspectorPreviewImageView.Lookups?
     func makeNSView(context: Context) -> InspectorPreviewImageView {
         let v = InspectorPreviewImageView()
-        v.show(url, quick: quick)
+        v.show(url, lookups: lookups)
         return v
     }
     func updateNSView(_ nsView: InspectorPreviewImageView, context: Context) {
-        nsView.show(url, quick: quick)
+        nsView.show(url, lookups: lookups)
     }
 }
 
@@ -449,19 +449,53 @@ private struct PreviewImageView: NSViewRepresentable {
 /// (about 2x the box, never a full decode); a result for an older
 /// selection is dropped.
 ///
-/// A new photo never blanks the box. The old picture
-/// stays until the new one is ready: first the grid's thumbnail when it
-/// is in memory, then the sharper read, swapped in with no fade.
+/// A new photo never blanks the box, and a sharp picture is never
+/// replaced by a blurry one when that can be avoided:
+/// - The sharp picture is in memory (read ahead for the next and the
+///   previous photo): it is shown at once, in the same frame.
+/// - It is not: the PREVIOUS sharp picture stays for up to `standInDelay`
+///   (150 ms). A fast read lands inside that time with no swap at all.
+///   A slow one first shows the grid's small thumbnail as a stand-in
+///   (when it is in memory), then the sharp picture, with no fade.
+/// - With no sharp picture to hold (the first photo, or the last one was
+///   itself a stand-in) the stand-in shows without the wait.
 final class InspectorPreviewImageView: NSImageView {
 
     /// The grid's thumbnail of a file when it is in memory (no decode),
     /// or nil. Runs off the main thread.
     typealias QuickThumbnail = @Sendable (URL) -> CGImage?
 
+    /// Where the pictures come from. Nil members fall back: no stand-in,
+    /// no memory lookup, a plain ImageIO read.
+    struct Lookups: Sendable {
+        /// The small stand-in (the grid's or the strip's thumbnail).
+        var quick: QuickThumbnail?
+        /// The sharp picture, only if it is in memory (no decode).
+        var cachedSharp: QuickThumbnail?
+        /// The sharp picture, from the cache or a fresh read.
+        var loadSharp: (@Sendable (URL) async -> CGImage?)?
+
+        init(quick: QuickThumbnail? = nil, cachedSharp: QuickThumbnail? = nil,
+             loadSharp: (@Sendable (URL) async -> CGImage?)? = nil) {
+            self.quick = quick
+            self.cachedSharp = cachedSharp
+            self.loadSharp = loadSharp
+        }
+    }
+
     /// Longest side of the preview read, in pixels (2x a 360 pt pane).
     static let maxPixelSize = 720
+    /// How long the previous sharp picture is held before the stand-in shows.
+    static let defaultStandInDelay: Duration = .milliseconds(150)
+    var standInDelay: Duration = InspectorPreviewImageView.defaultStandInDelay
     private(set) var shownURL: URL?
+    /// The photo whose sharp picture is on screen.
+    private(set) var sharpURL: URL?
+    /// The picture on screen is a sharp one (maybe of an earlier photo).
+    private var sharpOnScreen = false
     private var loadTask: Task<Void, Never>?
+    private var sharpTask: Task<CGImage?, Never>?
+    private(set) var standInTask: Task<Void, Never>?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -483,40 +517,82 @@ final class InspectorPreviewImageView: NSImageView {
         NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
     }
 
-    func show(_ url: URL, quick: QuickThumbnail? = nil) {
+    /// True when the picture on screen is the sharp one of `shownURL`.
+    var isShowingSharp: Bool { shownURL != nil && sharpURL == shownURL && image != nil }
+
+    func show(_ url: URL, lookups: Lookups? = nil) {
         guard url != shownURL else { return }
+        // A sharp picture (of this or an earlier photo) is on screen: hold it.
+        let holding = sharpOnScreen && image != nil
         shownURL = url
         loadTask?.cancel()
+        sharpTask?.cancel()
+        standInTask?.cancel()
+        loadTask = nil
+        sharpTask = nil
+        standInTask = nil
+
+        // In memory: this frame, nothing to wait for.
+        if let cg = lookups?.cachedSharp?(url) {
+            showSharp(cg, for: url)
+            return
+        }
+
         let size = Self.maxPixelSize
+        let quick = lookups?.quick
+        let loadSharp = lookups?.loadSharp
+        let sharp = Task.detached(priority: .userInitiated) { () -> CGImage? in
+            if let loadSharp { return await loadSharp(url) }
+            return Self.thumbnail(url, maxPixelSize: size)
+        }
+        sharpTask = sharp
+        let delay: Duration = holding ? standInDelay : .zero
+        // After the hold, a stand-in replaces the old picture (unless the
+        // sharp one got there first).
+        standInTask = Task { @MainActor [weak self] in
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled, let self, self.shownURL == url, self.sharpURL != url,
+                  let quick else { return }
+            let cg = await Task.detached(priority: .userInitiated) { quick(url) }.value
+            guard !Task.isCancelled, self.shownURL == url, self.sharpURL != url, let cg else { return }
+            self.image = NSImage(cgImage: cg, size: .zero)
+            self.sharpOnScreen = false
+            self.quickShows += 1
+        }
         loadTask = Task { @MainActor [weak self] in
-            var showedQuick = false
-            if let quick {
-                let cg = await Task.detached(priority: .userInitiated) { quick(url) }.value
-                guard let self, !Task.isCancelled, self.shownURL == url else { return }
-                if let cg {
-                    self.image = NSImage(cgImage: cg, size: .zero)
-                    showedQuick = true
-                    self.quickShows += 1
-                }
-            }
-            let cg = await Task.detached(priority: .userInitiated) {
-                Self.thumbnail(url, maxPixelSize: size)
-            }.value
+            let cg = await sharp.value
             guard let self, !Task.isCancelled, self.shownURL == url else { return }
             if let cg {
-                self.image = NSImage(cgImage: cg, size: .zero)
-            } else if !showedQuick {
-                // Not an image we can read: never leave the last photo.
-                self.image = nil
+                self.showSharp(cg, for: url)
+            } else {
+                // Not an image we can read: the stand-in if there is one,
+                // never the last photo.
+                await self.standInTask?.value
+                guard !Task.isCancelled, self.shownURL == url else { return }
+                if self.quickShownURL != url { self.image = nil; self.sharpOnScreen = false }
             }
         }
     }
 
-    /// Waits for the current read (tests).
-    func waitForLoad() async { await loadTask?.value }
+    private var quickShownURL: URL?
 
-    /// Times the grid's thumbnail was shown first (tests).
-    private(set) var quickShows = 0
+    private func showSharp(_ cg: CGImage, for url: URL) {
+        standInTask?.cancel()
+        sharpURL = url
+        sharpOnScreen = true
+        image = NSImage(cgImage: cg, size: .zero)
+    }
+
+    /// Waits for the current read (tests).
+    func waitForLoad() async {
+        await loadTask?.value
+        await standInTask?.value
+    }
+
+    /// Times the stand-in thumbnail was shown (tests).
+    private(set) var quickShows = 0 {
+        didSet { quickShownURL = shownURL }
+    }
 
     /// Times the picture went blank while a photo was shown (tests).
     private(set) var blankings = 0

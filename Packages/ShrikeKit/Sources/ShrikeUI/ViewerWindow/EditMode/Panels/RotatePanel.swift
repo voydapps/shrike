@@ -115,7 +115,7 @@ final class RotatePanel: NSView {
 
         applyButton.bezelStyle = .rounded
         applyButton.keyEquivalent = "\r"
-        applyButton.bezelColor = .controlAccentColor   // one accent
+        applyButton.useAccentFill()   // one accent
         applyButton.translatesAutoresizingMaskIntoConstraints = false
         applyButton.target = self
         applyButton.action = #selector(handleApply(_:))

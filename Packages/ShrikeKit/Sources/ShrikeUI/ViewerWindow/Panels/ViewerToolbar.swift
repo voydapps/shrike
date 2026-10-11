@@ -8,10 +8,9 @@
 //  SF Symbols icons; action dispatch routes through the shared
 //  `ViewerAction` enum owned by ViewerWindow.
 //
-//  Capsule: 44 pt high, no pin (the capsule shows with the
-//  bottom zone, with a pinned filmstrip, or while its menu is open).
-//  Histogram `chart.bar.xaxis`; Info is "Inspector" (`info.circle`).
-//   * 14 buttons + 4 separators in one NSStackView. Each button has an
+//  Capsule: 44 pt high, no pin (the capsule shows when the pointer rests
+//  in the bottom zone, or while its menu is open; spec 24 §1.2).
+//   * 11 buttons + 5 hairlines in one NSStackView (spec 24 §1.3). Each button has an
 //     explicit 32×32 frame and its OWN target/action (fixes issue #10 —
 //     previously overlapping hit-test rects caused zoom-minus to be
 //     silently absorbed by its neighbour and rotate-left to double-dispatch).
@@ -107,10 +106,10 @@ final class ViewerToolbar: HUDSurfaceView {
         ])
 
         buttonStack.orientation = .horizontal
-        buttonStack.spacing = 6
+        buttonStack.spacing = Self.buttonGap
         buttonStack.alignment = .centerY
         buttonStack.distribution = .fill
-        buttonStack.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
+        buttonStack.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
         contentContainer.addSubview(buttonStack)
         NSLayoutConstraint.activate([
@@ -121,30 +120,19 @@ final class ViewerToolbar: HUDSurfaceView {
             contentContainer.heightAnchor.constraint(equalToConstant: Self.height),
         ])
 
-        // Authoritative inventory (14 buttons + 4 separators).
-        // Nav
+        // Authoritative inventory (spec 24 §1.3): 11 buttons in 6 groups.
+        // The capsule holds what you do to the photo or to get around;
+        // flag, rating and histogram live in the inspector / View menu.
+        // Move
         addButton(symbol: "chevron.left",  accessibility: "Previous image",
                   selector: #selector(handlePrev(_:)), action: .prevImage)
         addButton(symbol: "chevron.right", accessibility: "Next image",
                   selector: #selector(handleNext(_:)), action: .nextImage)
         addSeparator()
-        // Zoom
-        addButton(symbol: "arrow.up.left.and.down.right.magnifyingglass",
-                  accessibility: "Fit",
-                  selector: #selector(handleFit(_:)), action: .zoomBestFit)
-        addButton(symbol: "1.magnifyingglass",
-                  accessibility: "Actual size",
-                  selector: #selector(handleActualSize(_:)), action: .zoomActualSize)
-        addButton(symbol: "plus.magnifyingglass",
-                  accessibility: "Zoom in",
-                  selector: #selector(handleZoomIn(_:)), action: .zoomIn)
-        addButton(symbol: "minus.magnifyingglass",
-                  accessibility: "Zoom out",
-                  selector: #selector(handleZoomOut(_:)), action: .zoomOut)
+        // View: one zoom pull-down replaces Fit / 100 % / + / -.
+        addZoomMenuButton()
         addSeparator()
-        // Both rail and toolbar carry rotate; the rail copy is
-        // the primary source in edit sessions, the toolbar copy is the
-        // ambient affordance when no edit is open.
+        // Photo
         addButton(symbol: "rotate.left",
                   accessibility: "Rotate left",
                   selector: #selector(handleRotateLeft(_:)), action: .rotateLeft)
@@ -152,28 +140,80 @@ final class ViewerToolbar: HUDSurfaceView {
                   accessibility: "Rotate right",
                   selector: #selector(handleRotateRight(_:)), action: .rotateRight)
         addSeparator()
-        // Flag / info / histogram
-        addButton(symbol: "flag",
-                  accessibility: "Flag",
-                  selector: #selector(handleFlag(_:)), action: .toggleFlag)
-        addButton(symbol: "info.circle",
-                  accessibility: "Inspector",
-                  selector: #selector(handleInfo(_:)), action: .toggleInspector)
-        addButton(symbol: "chart.bar.xaxis",
-                  accessibility: "Histogram",
-                  selector: #selector(handleHistogram(_:)), action: .toggleHistogram)
-        addSeparator()
-        // Share (replaces the broken openExternalEditor slot) + delete.
+        // Do
         addButton(symbol: "square.and.arrow.up",
                   accessibility: "Share",
                   selector: #selector(handleShare(_:)), action: .share)
-        // A visible way into edit mode in full screen.
         addButton(symbol: "slider.horizontal.3",
                   accessibility: "Edit",
                   selector: #selector(handleEdit(_:)), action: .openEditMode)
         addButton(symbol: "trash",
                   accessibility: "Delete",
                   selector: #selector(handleDelete(_:)), action: .deleteToTrash)
+        addSeparator()
+        // Go
+        addButton(symbol: "square.grid.2x2",
+                  accessibility: "Show in Browser",
+                  selector: #selector(handleShowInBrowser(_:)), action: .showInBrowser)
+        addSeparator()
+        // Panel
+        addButton(symbol: "info.circle",
+                  accessibility: "Inspector",
+                  selector: #selector(handleInfo(_:)), action: .toggleInspector)
+        addButton(symbol: "arrow.down.right.and.arrow.up.left",
+                  accessibility: "Exit full screen",
+                  selector: #selector(handleExitFullScreen(_:)), action: .toggleFullscreen)
+    }
+
+    /// 32 pt buttons, 4 pt gaps; a group gap is 12 pt including the 1 pt
+    /// hairline.
+    static let buttonSize: CGFloat = 32
+    static let buttonGap: CGFloat = 4
+    static let zoomMenuWidth: CGFloat = 48
+
+    // MARK: - Zoom pull-down
+
+    /// Builds the View menu the zoom button opens. Set by the window.
+    var zoomMenuProvider: (() -> NSMenu?)?
+    private var zoomButton: HUDButton?
+
+    private func addZoomMenuButton() {
+        let btn = HUDButton(symbol: "plus.magnifyingglass", accessibility: "Zoom")
+        btn.target = self
+        btn.action = #selector(handleZoomMenu(_:))
+        btn.toolTip = "Zoom"
+        btn.setAccessibilityIdentifier("toolbar.zoomMenu")
+        btn.setAccessibilityHelp("Opens the zoom menu")
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        // The small arrow after the glyph marks it as a menu.
+        let chevron = NSImageView(image: NSImage(systemSymbolName: "chevron.down",
+                                                 accessibilityDescription: nil) ?? NSImage())
+        chevron.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
+        chevron.contentTintColor = .secondaryLabelColor
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        btn.addSubview(chevron)
+        NSLayoutConstraint.activate([
+            btn.widthAnchor.constraint(equalToConstant: Self.zoomMenuWidth),
+            btn.heightAnchor.constraint(equalToConstant: Self.buttonSize),
+            chevron.trailingAnchor.constraint(equalTo: btn.trailingAnchor, constant: -6),
+            chevron.centerYAnchor.constraint(equalTo: btn.centerYAnchor),
+        ])
+        buttonStack.addArrangedSubview(btn)
+        buttonsByAction[Self.key(for: .zoomMenu)] = btn
+        zoomButton = btn
+    }
+
+    @objc private func handleZoomMenu(_ sender: Any?) {
+        showZoomMenu()
+    }
+
+    /// Opens the View menu under the zoom button; the capsule stays up
+    /// while it is open.
+    func showZoomMenu() {
+        guard let button = zoomButton, let menu = zoomMenuProvider?() else { return }
+        holdsOpen = true
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.maxY + 4), in: button)
+        holdsOpen = false
     }
 
     // MARK: - Per-button target/action methods (issue #10 fix)
@@ -188,15 +228,11 @@ final class ViewerToolbar: HUDSurfaceView {
 
     @objc private func handlePrev(_ sender: Any?)        { actionDispatcher?(.prevImage) }
     @objc private func handleNext(_ sender: Any?)        { actionDispatcher?(.nextImage) }
-    @objc private func handleFit(_ sender: Any?)         { actionDispatcher?(.zoomBestFit) }
-    @objc private func handleActualSize(_ sender: Any?)  { actionDispatcher?(.zoomActualSize) }
-    @objc private func handleZoomIn(_ sender: Any?)      { actionDispatcher?(.zoomIn) }
-    @objc private func handleZoomOut(_ sender: Any?)     { actionDispatcher?(.zoomOut) }
     @objc private func handleRotateLeft(_ sender: Any?)  { actionDispatcher?(.rotateLeft) }
     @objc private func handleRotateRight(_ sender: Any?) { actionDispatcher?(.rotateRight) }
-    @objc private func handleFlag(_ sender: Any?)        { actionDispatcher?(.toggleFlag) }
+    @objc private func handleShowInBrowser(_ sender: Any?) { actionDispatcher?(.showInBrowser) }
+    @objc private func handleExitFullScreen(_ sender: Any?) { actionDispatcher?(.toggleFullscreen) }
     @objc private func handleInfo(_ sender: Any?)        { actionDispatcher?(.toggleInspector) }
-    @objc private func handleHistogram(_ sender: Any?)   { actionDispatcher?(.toggleHistogram) }
     @objc private func handleShare(_ sender: Any?)       { actionDispatcher?(.share) }
     @objc private func handleEdit(_ sender: Any?)        { actionDispatcher?(.openEditMode) }
     @objc private func handleDelete(_ sender: Any?)      { actionDispatcher?(.deleteToTrash) }
@@ -218,6 +254,18 @@ final class ViewerToolbar: HUDSurfaceView {
         case .share: return .share
         case .openEditMode: return .editImage
         case .deleteToTrash: return .moveToTrash
+        case .showInBrowser: return .showInBrowser
+        case .toggleFullscreen: return .toggleFullScreen
+        case .toggleRAWFile: return .toggleRAWFile
+        case .unpinAllPanels: return .unpinAllPanels
+        default: return nil
+        }
+    }
+
+    /// The tooltip title where it differs from the command's own title.
+    static func tooltipTitle(for action: ViewerAction) -> String? {
+        switch action {
+        case .toggleFullscreen: return "Exit Full Screen"
         default: return nil
         }
     }
@@ -234,15 +282,16 @@ final class ViewerToolbar: HUDSurfaceView {
         btn.target = self
         btn.action = selector
         if let command = Self.command(for: action) {
-            LiveTooltips.shared.bind(btn, command: command, context: .viewer)
+            LiveTooltips.shared.bind(btn, command: command, context: .viewer,
+                                     title: Self.tooltipTitle(for: action))
         } else {
             btn.toolTip = accessibility
         }
         btn.setAccessibilityIdentifier("toolbar.\(action)")
         btn.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            btn.widthAnchor.constraint(equalToConstant: HUDButton.size),
-            btn.heightAnchor.constraint(equalToConstant: HUDButton.size),
+            btn.widthAnchor.constraint(equalToConstant: Self.buttonSize),
+            btn.heightAnchor.constraint(equalToConstant: Self.buttonSize),
         ])
         buttonStack.addArrangedSubview(btn)
         buttonsByAction[Self.key(for: action)] = btn
@@ -257,7 +306,10 @@ final class ViewerToolbar: HUDSurfaceView {
             v.widthAnchor.constraint(equalToConstant: 1),
             v.heightAnchor.constraint(equalToConstant: 20),
         ])
+        // 12 pt group gap including the 1 pt hairline: 5 + 1 + 6.
+        if let before = buttonStack.arrangedSubviews.last { buttonStack.setCustomSpacing(5, after: before) }
         buttonStack.addArrangedSubview(v)
+        buttonStack.setCustomSpacing(6, after: v)
     }
 
     // MARK: - Test seams
@@ -302,15 +354,12 @@ final class ViewerToolbar: HUDSurfaceView {
         switch tail {
         case "prevImage":       return .prevImage
         case "nextImage":       return .nextImage
-        case "zoomBestFit":     return .zoomBestFit
-        case "zoomActualSize":  return .zoomActualSize
-        case "zoomIn":          return .zoomIn
-        case "zoomOut":         return .zoomOut
+        case "zoomMenu":        return .zoomMenu
+        case "showInBrowser":   return .showInBrowser
+        case "toggleFullscreen": return .toggleFullscreen
         case "rotateLeft":      return .rotateLeft
         case "rotateRight":     return .rotateRight
-        case "toggleFlag":      return .toggleFlag
         case "toggleInspector": return .toggleInspector
-        case "toggleHistogram": return .toggleHistogram
         case "share":           return .share
         case "openEditMode":    return .openEditMode
         case "deleteToTrash":   return .deleteToTrash
@@ -320,11 +369,10 @@ final class ViewerToolbar: HUDSurfaceView {
 
     /// Test seam — the SF Symbol names of the buttons, in order.
     internal static let symbolNamesForTesting: [String] = [
-        "chevron.left", "chevron.right",
-        "arrow.up.left.and.down.right.magnifyingglass", "1.magnifyingglass",
-        "plus.magnifyingglass", "minus.magnifyingglass",
-        "rotate.left", "rotate.right", "flag", "info.circle", "chart.bar.xaxis",
+        "chevron.left", "chevron.right", "plus.magnifyingglass",
+        "rotate.left", "rotate.right",
         "square.and.arrow.up", "slider.horizontal.3", "trash",
+        "square.grid.2x2", "info.circle", "arrow.down.right.and.arrow.up.left",
     ]
 
     /// Test seam — a capsule menu opens / closes.

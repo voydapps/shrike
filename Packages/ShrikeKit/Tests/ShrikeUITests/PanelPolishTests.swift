@@ -377,7 +377,8 @@ final class PanelPolishTests: XCTestCase {
         XCTAssertEqual(content.pillFrameForTesting.minY, 16, accuracy: 1.5)
         XCTAssertEqual(content.pillFrameForTesting.minX, 12, accuracy: 1.5)
 
-        content.togglePanel(.filmstrip)   // pinned strip shows the capsule too
+        content.togglePanel(.filmstrip)   // pinned strip
+        content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))   // the pointer rests in the bottom zone: capsule + strip   // (spec 24: the pointer shows the capsule, not the pin)
         let capsule = content.capsuleFrameForTesting
         XCTAssertEqual(capsule.minY, 12 + 88 + 12, accuracy: 1.5, "capsule 12 pt above the floating strip")
         XCTAssertEqual(capsule.height, 44, accuracy: 0.5)
@@ -414,11 +415,10 @@ final class PanelPolishTests: XCTestCase {
     func testToolbar_EachButtonHasUniqueSelector() {
         let toolbar = ViewerToolbar()
         let buttonActions: [ViewerAction] = [
-            .prevImage, .nextImage,
-            .zoomBestFit, .zoomActualSize, .zoomIn, .zoomOut,
+            .prevImage, .nextImage, .zoomMenu,
             .rotateLeft, .rotateRight,
-            .toggleFlag, .toggleInspector, .toggleHistogram,
-            .share, .deleteToTrash,
+            .share, .openEditMode, .deleteToTrash,
+            .showInBrowser, .toggleInspector, .toggleFullscreen,
         ]
 
         var selectors: [Selector] = []
@@ -435,16 +435,6 @@ final class PanelPolishTests: XCTestCase {
         XCTAssertEqual(selectors.count, buttonActions.count)
     }
 
-    func testToolbar_ZoomInAndZoomOut_RouteToDistinctSelectors() {
-        let toolbar = ViewerToolbar()
-        guard let zin = toolbar.targetActionForButtonTesting(.zoomIn)?.1,
-              let zout = toolbar.targetActionForButtonTesting(.zoomOut)?.1 else {
-            XCTFail("missing zoom button")
-            return
-        }
-        XCTAssertNotEqual(zin, zout, "zoom-in and zoom-out use distinct selectors")
-    }
-
     func testToolbar_RotateLeftAndRotateRight_RouteToDistinctSelectors() {
         let toolbar = ViewerToolbar()
         guard let l = toolbar.targetActionForButtonTesting(.rotateLeft)?.1,
@@ -457,12 +447,12 @@ final class PanelPolishTests: XCTestCase {
 
     func testToolbar_ButtonOrder() {
         let toolbar = ViewerToolbar()
+        // Spec 24 §1.3: exactly these 11, in this order.
         let expected: [ViewerAction] = [
-            .prevImage, .nextImage,
-            .zoomBestFit, .zoomActualSize, .zoomIn, .zoomOut,
+            .prevImage, .nextImage, .zoomMenu,
             .rotateLeft, .rotateRight,
-            .toggleFlag, .toggleInspector, .toggleHistogram,
-            .share, .openEditMode, .deleteToTrash,   // Edit
+            .share, .openEditMode, .deleteToTrash,
+            .showInBrowser, .toggleInspector, .toggleFullscreen,
         ]
         XCTAssertEqual(toolbar.buttonActionsForTesting(), expected)
     }

@@ -58,6 +58,10 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
                 menuItem.title = isSidebarCollapsed ? "Show Sidebar" : "Hide Sidebar"
             case .toggleInspector:
                 menuItem.title = isInspectorCollapsed ? "Show Inspector" : "Hide Inspector"
+            case .toggleRAWFile:
+                // Exists only when it can apply (as in the viewer).
+                menuItem.isHidden = contentController.rawSwitchCandidate == nil
+                menuItem.title = rawSwitchMenuTitle
             default: break
             }
             return canPerform(command)
@@ -147,6 +151,9 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
             return folder.deletingLastPathComponent().path != folder.path
         case .addToFavorites:
             return currentFolder != nil
+        case .toggleRAWFile:
+            // One selected pair (a JPEG with its RAW beside it).
+            return contentController.rawSwitchCandidate != nil
         case .showInMaps:
             // One item with GPS.
             return selectedCoordinate != nil

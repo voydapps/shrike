@@ -65,6 +65,8 @@ public enum BrowserAction: Sendable, Hashable {
     case openExternalEditor(slot: Int)
     /// Show in Maps for the one selected item.
     case showInMaps
+    /// ⌥R / the RAW chip: show the selected pair's RAW (or JPEG) file.
+    case toggleRAWFile
     /// ⌘4 / FastStone `P`: the Compare window.
     case compare
     /// ⌘P / FastStone ⌥P: print the selection.
@@ -123,6 +125,7 @@ public enum BrowserKeyMap {
         case .viewAsFilmstrip: return .viewModeFilmstrip
         case .viewAsList: return .viewModeList
         case .showInMaps: return .showInMaps
+        case .toggleRAWFile: return .toggleRAWFile
         case .compare: return .compare
         case .print: return .print
         default:

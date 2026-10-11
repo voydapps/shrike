@@ -242,6 +242,8 @@ public class HUDSurfaceView: NSView {
         guard target != look else { return }
         // Lazy: nothing is built until the surface shows.
         guard isRevealed || look != .unbuilt else { return }
+        // The pins would be read as content constraints by the moves below.
+        unpinContentHost()
         if look == .glass { leaveGlass() }
         switch target {
         case .solid, .plain:
@@ -250,6 +252,7 @@ public class HUDSurfaceView: NSView {
             if contentHost.superview !== self {
                 rehomeContentHost { addStructural(contentHost, above: nil) }
             }
+            pinContentHost()
         case .glass:
             guard #available(macOS 26, *) else { return }
             fillLayer?.isHidden = true
@@ -262,6 +265,41 @@ public class HUDSurfaceView: NSView {
         applyContrastBorder()
         onLookChanged?()
     }
+
+    // MARK: Content host pins
+    //
+    // In the solid and plain looks the host fills the surface through four
+    // real constraints. With autoresizing alone, a host that came back from
+    // the glass could keep a stale origin and width (seen on the position
+    // pill: host at (10, 5) and 8 pt narrower than the pill after a longer
+    // string), and the host clips its content, so the text lost its first
+    // digit. Content constraints that tie a label to the surface now have
+    // one fixed frame to land in.
+
+    private var hostPins: [NSLayoutConstraint] = []
+
+    private func pinContentHost() {
+        guard hostPins.isEmpty, contentHost.superview === self else { return }
+        contentHost.translatesAutoresizingMaskIntoConstraints = false
+        hostPins = [
+            contentHost.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentHost.trailingAnchor.constraint(equalTo: trailingAnchor),
+            contentHost.topAnchor.constraint(equalTo: topAnchor),
+            contentHost.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ]
+        NSLayoutConstraint.activate(hostPins)
+    }
+
+    private func unpinContentHost() {
+        guard !hostPins.isEmpty else { return }
+        NSLayoutConstraint.deactivate(hostPins)
+        hostPins = []
+        contentHost.translatesAutoresizingMaskIntoConstraints = true
+        contentHost.autoresizingMask = [.width, .height]
+    }
+
+    /// Test seam: the host is pinned to the surface.
+    var contentHostPinnedForTesting: Bool { !hostPins.isEmpty }
 
     private func buildFillLayerIfNeeded() {
         guard fillLayer == nil, let layer else { return }
