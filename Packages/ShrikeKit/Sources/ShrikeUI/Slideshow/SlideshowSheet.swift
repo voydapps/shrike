@@ -101,7 +101,8 @@ final class SlideshowSheet: NSObject, NSTextFieldDelegate {
 
     private func build() -> NSPanel {
         allRadio.title = scope.allTitle
-        allRadio.state = .on
+        allRadio.state = scope.defaultsToSelection ? .off : .on
+        selectedRadio.state = scope.defaultsToSelection ? .on : .off
         selectedRadio.title = scope.selectedTitle
         for radio in [allRadio, selectedRadio] {
             radio.target = self
@@ -222,6 +223,8 @@ final class SlideshowSheet: NSObject, NSTextFieldDelegate {
         _ = sheet.build()
         return sheet
     }
+    var allRadioForTesting: NSButton { allRadio }
+    var selectedRadioForTesting: NSButton { selectedRadio }
     var intervalFieldForTesting: NSTextField { intervalField }
     var stepperForTesting: NSStepper { stepper }
     var panelForTesting: NSPanel? { panel }

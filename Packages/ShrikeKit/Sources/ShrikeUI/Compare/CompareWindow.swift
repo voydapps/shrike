@@ -239,7 +239,21 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     }
 
     private func updateSubtitle() {
-        subtitle = panes.count == 1 ? "1 image" : "\(panes.count) images"
+        subtitle = Self.subtitle(paneCount: panes.count)
+    }
+
+    /// "2 images · Tab switches pane · ← → change its photo"; no hint for one pane.
+    static func subtitle(paneCount: Int) -> String {
+        paneCount == 1 ? "1 image" : "\(paneCount) images · Tab switches pane · ← → change its photo"
+    }
+
+    /// Tab / ⇧Tab: the next or previous pane, wrapping. Nothing with one pane.
+    func stepFocus(_ delta: Int) {
+        guard panes.count > 1, attachedSheet == nil else { return }
+        focus((focusedIndex + delta + panes.count) % panes.count)
+        let index = panes[focusedIndex].index
+        let name = list.indices.contains(index) ? list[index].displayName : ""
+        Culling.announce("Pane \(focusedIndex + 1) of \(panes.count), \(name)")
     }
 
     private func updateFocus() {
@@ -302,7 +316,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         defer { isApplyingImage = false }
         view.setImage(entry.image, sourceID: entry.sourceID, prepared: entry.prepared as? DisplayTexture)
         view.resetOrientation()
-        if let size = pane.info?.pixelSize { view.sourcePixelSize = size }
+        if let size = drawnSize(of: pane) { view.sourcePixelSize = size }
         pane.loadedURL = url
         pane.decodedLongEdge = max(entry.image.width, entry.image.height)
         if isLocked, let leader = panes.first(where: { $0 !== pane && $0.view.imageView.image != nil }) {
@@ -327,7 +341,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
                 let merged = self.recordGuard.merge(read: [url: record], current: [url: pane.record], since: token)
                 pane.record = merged[url] ?? record
             }
-            if let size = info?.pixelSize, pane.loadedURL == url {
+            if let size = self.drawnSize(of: pane), pane.loadedURL == url {
                 pane.view.imageView.sourcePixelSize = size
                 self.requestFullResolutionIfNeeded(pane)
             }
@@ -335,12 +349,21 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         }
     }
 
+    /// The size of the photo as drawn: the file's size with the pane's
+    /// quarter turns applied (an odd count swaps width and height).
+    func drawnSize(of pane: ComparePane) -> CGSize? {
+        guard let size = pane.info?.pixelSize else { return nil }
+        let quarters = Int((pane.view.imageView.rotationDegrees / 90).rounded())
+        return quarters % 2 != 0 ? CGSize(width: size.height, height: size.width) : size
+    }
+
     private func updateFooter(_ pane: ComparePane) {
         guard list.indices.contains(pane.index) else { return }
         let info = pane.info
         pane.view.setFooter(CompareFooter.text(
             name: list[pane.index].displayName, rating: pane.record.rating, flagged: pane.record.flagged,
-            pixelSize: info?.pixelSize, aperture: info?.aperture, shutter: info?.shutter, iso: info?.iso))
+            pixelSize: drawnSize(of: pane), aperture: info?.aperture, shutter: info?.shutter, iso: info?.iso),
+            name: list[pane.index].displayName)
     }
 
     /// A larger pane (full screen, resize) gets a larger display texture.
@@ -522,10 +545,19 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
 
     @discardableResult
     func handleKey(_ event: NSEvent, commandKeysOnly: Bool = false) -> Bool {
-        let snapshot = KeyEventSnapshot.from(event, isKeyUp: false)
+        var snapshot = KeyEventSnapshot.from(event, isKeyUp: false)
+        // Tab reads as a control character that depends on Shift; the key code is exact.
+        if event.keyCode == 48 {
+            snapshot = KeyEventSnapshot(key: SpecialKey.tab, modifiers: snapshot.flags, keyCode: 48)
+        }
         let unshifted = KeyCharacters.unshiftedKey(of: event)
         guard let hit = CompareKeyMap.hit(for: snapshot, unshiftedKey: unshifted,
-                                          preset: ShortcutTable.livePreset) else { return false }
+                                          preset: ShortcutTable.livePreset) else {
+            // Mac preset: a plain ⌫ / ⌦ trashes nothing; one hint per run.
+            guard !commandKeysOnly else { return false }
+            return TrashKeyHint.handle(snapshot, preset: ShortcutTable.livePreset, responder: firstResponder,
+                                       toast: { [weak self] in self?.toast($0) })
+        }
         if commandKeysOnly {
             // Undo / Redo stay with the Edit menu (it names the action).
             guard snapshot.flags.contains(.command), hit.command != .undo, hit.command != .redo else { return false }
@@ -560,6 +592,8 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         case .undo: compareUndoManager.undo()
         case .redo: compareUndoManager.redo()
         case .escape: performClose(nil)
+        case .compareFocusNext: stepFocus(1)
+        case .compareFocusPrevious: stepFocus(-1)
         default: return false
         }
         return true
@@ -833,7 +867,7 @@ extension CompareWindow {
             MainActor.assumeIsolated { target.undoTrash(receipt, removed: removed, place: place) }
         }
         compareUndoManager.setActionName("Move to Trash")
-        toast(ToastContent(FileActionCopy.movedToTrash(receipt.trashedGroups), actionTitle: "Undo")) { [weak self] in
+        toast(ToastContent.trashed(FileActionCopy.movedToTrash(receipt.trashedGroups))) { [weak self] in
             self?.compareUndoManager.undo()
         }
     }
@@ -935,7 +969,13 @@ extension CompareWindow {
         guard let pane = focusedPane, pane.view.imageView.image != nil,
               list.indices.contains(pane.index) else { return }
         let view = pane.view.imageView
-        if case .rotate(let q) = op { view.rotateBy(degrees: Double(q) * 90) }
+        if case .rotate(let q) = op {
+            view.rotateBy(degrees: Double(q) * 90)
+            if q % 2 != 0 {
+                if let size = drawnSize(of: pane) { view.sourcePixelSize = size }
+                updateFooter(pane)
+            }
+        }
         Culling.announce(RotateCopy.announcement(op))
         let url = list[pane.index].primary
         guard url.isFileURL, services.backupStore != nil, LosslessRotator.isSupported(url) else {

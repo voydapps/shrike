@@ -27,13 +27,11 @@ final class OneAccentTests: XCTestCase {
         return "accent"
     }
 
-    func testToolbarDoneCapsuleDoneAndEveryApplyUseTheSameAccentFill() {
+    func testToolbarDoneAndCapsuleDoneUseTheSameAccentFill() {
         let capsule = EditCapsuleView()
         let buttons: [(String, NSButton)] = [
             ("capsule Done", capsule.doneButton),
             ("toolbar Done", EditToolbarController().doneButton),
-            ("Color Apply", ColorAdjustPanel()._applyButton),
-            ("Crop Apply", CropPanel()._applyButton),
         ]
         for (name, b) in buttons {
             XCTAssertEqual(b.accentFillMechanism, expected, name)

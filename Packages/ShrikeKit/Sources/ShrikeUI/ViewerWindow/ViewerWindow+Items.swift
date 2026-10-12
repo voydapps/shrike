@@ -97,17 +97,27 @@ extension ViewerWindow {
         let item = DisplayedItem(group: group, listIndex: index, generation: list.generation, shownURL: shown)
         guard item != displayedItem else { return }
         let newFile = displayedItem?.group.primary != group.primary
+        let previousListIndex = displayedItem?.listIndex
         if newFile {
             cancelFullResolution()
             // Navigation writes a pending rotate now and drops the
             // view-only turn.
             flushPendingOrientation()
             contentRoot.imageView.resetOrientation()
+            for url in viewOnlyTurnedURLs { headerPixelSizes[url] = nil }
+            viewOnlyTurnedURLs.removeAll()
         }
         let previousShown = displayedItem?.shownURL
         displayedItem = item
-        // The edit tools are off while the RAW is shown (spec 24 §4.5).
-        contentRoot.railToolsBlocked = item.isRAWShown
+        // The pill and the inspector show the marks of what is on screen. A list
+        // swapped in from the Browser reads its records later and used to draw them
+        // for the OLD item's index (stale rating / flag).
+        if newFile || item.listIndex != previousListIndex {
+            contentRoot.setPositionMarks(positionMarks(for: index))
+        }
+        // Edit is off while the RAW is shown (spec 24 §4.5); the Edit
+        // button's tooltip says why.
+        contentRoot.editBlockedByRAW = item.isRAWShown
         if displayedItem != nil, item.shownURL != previousShown {
             // The inspector reads the shown file (spec 24 §4.5): the RAW's
             // name, size, dimensions, type and EXIF while it is on screen.
@@ -151,11 +161,19 @@ extension ViewerWindow {
             guard let self, self.displayedItem == expected,
                   !self.contentRoot.isEditModeActive else { return }
             // "100 %" comes from the file's pixel size.
-            if let size { self.headerPixelSizes[url] = size }
-            self.contentRoot.imageView.sourcePixelSize = size
+            var drawn = size
+            // A turn pressed before the read returned has nothing to swap
+            // yet: apply the pending net turn here.
+            if let s = drawn, let pending = self.pendingOrientation,
+               GroupList.canonical(pending.url) == GroupList.canonical(url),
+               pending.net.components.quarters % 2 != 0 {
+                drawn = CGSize(width: s.height, height: s.width)
+            }
+            if let drawn { self.headerPixelSizes[url] = drawn }
+            self.contentRoot.imageView.sourcePixelSize = drawn
             self.requestFullResolutionIfNeeded()
             self.subtitle = WindowTitles.viewerSubtitle(
-                index: expected.listIndex, total: self.list.count, pixelSize: size
+                index: expected.listIndex, total: self.list.count, pixelSize: drawn
             )
         }
     }

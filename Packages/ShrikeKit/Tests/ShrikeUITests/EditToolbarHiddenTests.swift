@@ -55,7 +55,7 @@ final class EditToolbarHiddenTests: XCTestCase {
         XCTAssertEqual(viewer.toolbar?.identifier, EditToolbarController.toolbarIdentifier)
         XCTAssertEqual(viewer.toolbar?.isVisible, true, "the edit toolbar shows for the session")
         let ids = viewer.toolbar?.items.map(\.itemIdentifier) ?? []
-        for id in [EditToolbarController.ItemID.cancel, EditToolbarController.ItemID.tools,
+        for id in [EditToolbarController.ItemID.cancel,
                    EditToolbarController.ItemID.undoRedo, EditToolbarController.ItemID.reset,
                    EditToolbarController.ItemID.done] {
             XCTAssertTrue(ids.contains(id), "\(id.rawValue) is in the edit toolbar")

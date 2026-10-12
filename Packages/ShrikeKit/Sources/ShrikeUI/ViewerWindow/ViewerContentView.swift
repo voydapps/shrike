@@ -11,20 +11,19 @@
 //  `windowMode`:
 //
 //    * `.windowed`   — the filmstrip docks UNDER the canvas (takes real
-//                      estate from the MetalImageView). Toolbar / editRail /
+//                      estate from the MetalImageView). Toolbar /
 //                      inspector are not built into the hierarchy; they are
 //                      surfaced via the windowed-mode NSToolbar + menus.
 //                      The inspector also uses the
 //                      right-edge hover panel in windowed mode (no
 //                      NSSplitViewController.inspector surgery).
 //    * `.fullscreen` — all four panels are edge-activated overlays (top
-//                      filmstrip, bottom toolbar, left edit rail, right
-//                      inspector). Cursor-idle auto-hide at
+//                      filmstrip, bottom toolbar, right inspector). Cursor-idle auto-hide at
 //                      `Prefs.chromeFadeOutDelayMs`. Pin glyph per panel.
 //
 //  Z-order (bottom → top):
 //    imageView < livePhotoMovie (only while a Live Photo plays)
-//    < canvasDim < [filmstrip, toolbar, editRail, inspector]
+//    < canvasDim < [filmstrip, toolbar, inspector]
 //    < zoomBadge < histogramOverlay < loupeView < toastView < pageIndicator
 //    < livePhotoBadge < navPositionOverlay < previewBadge < errorOverlay
 //
@@ -65,7 +64,6 @@ public final class ViewerContentView: NSView {
     public enum PanelKind: Sendable, Hashable, CaseIterable {
         case filmstrip
         case toolbar
-        case editRail
         case inspector
     }
 
@@ -97,7 +95,6 @@ public final class ViewerContentView: NSView {
     let capsuleZoomMenu = CapsuleZoomMenuSource()
     /// True once the capsule exists (tests).
     internal var isCapsuleBuiltForTesting: Bool { capsuleStorage != nil }
-    private let editRail: EditRail
     private let inspector: InspectorPanel
 
     private let zoomBadge: ZoomBadgeView
@@ -172,8 +169,7 @@ public final class ViewerContentView: NSView {
     /// else 16 pt above the bottom edge.
     private var toolbarBottomToSelf: NSLayoutConstraint?
     private var toolbarBottomToFilmstrip: NSLayoutConstraint?
-    /// The pill's leading edge: 16 pt in full screen, or 16 pt past the
-    /// rail when it shows.
+    /// The pill's leading edge: 16 pt from the left.
     private var navOverlayLeading: NSLayoutConstraint?
     private var navOverlayMaxWidth: NSLayoutConstraint?
 
@@ -203,31 +199,6 @@ public final class ViewerContentView: NSView {
     private var imageViewFullscreenBottomConstraint: NSLayoutConstraint?
     private var filmstripHeightConstraint: NSLayoutConstraint?
 
-    // Edit rail geometry
-    // Fullscreen: floating overlay, 56 pt wide, centred vertically.
-    // Windowed: docked left strip, 56 pt wide, full height. Pin glyph lives
-    // in a shared PinCornerOverlay at top-right in both modes.
-    private var editRailFullscreenConstraints: [NSLayoutConstraint] = []
-    private var editRailWindowedConstraints: [NSLayoutConstraint] = []
-    private var editRailWidthFullscreen: NSLayoutConstraint?
-    private var editRailWidthWindowed: NSLayoutConstraint?
-    /// The windowed rail faded on the pointer clock.
-    private(set) var railIdleHidden = false
-    /// The first frame is on screen; the rail waits for it.
-    private(set) var hasPresentedFirstFrame = false
-    /// Band too short or canvas too narrow: no rail.
-    private(set) var railSqueezedOut = false
-    /// The windowed rail's last applied target (nil: not applied yet).
-    private var railAppliedTarget: Bool?
-    private var railShownOnce = false
-    /// The window starts its pointer clock when the rail first shows.
-    var onRailShownFirst: (() -> Void)?
-    /// Test seam: VoiceOver on / off without the system setting.
-    internal var voiceOverOverrideForTesting: Bool?
-    /// Gap between the rail's band and the titlebar / the pill.
-    static let railBandGap: CGFloat = HUDGlass.gap
-    /// The narrowest canvas that keeps the rail.
-    static let railMinCanvasWidth: CGFloat = 480
     /// The HUD inspector's trailing edge: 16 pt in, 12 pt as glass.
     private var inspectorTrailing: NSLayoutConstraint?
     /// The inspector ends 12 pt above the floating strip
@@ -251,15 +222,8 @@ public final class ViewerContentView: NSView {
     /// Test seam: the glass container, once built.
     internal var glassContainerForTesting: NSView? { glassContainerStorage }
 
-    // imageView leading — swapped by `configureForMode` when the docked
-    // edit rail is visible in windowed mode.
     private var imageViewLeadingToSelf: NSLayoutConstraint?
-    private var imageViewLeadingToEditRail: NSLayoutConstraint?
-
-    // Filmstrip leading — same swap; in windowed mode the filmstrip starts
-    // past the docked edit rail so the rail isn't overlaid by thumbs.
     private var filmstripLeadingToSelf: NSLayoutConstraint?
-    private var filmstripLeadingToEditRail: NSLayoutConstraint?
 
     // Navigation position overlay bottom — swapped per mode.
     // In windowed mode with the filmstrip docked, the pill sits
@@ -268,8 +232,7 @@ public final class ViewerContentView: NSView {
     private var navOverlayBottomToPanel: NSLayoutConstraint?
     private var navOverlayBottomToFilmstrip: NSLayoutConstraint?
 
-    // KVO token for live pref observation (position overlay auto-hide
-    // + edit-rail windowed visibility). Wrapped so the deinit can hand
+    // KVO token for live pref observation (position overlay auto-hide). Wrapped so the deinit can hand
     // it off without touching MainActor state.
     private let prefsObservationBox: PrefsObservationBox = PrefsObservationBox()
 
@@ -392,7 +355,6 @@ public final class ViewerContentView: NSView {
         self.services = services
         self.imageView = MetalImageView(frame: .zero)
         self.filmstrip = FilmstripView()
-        self.editRail = EditRail()
         self.inspector = InspectorPanel()
         self.zoomBadge = ZoomBadgeView()
         self.loupeView = LoupeView()
@@ -446,7 +408,6 @@ public final class ViewerContentView: NSView {
         // sticky choices without a round-trip through the window's
         // construction code.
         if Prefs.filmstripPinnedFullscreen { pinnedPanels.insert(.filmstrip) }
-        if Prefs.editRailPinnedFullscreen { pinnedPanels.insert(.editRail) }
         if Prefs.exifPanelPinnedFullscreen { pinnedPanels.insert(.inspector) }
 
         setupSubviews()
@@ -469,10 +430,10 @@ public final class ViewerContentView: NSView {
         editModeController.onExitedEditMode = { [weak self] restore in
             self?.exitEditMode(restoreImage: restore)
         }
+        editModeController.chooseToolInFullScreen = { [weak self] in self?.windowMode == .fullscreen }
         editModeController.onChromeStateChanged = { [weak self] state in
             self?.applyEditChromeState(state)
         }
-        // Reset left the rail; it lives in the edit chrome.
     }
 
     /// Mount edit mode chrome over the current viewer. The chrome stays
@@ -486,6 +447,7 @@ public final class ViewerContentView: NSView {
             return
         }
         isEditModeActive = true
+        onEditModeActiveChanged?(true)
         stopLivePhoto()
         imageView.fileDragEnabled = false   // drags belong to the tool
         // Discard shows this again directly, with no
@@ -499,14 +461,18 @@ public final class ViewerContentView: NSView {
         addSubview(ePanel)
         // The panel ends above the docked filmstrip (the image
         // area's bottom in a window), 32 pt above the bottom otherwise.
-        let panelBottom = ePanel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -32)
-        panelBottom.priority = .defaultHigh
+        // Spec 25 §3.2: the panel is as tall as its content, top-aligned at the
+        // panel band's top, 16 pt from the right edge; the limits below keep it
+        // inside the band (taller content scrolls).
+        ePanel.bandHeightProvider = { [weak self] in
+            guard let self else { return 0 }
+            return self.imageView.frame.maxY - self.safeAreaInsets.top - 8 - 8
+        }
         editPanelConstraints = [
             ePanel.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 8),
-            panelBottom,
             ePanel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -32),
             ePanel.bottomAnchor.constraint(lessThanOrEqualTo: imageView.bottomAnchor, constant: -8),
-            ePanel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            ePanel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             ePanel.widthAnchor.constraint(
                 equalToConstant: EditParameterPanel.panelWidth
             ),
@@ -523,11 +489,10 @@ public final class ViewerContentView: NSView {
         // errorOverlay). Rationale: the position pill must stay legible
         // while editing (the user can still see "3 / 124" while
         // cropping), and the error overlay still wins the z-order when
-        // a save fails. The chrome panels (filmstrip/toolbar/editRail/
+        // a save fails. The chrome panels (filmstrip/toolbar/
         // inspector, histogram) sit ABOVE the overlay: the
-        // overlay's dim outside the crop rect covered the edit rail and
-        // the histogram, so the rail's glyphs, the active tool's accent
-        // included, looked disabled. The overlay goes just under the
+        // overlay's dim outside the crop rect covered the histogram
+        // and looked disabled. The overlay goes just under the
         // first chrome panel (or under the glass container that holds
         // them in full screen on macOS 26), above the canvas and its dim.
         let eOverlay = editModeController.cropOverlay
@@ -662,6 +627,11 @@ public final class ViewerContentView: NSView {
 
     /// Fires with the edit subtitle while editing, nil on exit.
     var onEditSubtitleChanged: ((EditChromeState?) -> Void)?
+    /// Edit mode started (true) or ended (false). The window uses it to make
+    /// room for the tool panel beside a narrow canvas (spec 26 §5).
+    var onEditModeActiveChanged: ((Bool) -> Void)?
+    /// Called on every layout in edit mode with the canvas width.
+    var onEditCanvasWidth: ((CGFloat) -> Void)?
 
     /// Mounts the chrome that fits the current window mode and removes
     /// the other. Called on entry, on exit and on a full-screen switch.
@@ -723,7 +693,6 @@ public final class ViewerContentView: NSView {
     private func applyEditChromeState(_ state: EditChromeState) {
         editToolbarController.apply(state)
         editCapsule.apply(state)
-        editRail.setActiveTool(isEditModeActive ? state.tool : nil)
         onEditSubtitleChanged?(isEditModeActive ? state : nil)
         updateHistogramVisibility(animated: true)
     }
@@ -748,16 +717,16 @@ public final class ViewerContentView: NSView {
         onLayoutForTesting?()
         Self.onAnyLayoutForTesting?()
         super.layout()
-        layoutWindowedRail()
-        layoutFullscreenRail()
         applyFitInsets()
-        if isEditModeActive { syncCropOverlayFrame() }
+        if isEditModeActive {
+            syncCropOverlayFrame()
+            onEditCanvasWidth?(bounds.width)
+        }
         livePhotoPlayback?.updateFrame()
         layoutLiveBadge()
         updateHistogramForCanvasSize()
         // The first layout sets the texture size.
         if requestedTextureLongEdge == nil { updateTextureLongEdge() }
-        refreshWindowedRail()
     }
 
     /// Layout passes so far (none inside the window's init).
@@ -779,8 +748,7 @@ public final class ViewerContentView: NSView {
     /// the top-left of the photo as drawn (of its visible part when zoomed
     /// in), inset `liveBadgeInset`. The constraints keep it at least
     /// `liveBadgeChromeGap` below the safe area (titlebar, toolbar, notch).
-    /// Where it shares rows with a shown edit rail it moves
-    /// right of it. Runs on layout (resize, full screen), zoom, pan, a
+    /// Runs on layout (resize, full screen), zoom, pan, a
     /// view turn and a new photo; nothing while the badge is hidden.
     func layoutLiveBadge() {
         guard !livePhotoBadge.isHidden,
@@ -790,32 +758,16 @@ public final class ViewerContentView: NSView {
         var photo = convert(imageView.drawnImageRect, from: imageView).intersection(canvas)
         if photo.isNull || photo.width < 1 || photo.height < 1 { photo = canvas }
         let inset = Self.liveBadgeInset
-        var x = photo.minX + inset
+        let x = (photo.minX + inset).rounded()
         // Distance from this view's top (y down), as the top constraint.
         let preferredTop = (bounds.maxY - photo.maxY) + inset
-        if isEditRailShown {
-            let height = livePhotoBadge.frame.height > 0
-                ? livePhotoBadge.frame.height : livePhotoBadge.fittingSize.height
-            let badgeTop = max(preferredTop, inset, safeAreaInsets.top + Self.liveBadgeChromeGap)
-            let gap = Self.liveBadgeChromeGap
-            let band = NSRect(x: bounds.minX, y: bounds.maxY - badgeTop - height - gap,
-                              width: bounds.width, height: height + 2 * gap)
-            let rail = railFrameInSelf
-            if rail.width < 1 || rail.height < 1 {
-                // Not laid out yet: 16 pt from the left, 56 wide.
-                x = max(x, bounds.minX + 16 + 56 + gap)
-            } else if rail.intersects(band) {
-                x = max(x, rail.maxX + gap)
-            }
-        }
-        x = x.rounded()
         let y = preferredTop.rounded()
         if abs(leading.constant - x) > 0.25 { leading.constant = x }
         if abs(top.constant - y) > 0.25 { top.constant = y }
     }
 
     /// The part of the canvas the photo fits in.
-    /// Edit mode: clear of the side panel, a shown rail and the
+    /// Edit mode: clear of the side panel and the
     /// full-screen capsule, with the handle margin on every side. At rest
     /// in a window with auto-hide off: below the titlebar/toolbar
     /// (`contentLayoutRect`). Otherwise the whole canvas.
@@ -828,9 +780,6 @@ public final class ViewerContentView: NSView {
             let panel = editModeController.parameterPanel
             if panel.superview === self, !panel.isHidden {
                 e.right += max(0, iv.maxX - panel.frame.minX)
-            }
-            if isEditRailShown {
-                e.left += max(0, editRail.frame.maxX - iv.minX)
             }
             if editCapsule.superview != nil, !editCapsule.isHidden {
                 e.bottom += max(0, editCapsule.frame.maxY - iv.minY)
@@ -859,7 +808,7 @@ public final class ViewerContentView: NSView {
     public func exitEditMode(restoreImage: Bool = true) {
         guard isEditModeActive else { return }
         isEditModeActive = false
-        editRail.setActiveTool(nil)
+        onEditModeActiveChanged?(false)
         imageView.fileDragEnabled = true
         applyFitInsets()   // the rest fit area before the photo comes back
         if restoreImage, let (image, sourceID) = imageBeforeEdit {
@@ -890,7 +839,8 @@ public final class ViewerContentView: NSView {
     /// otherwise to the window's bottom.
     private func applyWindowedFilmstripDock() {
         guard windowMode == .windowed else { return }
-        let docked = Prefs.filmstripVisibleInWindowed && !isEditModeActive
+        // Spec 25 §3.3: the docked strip stays in a window's edit mode.
+        let docked = Prefs.filmstripVisibleInWindowed
         imageViewWindowedBottomConstraint?.isActive = false
         imageViewFullscreenBottomConstraint?.isActive = false
         navOverlayBottomToFilmstrip?.isActive = false
@@ -932,8 +882,7 @@ public final class ViewerContentView: NSView {
         imageView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(imageView)
         // Top + trailing are anchored unconditionally; the bottom + leading
-        // edges are swapped by `configureForMode` (leading depends on
-        // whether the docked edit rail is visible in windowed mode).
+        // edges are swapped by `configureForMode`.
         imageViewLeadingToSelf =
             imageView.leadingAnchor.constraint(equalTo: leadingAnchor)
         imageViewTopToSelf = imageView.topAnchor.constraint(equalTo: topAnchor)
@@ -958,7 +907,7 @@ public final class ViewerContentView: NSView {
             canvasDim.trailingAnchor.constraint(equalTo: imageView.trailingAnchor),
         ])
 
-        // Chrome panels — added in z-order: filmstrip < toolbar < editRail
+        // Chrome panels — added in z-order: filmstrip < toolbar
         // < inspector. Their layout is configured per-mode by
         // `configureForMode`. In both modes they live in the view tree;
         // the fullscreen overlays are hidden until hover, and the
@@ -969,17 +918,8 @@ public final class ViewerContentView: NSView {
         filmstrip.isHidden = true
         addSubview(filmstrip)
 
-        // The capsule (between the filmstrip and the edit rail) is built
+        // The capsule (between the filmstrip and the inspector) is built
         // on first use: `installCapsule`.
-
-        editRail.translatesAutoresizingMaskIntoConstraints = false
-        editRail.alphaValue = 0
-        editRail.isHidden = true
-        addSubview(editRail)
-        // Constraints are installed/activated per-mode in `configureForMode`
-        // so the fullscreen floating overlay (60 pt wide — 40 content + 20
-        // pin strip) and the windowed docked rail (40 pt wide, pin strip
-        // hidden, full height) can coexist without fighting.
 
         inspector.translatesAutoresizingMaskIntoConstraints = false
         inspector.alphaValue = 0
@@ -1009,7 +949,7 @@ public final class ViewerContentView: NSView {
         NSLayoutConstraint.activate([
             zoomBadge.centerXAnchor.constraint(equalTo: centerXAnchor),
             // Spec 24 §1.5: top centre, 12 pt below the content top (the
-            // same reference the rail band uses), in a window and in full
+            // same reference the panel band uses), in a window and in full
             // screen. It never meets the capsule, strip, pill or inspector.
             zoomBadge.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor,
                                            constant: Self.zoomBadgeTopInset),
@@ -1118,11 +1058,9 @@ public final class ViewerContentView: NSView {
         // Prepare per-mode constraint sets. `configureForMode` activates
         // whichever set matches `windowMode`.
         buildFilmstripConstraints()
-        buildEditRailConstraints()
 
-        // Live pref observation — issues #4 (position overlay auto-hide)
-        // and the windowed edit-rail visibility need to respond the
-        // moment Prefs flips, not on the next mode switch.
+        // Live pref observation — issue #4 (position overlay auto-hide)
+        // needs to respond the moment Prefs flips, not on the next mode switch.
         prefsObservationBox.token = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: nil,
@@ -1153,10 +1091,9 @@ public final class ViewerContentView: NSView {
             lastMaxLongEdge = edge
             updateTextureLongEdge()
         }
-        // Windowed edit-rail docked visibility is read inside
-        // `configureForMode`, so only re-run layout if something that
-        // affects it has changed. Cheap enough to run unconditionally in
-        // windowed mode since it's a no-op when nothing moved.
+        // Window layout reads prefs inside `configureForMode`. Cheap enough
+        // to run unconditionally in windowed mode since it's a no-op when
+        // nothing moved.
         if windowMode == .windowed {
             configureForMode()
         }
@@ -1170,15 +1107,8 @@ public final class ViewerContentView: NSView {
         let height = filmstrip.heightAnchor.constraint(equalToConstant: heightConstant)
         self.filmstripHeightConstraint = height
 
-        // Filmstrip leading can be either the panel's leading or the edit
-        // rail's trailing (in windowed mode with the rail
-        // docked, the filmstrip starts past the rail so the rail isn't
-        // overlaid by thumbs). Both constraints pre-built; `configureForMode`
-        // activates one.
         filmstripLeadingToSelf =
             filmstrip.leadingAnchor.constraint(equalTo: leadingAnchor)
-        filmstripLeadingToEditRail =
-            filmstrip.leadingAnchor.constraint(equalTo: editRail.trailingAnchor)
 
         filmstripWindowedConstraints = [
             filmstrip.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -1202,39 +1132,6 @@ public final class ViewerContentView: NSView {
             imageView.bottomAnchor.constraint(equalTo: bottomAnchor)
     }
 
-    private func buildEditRailConstraints() {
-        // Rail total width is 56 pt in both modes
-        // (windowed and fullscreen). The earlier split (60 pt fullscreen
-        // / 40 pt windowed) is gone; the old 20 pt pin strip is gone and
-        // the pin glyph lives in a PinCornerOverlay at top-right.
-        let wFull = editRail.widthAnchor.constraint(
-            equalToConstant: EditRail.totalWidth
-        )
-        editRailWidthFullscreen = wFull
-        editRailFullscreenConstraints = [
-            editRail.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            editRail.centerYAnchor.constraint(equalTo: centerYAnchor),
-            wFull,
-        ]
-
-        // Windowed: docked full-height at the leading edge.
-        // Rail extends floor-to-ceiling, filmstrip starts
-        // past the rail's trailing edge.
-        let wDock = editRail.widthAnchor.constraint(
-            equalToConstant: EditRail.totalWidth
-        )
-        editRailWidthWindowed = wDock
-        editRailWindowedConstraints = [
-            editRail.leadingAnchor.constraint(equalTo: leadingAnchor),
-            editRail.topAnchor.constraint(equalTo: topAnchor),
-            editRail.bottomAnchor.constraint(equalTo: bottomAnchor),
-            wDock,
-        ]
-
-        imageViewLeadingToEditRail =
-            imageView.leadingAnchor.constraint(equalTo: editRail.trailingAnchor)
-    }
-
     private func configureForMode() {
         defer { applyCanvasColour() }
         // Glass in full screen on macOS 26 (built on each
@@ -1246,13 +1143,9 @@ public final class ViewerContentView: NSView {
         // Tear down whichever set is active.
         NSLayoutConstraint.deactivate(filmstripWindowedConstraints)
         NSLayoutConstraint.deactivate(filmstripFullscreenConstraints)
-        NSLayoutConstraint.deactivate(editRailFullscreenConstraints)
-        NSLayoutConstraint.deactivate(editRailWindowedConstraints)
         imageViewWindowedBottomConstraint?.isActive = false
         imageViewFullscreenBottomConstraint?.isActive = false
-        imageViewLeadingToEditRail?.isActive = false
         filmstripLeadingToSelf?.isActive = false
-        filmstripLeadingToEditRail?.isActive = false
         navOverlayBottomToPanel?.isActive = false
         navOverlayBottomToFilmstrip?.isActive = false
         histogramBottomToSelf?.isActive = windowMode == .fullscreen
@@ -1268,14 +1161,6 @@ public final class ViewerContentView: NSView {
             filmstrip.setCellSize(max(48, pt - 8))
             NSLayoutConstraint.activate(filmstripWindowedConstraints)
 
-            // Edit rail: floats over the canvas (leading
-            // 16 pt, vertically centred, 56 pt wide). In a window it shows
-            // only when View › Show Edit Rail is on; no hover reveal and
-            // no pin glyph.
-            NSLayoutConstraint.activate(editRailFullscreenConstraints)
-            // The window tint is the label colour, not the full-screen white at 85 %.
-            editRail.applyAppearance(.windowed)
-            editRail.setPinGlyphHidden(true)
             imageViewLeadingToSelf?.isActive = true
             filmstripLeadingToSelf?.isActive = true
 
@@ -1293,13 +1178,6 @@ public final class ViewerContentView: NSView {
             navOverlayMaxWidth?.constant = 10_000
             toolbarBottomToFilmstrip?.isActive = false
             toolbarBottomToSelf?.isActive = true
-            // The rail waits for the first frame, and fits
-            // its band (labelled, compact, or none).
-            layoutWindowedRail()
-            let railTarget = windowedRailTarget()
-            railAppliedTarget = railTarget
-            setPanelVisibleImmediate(.editRail, visible: railTarget)
-            if railTarget { noteRailShown() }
             for panel in [PanelKind.toolbar, .inspector] {
                 setPanelVisibleImmediate(panel, visible: false)
             }
@@ -1313,18 +1191,6 @@ public final class ViewerContentView: NSView {
             imageViewFullscreenBottomConstraint?.isActive = true
             imageViewLeadingToSelf?.isActive = true
             filmstripLeadingToSelf?.isActive = true
-
-            // Edit rail fullscreen form — 56 pt floating
-            // overlay with the pin glyph in its top-right corner.
-            NSLayoutConstraint.activate(editRailFullscreenConstraints)
-            editRail.applyAppearance(.fullscreenHUD)
-            editRail.setPinGlyphHidden(false)
-            // Full screen keeps the labelled rail, centred.
-            editRail.setCompact(false)
-            applyRailToolState()
-            railAppliedTarget = nil
-            if editRailFullscreenConstraints.count > 1 { editRailFullscreenConstraints[1].constant = 0 }
-            fullscreenRowBottom = HUDGlass.windowInset
 
             // Position overlay: bottom-left, moves with the bottom stack
             navOverlayBottomToPanel?.isActive = true
@@ -1341,6 +1207,10 @@ public final class ViewerContentView: NSView {
         }
 
         syncPillHold()
+        // The empty tool panel says where the bar is (top in a window, bottom in full screen).
+        if let empty = editModeController.parameterPanel._installed as? ChooseToolPanel {
+            empty.inFullScreen = windowMode == .fullscreen
+        }
         for surface in hudSurfaces { applySurfaceLook(surface) }
         needsLayout = true
         positionHistogram(animated: false)
@@ -1351,7 +1221,7 @@ public final class ViewerContentView: NSView {
 
     /// Every HUD surface that exists now.
     private var hudSurfaces: [HUDSurfaceView] {
-        var out: [HUDSurfaceView] = [filmstrip, editRail, inspector, zoomBadge,
+        var out: [HUDSurfaceView] = [filmstrip, inspector, zoomBadge,
                                      toastHost, navPositionOverlay]
         if let capsule = capsuleStorage { out.append(capsule) }
         if let histogram = histogramStorage { out.append(histogram) }
@@ -1389,7 +1259,7 @@ public final class ViewerContentView: NSView {
         glassContentStorage = container.content
     }
 
-    /// In full screen on macOS 26 the rail, inspector and
+    /// In full screen on macOS 26 the inspector and
     /// filmstrip float 12 pt from the screen edges (the filmstrip on
     /// three sides); elsewhere they sit as before.
     private func applyGlassGeometry() {
@@ -1400,8 +1270,6 @@ public final class ViewerContentView: NSView {
             filmstripFullscreenConstraints[1].constant = -inset   // trailing
         }
         filmstripLeadingToSelf?.constant = windowMode == .fullscreen ? inset : 0
-        // 16 pt from the canvas edge in a window.
-        editRailFullscreenConstraints.first?.constant = glass && windowMode == .fullscreen ? HUDGlass.edgeInset : 16
         inspectorTrailing?.constant = glass ? -HUDGlass.edgeInset : -16
     }
 
@@ -1416,6 +1284,7 @@ public final class ViewerContentView: NSView {
     }
 
     private func wirePanelCallbacks() {
+        filmstrip.contextMenuProvider = { [weak self] in self?.menu }
         filmstrip.onSelectGlobal = { [weak self] globalIndex in
             self?.onFilmstripJump?(globalIndex)
             self?.kickIdleTimer()
@@ -1431,13 +1300,6 @@ public final class ViewerContentView: NSView {
             self?.togglePanel(.filmstrip)
         }
 
-        editRail.actionDispatcher = { [weak self] action in
-            self?.actionDispatcher?(action)
-        }
-        editRail.onTogglePin = { [weak self] in
-            self?.togglePanel(.editRail)
-        }
-
         inspector.onTogglePin = { [weak self] in
             self?.togglePanel(.inspector)
         }
@@ -1445,7 +1307,6 @@ public final class ViewerContentView: NSView {
 
     private func syncPinGlyphs() {
         filmstrip.setPinned(pinnedPanels.contains(.filmstrip))
-        editRail.setPinned(pinnedPanels.contains(.editRail))
         inspector.setPinned(pinnedPanels.contains(.inspector))
     }
 
@@ -1479,7 +1340,7 @@ public final class ViewerContentView: NSView {
         _ image: CGImage, index: Int, total: Int,
         sourceID: String? = nil, prepared: DisplayTexture? = nil
     ) {
-        errorOverlay.isHidden = true
+        hideErrorOverlay()
         imageView.setImage(image, sourceID: sourceID, prepared: prepared)
         histogram.markStale()
         layoutLiveBadge()
@@ -1510,7 +1371,7 @@ public final class ViewerContentView: NSView {
         guard empty else { return }
         navPositionOverlay.completeHairline()
         clearCanvasDim()
-        errorOverlay.isHidden = true
+        hideErrorOverlay()
         histogram.reset()
     }
 
@@ -1529,7 +1390,7 @@ public final class ViewerContentView: NSView {
     }
 
     public func setPlaceholderImage(_ image: CGImage, sourceID: String? = nil) {
-        errorOverlay.isHidden = true
+        hideErrorOverlay()
         imageView.setPlaceholderImage(image, sourceID: sourceID)
         histogram.markStale()
         layoutLiveBadge()
@@ -1646,6 +1507,9 @@ public final class ViewerContentView: NSView {
         previewBadge.hide()
     }
 
+    /// The shown file changed on disk: the inspector reads it again.
+    func reloadInspectorFile() { inspector.reloadFileFacts() }
+
     public func setCurrentURL(_ url: URL?) {
         inspector.updateForURL(url)
         imageView.dragSourceURL = url
@@ -1730,17 +1594,36 @@ public final class ViewerContentView: NSView {
     }
 
     var livePhotoBadgeForTesting: LivePhotoBadgeView { livePhotoBadge }
-    /// The edit rail's frame in this view (it may sit in the glass host).
-    internal var editRailFrameInContentForTesting: NSRect { railFrameInSelf }
     func livePhotoPointerMovedForTesting(to point: CGPoint) { livePhotoPointerMoved(to: point) }
 
     /// The decode-error overlay is up.
     var isShowingDecodeError: Bool { !errorOverlay.isHidden }
 
-    public func showDecodeError() {
+    /// The card's buttons: Next (same as →) and Reveal in Finder.
+    var onDecodeErrorNext: (() -> Void)? {
+        get { errorOverlay.onNext }
+        set { errorOverlay.onNext = newValue }
+    }
+    var onDecodeErrorReveal: (() -> Void)? {
+        get { errorOverlay.onReveal }
+        set { errorOverlay.onReveal = newValue }
+    }
+    var errorOverlayForTesting: ErrorOverlayView { errorOverlay }
+
+    /// `nextEnabled` is false on the last photo of a folder that does not wrap.
+    public func showDecodeError(nextEnabled: Bool = true) {
+        errorOverlay.setNextEnabled(nextEnabled)
+        if errorOverlay.isHidden { errorOverlay.announce() }
         errorOverlay.isHidden = false
-        needsLayout = true   // the rail shows, buttons off
+        needsLayout = true
         histogram.showNoData()
+        refreshEditEntryReason()
+    }
+
+    private func hideErrorOverlay() {
+        guard !errorOverlay.isHidden else { return }
+        errorOverlay.isHidden = true
+        refreshEditEntryReason()
     }
 
     /// Test seam — feedback-pipeline surfaces bottom→top.
@@ -1754,7 +1637,6 @@ public final class ViewerContentView: NSView {
             case canvasDim: out.append("canvasDim")
             case filmstrip: out.append("filmstrip")
             case toolbar: out.append("toolbar")
-            case editRail: out.append("editRail")
             case inspector: out.append("inspector")
             case navPositionOverlay: out.append("navPositionOverlay")
             case previewBadge: out.append("previewBadge")
@@ -1778,7 +1660,6 @@ public final class ViewerContentView: NSView {
             if v === imageView { out.append("imageView") }
             else if v === editModeController.cropOverlay { out.append("cropOverlay") }
             else if v === navPositionOverlay { out.append("navPositionOverlay") }
-            else if includingChrome, v === editRail { out.append("editRail") }
             else if includingChrome, v === filmstrip { out.append("filmstrip") }
             else if includingChrome, let h = histogramStorage, v === h { out.append("histogram") }
         }
@@ -1839,25 +1720,6 @@ public final class ViewerContentView: NSView {
     /// The floating histogram, once built (nil before its first show).
     internal var histogramOverlayForTesting: NSView? { histogramStorage }
 
-    /// Test seam: a photo's first frame is on screen (the
-    /// windowed rail waits for it). Offscreen windows may never present.
-    internal func simulateFirstFrameForTesting() {
-        if imageView.image == nil {
-            let ctx = CGContext(data: nil, width: 6, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
-                                space: CGColorSpaceCreateDeviceRGB(),
-                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-            ctx?.setFillColor(gray: 0.5, alpha: 1)
-            ctx?.fill(CGRect(x: 0, y: 0, width: 6, height: 4))
-            imageView.image = ctx?.makeImage()
-        }
-        metalImageViewDidPresentFirstDrawable(imageView)
-        layoutSubtreeIfNeeded()
-        layoutSubtreeIfNeeded()
-    }
-
-    /// Test seam — access to the edit rail view.
-    internal var editRailForTesting: EditRail { editRail }
-
     /// Test seam — access to the toolbar view.
     internal var toolbarForTesting: ViewerToolbar { toolbar }
 
@@ -1869,14 +1731,6 @@ public final class ViewerContentView: NSView {
     /// Test seam — access to the navigation position overlay.
     internal var navigationPositionOverlayForTesting: NavigationPositionOverlayView {
         navPositionOverlay
-    }
-
-    /// Test seam — forces a layout pass then returns the edit rail's
-    /// computed frame. Used by windowed-rail tests that assert the dock
-    /// spans floor-to-ceiling at 40 pt wide.
-    internal func layoutAndReturnEditRailFrameForTesting() -> NSRect {
-        layoutSubtreeIfNeeded()
-        return editRail.frame
     }
 
     /// Test seam — forces a layout pass then returns the imageView frame.
@@ -1920,6 +1774,9 @@ public final class ViewerContentView: NSView {
         return filmstrip.cellMarksForTesting(index)
     }
 
+    /// Test seam: the filmstrip cell view for `index` (VoiceOver label).
+    func filmstripCellViewForTesting(_ index: Int) -> NSView? { filmstrip.cellViewForTesting(index) }
+
     /// Visible width of the filmstrip's scrolling region in points.
     /// Returns 0 before the strip has been laid out. Used by
     /// `ViewerWindow.updateFilmstrip(centeredOn:)` to scale the neighbor
@@ -1945,19 +1802,11 @@ public final class ViewerContentView: NSView {
     ///     (the docked-strip toggle); the `pinnedPanels` set is not
     ///     touched. Filmstrip stays a docked, pref-gated strip in
     ///     windowed mode.
-    ///   * Edit rail — toggles the SHARED pin state (same
-    ///     `pinnedPanels` set + `editRailPinnedFullscreen` pref used by
-    ///     fullscreen). The rail
-    ///     is an edge-activated overlay in both modes, and pinning
-    ///     is the user's "keep this rail visible" action regardless of
-    ///     mode. The pref name retains "Fullscreen" suffix for backward
-    ///     compat with stored prefs.
     ///   * Toolbar / inspector — no-op (not addressable in windowed mode).
     ///
     /// In fullscreen mode every panel toggles its `*PinnedFullscreen`
     /// pref + the `pinnedPanels` set.
     public func togglePanel(_ panel: PanelKind) {
-        // A shown rail changes the edit-mode fit area.
         needsLayout = true
         if windowMode == .windowed && panel == .filmstrip {
             Prefs.filmstripVisibleInWindowed.toggle()
@@ -1970,13 +1819,6 @@ public final class ViewerContentView: NSView {
         }
         // The capsule is never pinned.
         if panel == .toolbar { return }
-        if windowMode == .windowed && panel == .editRail {
-            // ⇧⌘E in a window shows or hides the rail.
-            Prefs.editRailVisibleInWindowed.toggle()
-            railIdleHidden = false
-            updatePanelVisibility()
-            return
-        }
 
         // Any fullscreen panel — flip the pin state.
         if pinnedPanels.contains(panel) {
@@ -1995,7 +1837,6 @@ public final class ViewerContentView: NSView {
         let (name, command): (String, ShrikeCommand) = {
             switch panel {
             case .filmstrip: return ("Filmstrip", .toggleFilmstrip)
-            case .editRail: return ("Edit rail", .toggleEditRail)
             case .inspector: return ("Inspector", .toggleInspector)
             case .toolbar: return ("Toolbar", .toggleFullScreen)
             }
@@ -2018,131 +1859,33 @@ public final class ViewerContentView: NSView {
         toast("All panels unpinned.")
     }
 
-    /// The bottom of the capsule / pill row in full screen (set by
-    /// `placeBottomStack`).
-    private var fullscreenRowBottom: CGFloat = HUDGlass.windowInset
+    // MARK: - Why Edit is off (spec 26 §2)
 
-    /// The full-screen rail sits in the band between the
-    /// top inset (below the safe area) and 12 pt over the pill, centred.
-    private func layoutFullscreenRail() {
-        guard windowMode == .fullscreen, editRailFullscreenConstraints.count > 1,
-              bounds.height > 0 else { return }
-        let pillHeight = max(28, navPositionOverlay.frame.height)
-        let bottom = fullscreenRowBottom + pillHeight + HUDGlass.gap
-        let top = bounds.maxY - (safeAreaInsets.top + HUDGlass.edgeInset)
-        guard top > bottom else { return }
-        let constant = (bounds.midY - (top + bottom) / 2).rounded()
-        let centerY = editRailFullscreenConstraints[1]
-        if abs(centerY.constant - constant) > 0.25 { centerY.constant = constant }
-    }
-
-    /// Place the windowed rail in its band (from 8 pt under
-    /// the titlebar to 8 pt over the pill), labelled or compact, or none
-    /// when even the compact rail doesn't fit.
-    private func layoutWindowedRail() {
-        guard windowMode == .windowed, editRailFullscreenConstraints.count > 1 else { return }
-        var top = bounds.maxY
-        if let window {
-            // The titlebar's bottom, even while it is hidden.
-            top = min(top, convert(NSPoint(x: 0, y: window.contentLayoutRect.maxY), from: nil).y)
-        }
-        top -= Self.railBandGap
-        let pillView = navPositionOverlay
-        let pill = pillView.superview.map { convert(pillView.frame, from: $0) } ?? .zero
-        let bottom = (pill.height > 0 ? pill.maxY : imageView.frame.minY) + Self.railBandGap
-        let band = top - bottom
-        editRail.setCompact(band < EditRail.labeledHeight)
-        railSqueezedOut = band < EditRail.compactHeight || imageView.frame.width < Self.railMinCanvasWidth
-        // Auto Layout constants run y-down: a positive constant moves the
-        // rail down from the view's centre to the band's centre.
-        let constant = (bounds.midY - (top + bottom) / 2).rounded()
-        let centerY = editRailFullscreenConstraints[1]
-        if abs(centerY.constant - constant) > 0.25 { centerY.constant = constant }
-    }
-
-    /// The rail's frame in this view (it may sit in the glass host).
-    private var railFrameInSelf: NSRect {
-        editRail.superview.map { convert(editRail.frame, from: $0) } ?? editRail.frame
-    }
-
-    /// What keeps the windowed rail on screen when the
-    /// pointer clock runs out.
-    func railHeld() -> Bool {
-        if isEditModeActive || isShowingDecodeError { return true }
-        if voiceOverOverrideForTesting ?? NSWorkspace.shared.isVoiceOverEnabled { return true }
-        if let responder = window?.firstResponder as? NSView, responder.isDescendant(of: editRail) { return true }
-        if !editRail.isHidden, let p = pointerInView(),
-           railFrameInSelf.insetBy(dx: -8, dy: -8).contains(p) { return true }
-        return false
-    }
-
-    /// The windowed rail shows when the setting is on,
-    /// it fits, and a photo (after its first frame) or a decode error is
-    /// on screen; the pointer clock fades it unless something holds it.
-    func windowedRailTarget() -> Bool {
-        guard Prefs.editRailVisibleInWindowed, !railSqueezedOut else { return false }
-        if isEditModeActive || isShowingDecodeError { return true }
-        guard hasPresentedFirstFrame, imageView.image != nil else { return false }
-        return !railIdleHidden || railHeld()
-    }
-
-    /// The RAW file of a pair is on screen: the rail's tools are off.
-    var railToolsBlocked = false {
+    /// The RAW file of a pair is on screen: Edit is off.
+    var editBlockedByRAW = false {
         didSet {
-            guard railToolsBlocked != oldValue else { return }
-            applyRailToolState()
+            guard editBlockedByRAW != oldValue else { return }
+            refreshEditEntryReason()
         }
     }
 
-    /// Why the rail's tools are off, for their tooltips (spec 24 §4.5).
-    static let railDecodeErrorReason = "This photo can\u{2019}t be opened, so there is nothing to edit."
+    /// The Edit button's second tooltip line on a decode error (spec 24 §4.5).
+    static let decodeErrorEditReason = "This photo can\u{2019}t be opened, so there is nothing to edit."
 
-    /// Tools on, or off with the reason in every tooltip.
-    private func applyRailToolState() {
-        if railToolsBlocked {
-            editRail.setToolsEnabled(false, reason: ViewerWindow.rawEditBlockedCopy)
-        } else if isShowingDecodeError {
-            editRail.setToolsEnabled(false, reason: Self.railDecodeErrorReason)
-        } else {
-            editRail.setToolsEnabled(true)
-        }
+    /// Why Edit is off right now, or nil.
+    var editEntryReason: String? {
+        if editBlockedByRAW { return ViewerWindow.rawEditBlockedCopy }
+        if isShowingDecodeError { return Self.decodeErrorEditReason }
+        return nil
     }
 
-    private func refreshWindowedRail() {
-        guard windowMode == .windowed else { return }
-        applyRailToolState()
-        let target = windowedRailTarget()
-        guard target != railAppliedTarget else { return }
-        railAppliedTarget = target
-        setPanel(.editRail, visible: target)
-        if target { noteRailShown() }
-    }
+    /// Tells the window's Edit toolbar item (the capsule's button is set here).
+    var onEditEntryReasonChanged: ((String?) -> Void)?
 
-    private func noteRailShown() {
-        guard !railShownOnce else { return }
-        railShownOnce = true
-        onRailShownFirst?()
-    }
-
-    /// The window's pointer clock: the pointer moved.
-    func railPointerMoved() {
-        guard railIdleHidden else { return }
-        railIdleHidden = false
-        refreshWindowedRail()
-    }
-
-    /// The window's pointer clock ran out (2 s still, or 0.5 s after the
-    /// pointer left the window).
-    func railIdleFired() {
-        guard windowMode == .windowed, !railHeld() else { return }
-        railIdleHidden = true
-        refreshWindowedRail()
-    }
-
-    /// View › Show Edit Rail check mark: shown in a window (the pref),
-    /// pinned in full screen.
-    var isEditRailShown: Bool {
-        windowMode == .windowed ? Prefs.editRailVisibleInWindowed : pinnedPanels.contains(.editRail)
+    private func refreshEditEntryReason() {
+        let reason = editEntryReason
+        capsuleStorage?.setEditExtraLine(reason)
+        onEditEntryReasonChanged?(reason)
     }
 
     private func persistPinState(_ panel: PanelKind) {
@@ -2150,7 +1893,6 @@ public final class ViewerContentView: NSView {
         switch panel {
         case .filmstrip: Prefs.filmstripPinnedFullscreen = isPinned
         case .toolbar:   break   // never pinned
-        case .editRail:  Prefs.editRailPinnedFullscreen = isPinned
         case .inspector: Prefs.exifPanelPinnedFullscreen = isPinned
         }
     }
@@ -2399,14 +2141,13 @@ public final class ViewerContentView: NSView {
     /// Full screen: the capsule sits 12 pt above a
     /// showing filmstrip (else 16 pt above the bottom). The pill (left)
     /// and the histogram (right) sit 12 pt above the top of the stack
-    /// while it shows, else 16 pt above the bottom; the pill starts past
-    /// the rail and the histogram ends before the inspector. They move
+    /// while it shows, else 16 pt above the bottom; the histogram ends before the inspector. They move
     /// with the stack's fades (same timing). Worked out from the panels'
     /// target state, not their frames, so a fading panel never counts.
     /// Window: the histogram floats 12 pt above the docked strip, 16 pt
     /// above the canvas bottom without one.
     private var windowedHistogramBottomGap: CGFloat {
-        Prefs.filmstripVisibleInWindowed && !isEditModeActive ? HUDGlass.gap : HUDGlass.windowInset
+        Prefs.filmstripVisibleInWindowed ? HUDGlass.gap : HUDGlass.windowInset
     }
 
     private func placeBottomStack(animated: Bool) {
@@ -2456,8 +2197,6 @@ public final class ViewerContentView: NSView {
             self.histogramTrailing?.constant = trailing
             self.histogramBottomToSelf?.constant = bottom
             self.navOverlayBottomToPanel?.constant = pillBottom
-            self.fullscreenRowBottom = rowBottom
-            self.layoutFullscreenRail()
             self.navOverlayLeading?.constant = leading
             self.navOverlayMaxWidth?.constant = maxPill
         }
@@ -2482,9 +2221,6 @@ public final class ViewerContentView: NSView {
         case .filmstrip where isEditModeActive:
             // Never in edit mode; the pin is kept for later.
             return false
-        case .editRail where isEditModeActive:
-            // Held open for the whole edit session.
-            return true
         case .toolbar:
             if isEditModeActive { return false }
             // Spec 24 §1.2: a pinned strip no longer carries the capsule.
@@ -2654,8 +2390,7 @@ public final class ViewerContentView: NSView {
     func kickIdleTimer() {
         chromeIdleTimer?.invalidate()
         // Idle auto-hide applies wherever an edge-hover panel can be on
-        // screen. That includes windowed mode (editRail
-        // overlay), not just fullscreen. The exit-grace path also drives
+        // screen (full screen). The exit-grace path also drives
         // hides on its own; this is the secondary "user idled away" timer.
         let delay = Self.idleHideDelay
         chromeIdleTimer = Timer.scheduledTimer(
@@ -2705,10 +2440,9 @@ public final class ViewerContentView: NSView {
 
     private func evaluateZones(at p: NSPoint, restSatisfied: Bool = false) {
         // Edge-activated chrome:
-        //  * Fullscreen — all four panels (filmstrip, toolbar, editRail,
+        //  * Fullscreen — the three panels (filmstrip, toolbar,
         //    inspector) participate in the edge-hover machinery.
-        //  * Windowed — nothing (the rail has no hover
-        //    reveal; View › Show Edit Rail shows it). Filmstrip is docked,
+        //  * Windowed — nothing. Filmstrip is docked,
         //    toolbar/inspector are surfaced via NSToolbar / menus.
         if windowMode == .windowed {
             // Clear any residual hover state and bail.
@@ -2753,17 +2487,14 @@ public final class ViewerContentView: NSView {
         //    band into the panel's content area, and the panel flashes
         //    away before they can click anything.
         //
-        //    For filmstrip, toolbar, editRail, inspector we use the
+        //    For filmstrip, toolbar, inspector we use the
         //    panel's own frame in our coord space. This is the same
         //    frame AppKit uses for hit testing, so the math is
         //    symmetric with the visible chrome.
-        //    In windowed mode only editRail body-hits count (filmstrip is
-        //    permanently docked when visible — body-hit would lock it on
-        //    forever; toolbar/inspector are not in the edge-hover model).
+        //    (Windowed mode never gets here: the filmstrip is docked, and
+        //    toolbar/inspector are not in the edge-hover model.)
         var bodyHits: Set<PanelKind> = []
-        let bodyHitCandidates: [PanelKind] =
-            (windowMode == .fullscreen) ? PanelKind.allCases : [.editRail]
-        for panel in bodyHitCandidates {
+        for panel in PanelKind.allCases {
             let v = view(for: panel)
             // Only check body hit if the panel is actually on-screen.
             // `alphaValue` may be transiently 0 while a reveal animation
@@ -2881,8 +2612,8 @@ public final class ViewerContentView: NSView {
     }
 
     /// Reveal zones: the bottom 96 pt reveals the filmstrip
-    /// and the capsule together; the left and right 56 pt reveal the rail
-    /// and the inspector. The bottom corners belong to the bottom zone
+    /// and the capsule together; the right 56 pt reveal
+    /// the inspector. The bottom corners belong to the bottom zone
     ///: a pointer resting at the bottom edge near a
     /// corner never slides the inspector in as well.
     static func zonePanels(at p: NSPoint, in b: NSRect) -> Set<PanelKind> {
@@ -2890,7 +2621,6 @@ public final class ViewerContentView: NSView {
         let inBottom = p.y <= b.minY + Zone.bottomHeight
         if inBottom { hits.formUnion([.filmstrip, .toolbar]) }
         if !inBottom, p.x >= b.maxX - Zone.sideWidth { hits.insert(.inspector) }
-        if !inBottom, p.x <= b.minX + Zone.sideWidth { hits.insert(.editRail) }
         return hits
     }
 
@@ -2989,13 +2719,7 @@ public final class ViewerContentView: NSView {
     private func updatePanelVisibility() {
         for panel in PanelKind.allCases {
             let shouldShow: Bool
-            if windowMode == .windowed && panel == .editRail {
-                shouldShow = windowedRailTarget()
-                railAppliedTarget = shouldShow
-                if shouldShow { noteRailShown() }
-            } else {
-                shouldShow = fullscreenTarget(panel)
-            }
+            shouldShow = fullscreenTarget(panel)
             setPanel(panel, visible: shouldShow)
         }
         syncPillHold()
@@ -3005,7 +2729,7 @@ public final class ViewerContentView: NSView {
     }
 
     /// Mounts the capsule in its z-order slot (above the filmstrip, below
-    /// the edit rail), hidden, with these constraints: 44 pt,
+    /// the inspector), hidden, with these constraints: 44 pt,
     /// centred, 12 pt above the filmstrip (16 pt above the bottom edge
     /// without it).
     private func installCapsule(_ capsule: ViewerToolbar) {
@@ -3014,6 +2738,7 @@ public final class ViewerContentView: NSView {
         capsule.isHidden = true
         hudParent.addSubview(capsule, positioned: .above, relativeTo: filmstrip)
         applySurfaceLook(capsule)
+        capsule.setEditExtraLine(editEntryReason)
         let toSelf = capsule.bottomAnchor.constraint(
             equalTo: bottomAnchor, constant: -Self.capsuleBottomInset)
         let toStrip = capsule.bottomAnchor.constraint(
@@ -3039,7 +2764,6 @@ public final class ViewerContentView: NSView {
         switch panel {
         case .filmstrip: return filmstrip
         case .toolbar:   return toolbar
-        case .editRail:  return editRail
         case .inspector: return inspector
         }
     }
@@ -3084,11 +2808,9 @@ public final class ViewerContentView: NSView {
         if windowMode == .windowed && panel == .filmstrip {
             return
         }
-        // Windowed mode: editRail participates in the edge-hover model
-        // (see configureForMode).
         // Toolbar + inspector are NOT addressable in windowed mode; hold
         // them hidden regardless of hover/pin state.
-        if windowMode == .windowed && panel != .editRail {
+        if windowMode == .windowed {
             setPanelVisibleImmediate(panel, visible: false)
             return
         }
@@ -3203,10 +2925,5 @@ extension ViewerContentView: MetalImageViewDelegate {
 
     public func metalImageViewDidPresentFirstDrawable(_ view: MetalImageView) {
         ShrikeSignposts.launch.event("viewerFirstDrawable")
-        // The rail shows on the first layout after this.
-        if !hasPresentedFirstFrame {
-            hasPresentedFirstFrame = true
-            needsLayout = true
-        }
     }
 }

@@ -3,7 +3,7 @@
 //  ShrikeUITests
 //
 //  In edit mode
-//  the photo fits the canvas minus the side panel, a shown rail and the
+//  the photo fits the canvas minus the side panel and the
 //  full-screen capsule, with room for the crop handles on every side, so
 //  every handle is on screen and clickable. At rest in a window with
 //  auto-hide off, the photo fits below the titlebar/toolbar.
@@ -22,7 +22,7 @@ import XCTest
 final class EditFitAreaTests: XCTestCase {
 
     private var dir: URL!
-    private var saved: (autoHide: Bool, railWindow: Bool, railPinned: Bool, inspector: Bool) = (true, false, false, false)
+    private var saved: (autoHide: Bool, inspector: Bool) = (true, false)
     /// Half a crop handle (10 pt square).
     private let hs: CGFloat = 5
 
@@ -30,8 +30,7 @@ final class EditFitAreaTests: XCTestCase {
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("shrike-editfit-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        saved = (Prefs.viewerToolbarAutoHide, Prefs.editRailVisibleInWindowed,
-                 Prefs.editRailPinnedFullscreen, Prefs.viewerInspectorVisibleWindowed)
+        saved = (Prefs.viewerToolbarAutoHide, Prefs.viewerInspectorVisibleWindowed)
         Prefs.viewerInspectorVisibleWindowed = false
         MetalImageView.reduceMotionOverrideForTesting = true
     }
@@ -39,8 +38,6 @@ final class EditFitAreaTests: XCTestCase {
     override func tearDown() async throws {
         try? FileManager.default.removeItem(at: dir)
         Prefs.viewerToolbarAutoHide = saved.autoHide
-        Prefs.editRailVisibleInWindowed = saved.railWindow
-        Prefs.editRailPinnedFullscreen = saved.railPinned
         Prefs.viewerInspectorVisibleWindowed = saved.inspector
         MetalImageView.reduceMotionOverrideForTesting = nil
     }
@@ -130,12 +127,14 @@ final class EditFitAreaTests: XCTestCase {
             await edit(viewer)
             let panel = content.editModeController.parameterPanel.frame
             let strip = content.filmstripForTesting
-            // Edit mode hides the docked strip, so the panel
-            // keeps its 32 pt bottom margin whether the strip is on or off.
-            XCTAssertTrue(strip.isHidden || strip.frame.height < 1,
-                          "docked=\(docked): no filmstrip in edit mode")
-            XCTAssertEqual(panel.minY, 32, accuracy: 0.5, "no strip: 32 pt from the bottom")
-            XCTAssertGreaterThan(panel.height, 200, "the panel still has room")
+            // Spec 25 §3.2/§3.3: the strip stays in a window, and the panel is as
+            // tall as its content, inside the band above the strip.
+            XCTAssertEqual(!strip.isHidden, docked, "docked=\(docked): the strip follows its setting")
+            XCTAssertGreaterThan(panel.height, 40, "the panel has its content height")
+            XCTAssertEqual(panel.height, content.editModeController.parameterPanel.contentHeight, accuracy: 1,
+                           "as tall as its content")
+            if docked { XCTAssertGreaterThanOrEqual(panel.minY, strip.frame.maxY - 0.5, "above the docked strip") }
+            XCTAssertEqual(content.frame.maxX - panel.maxX, 16, accuracy: 0.5, "16 pt from the right edge")
             content.editModeController.finalizeExit()
             viewer.close()
         }
@@ -154,41 +153,40 @@ final class EditFitAreaTests: XCTestCase {
         XCTAssertEqual(resize.currentSpec()?.width, 12000)
     }
 
-    func testWindowEditFitsClearOfPanelToolbarAndRail() async throws {
+    func testWindowEditFitsClearOfPanelAndToolbar() async throws {
         for toolbarShown in [true, false] {
-            for rail in [false, true] {
-                Prefs.editRailVisibleInWindowed = rail
-                let viewer = try await viewer(toolbarShown: toolbarShown)
-                let content = viewer.contentRootForTesting
-                await edit(viewer)
-                let label = "window, toolbar \(toolbarShown ? "shown" : "hidden"), rail \(rail ? "shown" : "hidden")"
-                let top = content.convert(NSPoint(x: 0, y: viewer.contentLayoutRect.maxY), from: nil).y
-                let iv = content.imageView.frame
-                let left = rail ? max(iv.minX, content.editRailForTesting.frame.maxX) : iv.minX
-                assertHandlesClear(content, topLimit: min(top, iv.maxY), bottomLimit: iv.minY,
-                                   leftLimit: left, label)
-                content.editModeController.finalizeExit()
-                content.layoutSubtreeIfNeeded()
-                XCTAssertEqual(content.imageView.fitInsets.right, 0, "\(label): the insets go on exit")
-                viewer.close()
-            }
+            let viewer = try await viewer(toolbarShown: toolbarShown)
+            let content = viewer.contentRootForTesting
+            await edit(viewer)
+            let label = "window, toolbar \(toolbarShown ? "shown" : "hidden")"
+            let top = content.convert(NSPoint(x: 0, y: viewer.contentLayoutRect.maxY), from: nil).y
+            let iv = content.imageView.frame
+            assertHandlesClear(content, topLimit: min(top, iv.maxY), bottomLimit: iv.minY,
+                               leftLimit: iv.minX, label)
+            // Spec 26 §5 / vector 11: nothing is reserved on the left any more.
+            let insets = content.currentFitInsets()
+            XCTAssertEqual(insets.left, ViewerContentView.editHandleMargin, "\(label): no left column")
+            XCTAssertGreaterThan(insets.right, ViewerContentView.editHandleMargin, "\(label): the panel column")
+            content.editModeController.finalizeExit()
+            content.layoutSubtreeIfNeeded()
+            XCTAssertEqual(content.imageView.fitInsets.right, 0, "\(label): the insets go on exit")
+            viewer.close()
         }
     }
 
     func testFullScreenEditFitsClearOfCapsuleAndScreenEdges() async throws {
-        for pinned in [false, true] {
+        do {
             let viewer = try await viewer()
             let content = viewer.contentRootForTesting
             content.windowMode = .fullscreen
-            if content.isEditRailShown != pinned { content.togglePanel(.editRail) }
-            XCTAssertEqual(content.isEditRailShown, pinned)
             await edit(viewer)
-            let label = "full screen, rail \(pinned ? "pinned" : "hidden")"
+            let label = "full screen"
             XCTAssertTrue(content.editCapsule.isDescendant(of: content))
             let iv = content.imageView.frame
             let capsule = content.editCapsule.frame
             XCTAssertGreaterThan(capsule.height, 0)
-            let left = pinned ? content.editRailForTesting.frame.maxX : iv.minX
+            let left = iv.minX
+            XCTAssertEqual(content.currentFitInsets().left, ViewerContentView.editHandleMargin, "no left column")
             // Top: the screen edge. Bottom: above the capsule.
             assertHandlesClear(content, topLimit: iv.maxY, bottomLimit: capsule.maxY,
                                leftLimit: left, label)

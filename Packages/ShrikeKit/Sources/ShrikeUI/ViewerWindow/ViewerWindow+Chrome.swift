@@ -75,14 +75,6 @@ extension ViewerWindow: ViewerToolbarHost {
             return holds
         }
         hider.onShownChanged = { [weak self] shown in self?.setScrimShown(shown) }
-        // The windowed edit rail fades on the same clock.
-        hider.railUsesClock = { [weak self] in
-            guard let self, !self.styleMask.contains(.fullScreen) else { return false }
-            return self.contentRoot.windowMode == .windowed && Prefs.editRailVisibleInWindowed
-        }
-        hider.onRailPointerMoved = { [weak self] in self?.contentRoot.railPointerMoved() }
-        hider.onRailIdle = { [weak self] in self?.contentRoot.railIdleFired() }
-        contentRoot.onRailShownFirst = { [weak hider] in hider?.startRailClock() }
         autoHider = hider
         applyTitlebarLook()
         contentRoot.addTrackingArea(NSTrackingArea(

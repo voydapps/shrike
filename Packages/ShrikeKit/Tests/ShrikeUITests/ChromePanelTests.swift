@@ -7,8 +7,8 @@
 //
 //  Covered contracts:
 //   * edge hover reveals only the correct panel (top →
-//            filmstrip, bottom → toolbar, left → editRail, right →
-//            inspector); other panels stay hidden.
+//            filmstrip, bottom → toolbar, right → inspector,
+//            left → nothing); other panels stay hidden.
 //   * pin toggle persists to the matching Prefs key and flips
 //            the in-memory `pinnedPanels` set. Pinned panels ignore
 //            the idle-expiry timer.
@@ -41,8 +41,6 @@ final class ChromePanelTests: XCTestCase {
             "shrike.viewer.filmstrip.visibleInWindowed",
             "shrike.viewer.filmstrip.heightPt",
             "shrike.viewer.filmstrip.pinnedFullscreen",
-            "shrike.viewer.editRail.pinnedFullscreen",
-            "shrike.viewer.editRail.visibleInWindowed",
             "shrike.viewer.exifPanel.pinnedFullscreen",
             "shrike.viewer.chromeFadeOutDelayMs",
         ] { ud.removeObject(forKey: key) }
@@ -93,18 +91,16 @@ final class ChromePanelTests: XCTestCase {
         content.evaluateZonesForTesting(at: CGPoint(x: 600, y: 90))
         XCTAssertTrue(content.isHoveredForTesting(.toolbar))
         XCTAssertTrue(content.isHoveredForTesting(.filmstrip))
-        XCTAssertFalse(content.isHoveredForTesting(.editRail))
         XCTAssertFalse(content.isHoveredForTesting(.inspector))
     }
 
-    func testEdgeHover_LeftZone_RevealsEditRailOnly() {
+    func testEdgeHover_LeftZone_RevealsNothing() {
         let content = makeContent()
         content.windowMode = .fullscreen
         content.evaluateZonesForTesting(at: CGPoint(x: 20, y: 400))
-        XCTAssertTrue(content.isHoveredForTesting(.editRail))
-        XCTAssertFalse(content.isHoveredForTesting(.filmstrip))
-        XCTAssertFalse(content.isHoveredForTesting(.toolbar))
-        XCTAssertFalse(content.isHoveredForTesting(.inspector))
+        for panel in ViewerContentView.PanelKind.allCases {
+            XCTAssertFalse(content.isHoveredForTesting(panel), "the left edge reveals nothing (\(panel))")
+        }
     }
 
     func testEdgeHover_RightZone_RevealsInspectorOnly() {
@@ -114,7 +110,6 @@ final class ChromePanelTests: XCTestCase {
         XCTAssertTrue(content.isHoveredForTesting(.inspector))
         XCTAssertFalse(content.isHoveredForTesting(.filmstrip))
         XCTAssertFalse(content.isHoveredForTesting(.toolbar))
-        XCTAssertFalse(content.isHoveredForTesting(.editRail))
     }
 
     func testEdgeHover_Center_RevealsNothing() {
@@ -129,11 +124,9 @@ final class ChromePanelTests: XCTestCase {
 
     // MARK: - Windowed mode: no hover reveal
     //
-    // In a window no panel reveals on hover, the edit rail included
-    // (View › Show Edit Rail shows it).
+    // In a window no panel reveals on hover.
 
     func testWindowedMode_HoverEdges_NoPanelReveals() {
-        Prefs.editRailVisibleInWindowed = true
         let content = makeContent()
         content.windowMode = .windowed
         content.layoutSubtreeIfNeeded()
@@ -156,17 +149,13 @@ final class ChromePanelTests: XCTestCase {
 
         // Left edge: nothing either.
         content.evaluateZonesForTesting(at: CGPoint(x: 10, y: 400))
-        XCTAssertFalse(content.isHoveredForTesting(.editRail),
-                       "windowed mode: the left edge does not reveal the rail")
         XCTAssertFalse(content.isHoveredForTesting(.filmstrip))
         XCTAssertFalse(content.isHoveredForTesting(.toolbar))
         XCTAssertFalse(content.isHoveredForTesting(.inspector))
     }
 
     func testWindowedMode_EdgeActivationDisabled_NoPanelReveals() {
-        // With the edge-activation pref off, even the left edge yields
-        // nothing in windowed mode.
-        Prefs.editRailVisibleInWindowed = false
+        // Even the left edge yields nothing in windowed mode.
         let content = makeContent()
         content.windowMode = .windowed
         content.layoutSubtreeIfNeeded()
@@ -218,9 +207,6 @@ final class ChromePanelTests: XCTestCase {
         XCTAssertFalse(Prefs.filmstripPinnedFullscreen,
                        "toolbar toggle must not touch filmstrip pref")
 
-        content.togglePanel(.editRail)
-        XCTAssertTrue(Prefs.editRailPinnedFullscreen)
-
         content.togglePanel(.inspector)
         XCTAssertTrue(Prefs.exifPanelPinnedFullscreen,
                       "inspector maps to the 'exifPanelPinnedFullscreen' pref")
@@ -262,20 +248,20 @@ final class ChromePanelTests: XCTestCase {
         content.windowMode = .fullscreen
         content.layoutSubtreeIfNeeded()
 
-        // Pin the inspector, then hover over the editRail zone.
+        // Pin the inspector, then hover over the bottom zone.
         // Expected post-hover state: inspector pinned (visible),
-        // editRail hovered (visible), rest hidden.
+        // the filmstrip hovered (visible), rest hidden.
         content.togglePanel(.inspector)
         XCTAssertTrue(content.isPinnedForTesting(.inspector))
 
-        content.evaluateZonesForTesting(at: CGPoint(x: 20, y: 400))
-        XCTAssertTrue(content.isHoveredForTesting(.editRail))
+        content.evaluateZonesForTesting(at: CGPoint(x: 600, y: 90))
+        XCTAssertTrue(content.isHoveredForTesting(.filmstrip))
 
-        // Force the idle timer to fire. The editRail is hover-only,
+        // Force the idle timer to fire. The filmstrip is hover-only,
         // so it must drop out of `hoveredPanels`. The inspector is
         // pinned, so it survives.
         content.forceIdleFireForTesting()
-        XCTAssertFalse(content.isHoveredForTesting(.editRail),
+        XCTAssertFalse(content.isHoveredForTesting(.filmstrip),
                        "idle expiry must clear hover-only panels")
         XCTAssertTrue(content.isPinnedForTesting(.inspector),
                       "pinned panels survive idle expiry")

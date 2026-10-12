@@ -17,7 +17,6 @@ final class HUDGeometryTests: XCTestCase {
 
     private let keys = [
         "shrike.viewer.filmstrip.pinnedFullscreen",
-        "shrike.viewer.editRail.pinnedFullscreen",
         "shrike.viewer.exifPanel.pinnedFullscreen",
         "shrike.viewer.histogramVisible",
     ]
@@ -48,7 +47,6 @@ final class HUDGeometryTests: XCTestCase {
     private func showAll(_ content: ViewerContentView) {
         content.togglePanel(.filmstrip)   // pinned strip
         content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))   // the pointer rests in the bottom zone: capsule + strip
-        content.togglePanel(.editRail)
         content.togglePanel(.inspector)
         _ = content.histogramOverlayFrameForTesting()
         if let histogram = content.histogramOverlayIfBuiltForTesting {
@@ -64,7 +62,6 @@ final class HUDGeometryTests: XCTestCase {
 
     private func hideAll(_ content: ViewerContentView) {
         content.togglePanel(.filmstrip)
-        content.togglePanel(.editRail)
         content.togglePanel(.inspector)
     }
 
@@ -78,12 +75,11 @@ final class HUDGeometryTests: XCTestCase {
                 showAll(content)
                 let strip = content.filmstripForTesting.frame
                 let capsule = content.capsuleFrameForTesting
-                let rail = content.editRailForTesting.frame
                 let inspector = content.inspectorForTesting.frame
                 let pill = content.pillFrameForTesting
                 let histogram = content.histogramOverlayFrameForTesting()
                 let named: [(String, NSRect)] = [
-                    ("strip", strip), ("capsule", capsule), ("rail", rail),
+                    ("strip", strip), ("capsule", capsule),
                     ("inspector", inspector), ("pill", pill), ("histogram", histogram),
                 ]
                 let label = "\(Int(size.width)) fallback=\(fallback)"
@@ -101,7 +97,6 @@ final class HUDGeometryTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(inspector.minY, strip.maxY + 12 - 0.5,
                                             "inspector ends 12 pt above the strip (\(label))")
                 XCTAssertEqual(pill.minX, 12, accuracy: 0.5, label)
-                XCTAssertEqual(rail.minX, 12, accuracy: 0.5, label)
                 XCTAssertEqual(size.width - inspector.maxX, 12, accuracy: 0.5, label)
                 hideAll(content)
             }
@@ -173,7 +168,7 @@ final class HUDGeometryTests: XCTestCase {
             content.zoomBadgeForTesting.alphaValue = 1
             content.layoutSubtreeIfNeeded()
             let panels: [(String, HUDSurfaceView)] = [
-                ("rail", content.editRailForTesting), ("inspector", content.inspectorForTesting),
+                ("inspector", content.inspectorForTesting),
                 ("filmstrip", content.filmstripForTesting),
             ] + (content.histogramOverlayIfBuiltForTesting.map { [("histogram", $0 as HUDSurfaceView)] } ?? [])
             for (name, surface) in panels {

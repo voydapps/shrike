@@ -54,7 +54,6 @@ final class Spec24ChromeTests: XCTestCase {
         for width in [CGFloat(1440), 480] {
             let content = makeContent(NSSize(width: width, height: 900))
             content.evaluateZonesForTesting(at: NSPoint(x: width / 2, y: 40))   // capsule + strip
-            content.togglePanel(.editRail)
             if width > 1000 { content.togglePanel(.inspector) }   // 280 pt wide: it would cover a 480 pt centre
             content.navigationPositionOverlayForTesting.show(index: 3, total: 41, filename: "IMG_0001.jpg")
             content.navigationPositionOverlayForTesting.alphaValue = 1
@@ -68,7 +67,6 @@ final class Spec24ChromeTests: XCTestCase {
                 ("capsule", content.capsuleFrameForTesting),
                 ("strip", content.filmstripForTesting.frame),
                 ("pill", content.pillFrameForTesting),
-                ("rail", content.editRailForTesting.frame),
                 ("inspector", content.inspectorForTesting.frame),
             ]
             for (name, frame) in others where name != "inspector" || width > 1000 {
@@ -153,7 +151,6 @@ final class Spec24ChromeTests: XCTestCase {
         let content = makeContent()
         content.togglePanel(.filmstrip)
         XCTAssertEqual(ViewerContentView.pinToast(.filmstrip, pinned: true), "Filmstrip pinned. Press ⌘K to unpin.")
-        XCTAssertEqual(ViewerContentView.pinToast(.editRail, pinned: true), "Edit rail pinned. Press ⇧⌘E to unpin.")
         XCTAssertEqual(ViewerContentView.pinToast(.inspector, pinned: false), "Inspector unpinned.")
         XCTAssertTrue(content.toastHost.isShowing)
         content.togglePanel(.inspector)

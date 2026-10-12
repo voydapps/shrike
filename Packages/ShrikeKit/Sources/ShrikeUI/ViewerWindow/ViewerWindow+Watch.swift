@@ -252,6 +252,9 @@ extension ViewerWindow {
             self.contentRoot.histogramImageShown(entry.image, url: url)
             // The fresh decode carries the file's orientation.
             view.resetOrientation()
+            // The file changed: its size is read again (spec 25 §1.1).
+            self.headerPixelSizes[url] = nil
+            self.headerPixelSizes[item.shownURL] = nil
             if fit {
                 view.zoomToFit()
             } else {

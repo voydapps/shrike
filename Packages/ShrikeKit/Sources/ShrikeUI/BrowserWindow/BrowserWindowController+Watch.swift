@@ -57,9 +57,10 @@ extension BrowserWindowController {
         photoInfoCache.invalidate(change.modified + change.removed + change.renamed.flatMap { [$0.from, $0.to] })
         let cache = services.thumbnailCache
         let modified = change.modified
+        let changed = modified + change.removed + change.renamed.flatMap { [$0.from, $0.to] }
         Task { @MainActor [weak self] in
             for url in modified { await cache.evict(url: url) }
-            self?.reloadCurrentFolder()
+            self?.fileContentsChanged(changed)
         }
     }
 

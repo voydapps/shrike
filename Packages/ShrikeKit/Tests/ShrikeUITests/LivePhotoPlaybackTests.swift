@@ -418,28 +418,6 @@ final class LivePhotoPlaybackTests: XCTestCase {
         viewer.setContentSize(NSSize(width: 800, height: 600))
         assertBadgeOnPhotoCorner(content, "window again")
     }
-
-    /// Where the badge shares rows with the shown edit rail
-    /// (16 pt from the left, 56 wide), it sits right of the rail.
-    func testBadgeStaysClearOfTheEditRail() async throws {
-        let saved = Prefs.editRailVisibleInWindowed
-        Prefs.editRailVisibleInWindowed = true
-        defer { Prefs.editRailVisibleInWindowed = saved }
-        // A landscape photo fills a short window: its corner is under the rail.
-        let viewer = try await viewer(still: (1600, 1200), contentSize: NSSize(width: 520, height: 330))
-        let content = viewer.contentRootForTesting
-        content.layoutSubtreeIfNeeded()
-        XCTAssertTrue(content.isEditRailShown)
-        let rail = content.editRailFrameInContentForTesting
-        let badge = content.livePhotoBadgeForTesting.frame
-        XCTAssertGreaterThan(rail.width, 0)
-        let rows = NSRect(x: content.bounds.minX, y: badge.minY, width: content.bounds.width, height: badge.height)
-        XCTAssertTrue(rail.intersects(rows), "the rail reaches the badge's rows")
-        XCTAssertGreaterThanOrEqual(badge.minX, rail.maxX + ViewerContentView.liveBadgeChromeGap - 0.5,
-                                    "clear of the rail")
-        let safeLimit = content.bounds.maxY - content.safeAreaInsets.top - ViewerContentView.liveBadgeChromeGap
-        XCTAssertLessThanOrEqual(badge.maxY, safeLimit + 0.5)
-    }
 }
 
 private extension NSRect {

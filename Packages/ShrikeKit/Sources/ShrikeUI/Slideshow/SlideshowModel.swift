@@ -189,10 +189,13 @@ struct SlideshowScope: Equatable {
     /// All images in the window's list.
     var allCount: Int
     var folderName: String
-    /// Selected images in the Browser (the second row shows only at ≥ 2).
+    /// Selected images in the Browser (the second row shows from 1).
     var selectedCount: Int
 
     var allTitle: String { "All \(allCount) images in “\(folderName)”" }
     var selectedTitle: String { "The \(selectedCount) selected images" }
-    var offersSelection: Bool { selectedCount >= 2 }
+    var offersSelection: Bool { selectedCount > 0 }
+    /// The "selected" radio is the default from 2 selected up (a set chosen
+    /// on purpose). One selected is only the cursor: "All" stays the default.
+    var defaultsToSelection: Bool { selectedCount >= 2 }
 }

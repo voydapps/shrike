@@ -95,7 +95,8 @@ final class ShortcutTableTests: XCTestCase {
 
     func testPresetDifferences() {
         let backspace = snap(SpecialKey.backspace)
-        XCTAssertEqual(ViewerKeyMap.action(for: backspace, context: .viewer, preset: .macNative), .deleteToTrash)
+        XCTAssertNil(ViewerKeyMap.action(for: backspace, context: .viewer, preset: .macNative), "plain ⌫ no longer trashes (spec 25 §5.2)")
+        XCTAssertEqual(ViewerKeyMap.action(for: snap(SpecialKey.backspace, .command), context: .viewer, preset: .macNative), .deleteToTrash)
         XCTAssertEqual(ViewerKeyMap.action(for: backspace, context: .viewer, preset: .fastStoneCompat), .prevImage)
         XCTAssertEqual(ViewerKeyMap.action(for: snap("1"), context: .viewer, preset: .macNative), .rate(1))
         XCTAssertEqual(ViewerKeyMap.action(for: snap("1"), context: .viewer, preset: .fastStoneCompat), .zoomActualSize)
@@ -139,9 +140,9 @@ final class ShortcutTableTests: XCTestCase {
         for arrow in [SpecialKey.left, SpecialKey.right, SpecialKey.up, SpecialKey.down] {
             XCTAssertNil(BrowserKeyMap.action(for: snap(arrow)))
         }
-        XCTAssertEqual(BrowserKeyMap.action(for: snap(SpecialKey.backspace)), .deleteToTrash)
+        XCTAssertNil(BrowserKeyMap.action(for: snap(SpecialKey.backspace)))
         XCTAssertEqual(BrowserKeyMap.action(for: snap(SpecialKey.backspace, .command)), .deleteToTrash)
-        XCTAssertEqual(BrowserKeyMap.action(for: snap(SpecialKey.forwardDelete)), .deleteToTrash)
+        XCTAssertNil(BrowserKeyMap.action(for: snap(SpecialKey.forwardDelete)))
         XCTAssertEqual(BrowserKeyMap.action(for: snap(SpecialKey.up, .command)), .upOneFolder)
         XCTAssertEqual(BrowserKeyMap.action(for: snap(SpecialKey.down, .command)), .openInViewer)
         XCTAssertEqual(BrowserKeyMap.action(for: snap(SpecialKey.returnKey)), .openInViewer)
@@ -162,7 +163,7 @@ final class ShortcutTableTests: XCTestCase {
         XCTAssertEqual(KeyBinding(SpecialKey.backspace, .command).menuKeyEquivalent, "\u{8}")
         XCTAssertNil(KeyBinding("q").menuKeyEquivalent, "bare letters never go on menu items")
         XCTAssertEqual(KeyBinding(SpecialKey.f2).menuKeyEquivalent, SpecialKey.f2)
-        XCTAssertEqual(ShortcutTable.displayString(for: .moveToTrash, context: .browser, preset: .macNative), "⌫, ⌘⌫, ⌦")
+        XCTAssertEqual(ShortcutTable.displayString(for: .moveToTrash, context: .browser, preset: .macNative), "⌘⌫")
         XCTAssertTrue(ShortcutTable.tooltip(for: .previousImage, context: .viewer).hasPrefix("Previous Image  ·  "))
         XCTAssertEqual(ShortcutTable.tooltip(for: .settings, context: .viewer), "Settings…")
     }
@@ -170,7 +171,7 @@ final class ShortcutTableTests: XCTestCase {
     func testShortcutsTabListsEveryRowWithKeys() {
         for preset in presets {
             let sections = ShortcutsTab.sections(for: preset)
-            XCTAssertEqual(sections.map(\.title), ["Viewer", "Browser", "Edit Mode"])
+            XCTAssertEqual(sections.map(\.title), ["Viewer", "Browser", "Edit Mode", "Compare"])
             for section in sections {
                 XCTAssertFalse(section.rows.isEmpty)
                 XCTAssertFalse(section.rows.contains { $0.keys.isEmpty })

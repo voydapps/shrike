@@ -18,7 +18,6 @@ final class GlassHUDTests: XCTestCase {
 
     private let pinKeys = [
         "shrike.viewer.filmstrip.pinnedFullscreen",
-        "shrike.viewer.editRail.pinnedFullscreen",
         "shrike.viewer.exifPanel.pinnedFullscreen",
         "shrike.viewer.histogramVisible",
     ]
@@ -54,7 +53,6 @@ final class GlassHUDTests: XCTestCase {
     private func revealEverything(_ content: ViewerContentView) {
         content.togglePanel(.filmstrip)          // pinned strip
         content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))   // the pointer rests in the bottom zone: capsule + strip
-        content.togglePanel(.editRail)
         content.togglePanel(.inspector)
         _ = content.histogramOverlayFrameForTesting()   // builds it
         if let histogram = content.histogramOverlayIfBuiltForTesting {
@@ -74,7 +72,6 @@ final class GlassHUDTests: XCTestCase {
         var out: [(String, HUDSurfaceView)] = [
             ("capsule", content.toolbarForTesting),
             ("filmstrip", content.filmstripForTesting),
-            ("rail", content.editRailForTesting),
             ("inspector", content.inspectorForTesting),
             ("pill", content.navigationPositionOverlayForTesting),
             ("zoom badge", content.zoomBadgeForTesting),
@@ -146,7 +143,6 @@ final class GlassHUDTests: XCTestCase {
         }
         for (_, surface) in surfaces(content) { surface.alphaValue = 0 }
         content.togglePanel(.filmstrip)
-        content.togglePanel(.editRail)
         content.togglePanel(.inspector)
         content.toastHost.dismiss(animated: false)
     }
@@ -157,7 +153,6 @@ final class GlassHUDTests: XCTestCase {
         try requireGlass()
         let content = makeContent()
         content.togglePanel(.filmstrip)
-        content.togglePanel(.editRail)
         content.togglePanel(.inspector)
         content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))   // the pointer rests in the bottom zone: capsule + strip
         content.layoutSubtreeIfNeeded()
@@ -169,16 +164,14 @@ final class GlassHUDTests: XCTestCase {
         XCTAssertEqual(strip.height, 88, accuracy: 0.5)
         XCTAssertEqual(content.capsuleFrameForTesting.minY, strip.maxY + 12, accuracy: 0.5,
                        "the capsule still sits 12 pt above the filmstrip")
-        XCTAssertEqual(content.editRailForTesting.frame.minX, 12, accuracy: 0.5)
         XCTAssertEqual(content.inspectorForTesting.frame.maxX, 1440 - 12, accuracy: 0.5)
-        // The pill shares the rail's left edge and the
+        // The pill shares the strip's left edge and the
         // capsule's row.
         let pill = content.pillFrameForTesting
         XCTAssertEqual(pill.minX, 12, accuracy: 0.5)
         XCTAssertEqual(pill.minY, content.capsuleFrameForTesting.minY, accuracy: 0.5)
 
         content.togglePanel(.filmstrip)
-        content.togglePanel(.editRail)
         content.togglePanel(.inspector)
     }
 
@@ -236,7 +229,7 @@ final class GlassHUDTests: XCTestCase {
         XCTAssertNil(content.glassContainerForTesting, "no glass container on macOS 14 / 15")
         XCTAssertEqual(HUDGlass.containersBuiltForTesting, containers)
         XCTAssertEqual(HUDGlass.glassViewsBuiltForTesting, views, "no glass view on macOS 14 / 15")
-        XCTAssertEqual(surfaces(content).count, 8)
+        XCTAssertEqual(surfaces(content).count, 7)
         for (name, surface) in surfaces(content) {
             XCTAssertFalse(surface.isHidden, name)
             XCTAssertEqual(surface.look, .solid, name)
@@ -248,7 +241,6 @@ final class GlassHUDTests: XCTestCase {
         XCTAssertEqual(content.filmstripForTesting.frame.minY, 12, accuracy: 0.5)
         XCTAssertEqual(content.filmstripForTesting.frame.width, 1440 - 24, accuracy: 0.5)
         content.togglePanel(.filmstrip)
-        content.togglePanel(.editRail)
         content.togglePanel(.inspector)
         content.toastHost.dismiss(animated: false)
     }
@@ -277,7 +269,6 @@ final class GlassHUDTests: XCTestCase {
                 XCTAssertEqual(color?.alphaComponent ?? 0, 0.35, accuracy: 0.01, "\(name): white at 35 %")
             }
             content.togglePanel(.filmstrip)
-            content.togglePanel(.editRail)
             content.togglePanel(.inspector)
             content.toastHost.dismiss(animated: false)
         }
@@ -308,7 +299,6 @@ final class GlassHUDTests: XCTestCase {
             XCTAssertEqual(srgb(layer?.borderColor)?.alphaComponent ?? 0, 0.12, accuracy: 0.01, name)
         }
         content.togglePanel(.filmstrip)
-        content.togglePanel(.editRail)
         content.togglePanel(.inspector)
         content.toastHost.dismiss(animated: false)
     }

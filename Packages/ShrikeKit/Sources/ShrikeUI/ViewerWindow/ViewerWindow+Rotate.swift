@@ -82,6 +82,7 @@ extension ViewerWindow {
         guard services.backupStore != nil, orientationSupported(url) else {
             let copy: String
             if case .rotate = op { copy = RotateCopy.viewOnlyRotate } else { copy = RotateCopy.viewOnlyFlip }
+            if let shown = displayedItem?.shownURL { viewOnlyTurnedURLs.insert(shown) }
             if !shownOnceToasts.contains(copy) {
                 shownOnceToasts.insert(copy)
                 contentRoot.toast(ToastContent(copy))
@@ -113,12 +114,31 @@ extension ViewerWindow {
     private func applyToView(_ op: OrientationOp) {
         let view = contentRoot.imageView
         switch op {
-        case .rotate(let q): view.rotateBy(degrees: Double(q) * 90)
+        case .rotate(let q):
+            view.rotateBy(degrees: Double(q) * 90)
+            if q % 2 != 0 { swapDrawnSize() }
         case .flipHorizontal: view.flipHorizontal()
         case .flipVertical: view.flipVertical()
         }
         // The photo's corner moved: the LIVE badge follows.
         contentRoot.layoutLiveBadge()
+    }
+
+    /// An odd view turn swaps width and height of the drawn size at once
+    /// (spec 25 §1.1); the zoom maths does not change.
+    private func swapDrawnSize() {
+        guard let url = displayedItem?.shownURL, let size = headerPixelSizes[url] else { return }
+        let swapped = CGSize(width: size.height, height: size.width)
+        headerPixelSizes[url] = swapped
+        contentRoot.imageView.sourcePixelSize = swapped
+        updateTitle()
+    }
+
+    /// Drops every cached drawn size (edit mode left): the next
+    /// `updateTitle()` reads the file again.
+    func forgetDrawnSizes() {
+        headerPixelSizes.removeAll()
+        viewOnlyTurnedURLs.removeAll()
     }
 
     private static func inverse(_ op: OrientationOp) -> OrientationOp {
@@ -165,7 +185,8 @@ extension ViewerWindow {
         evictFromDecodeCache(url)
         let key = list.index(of: url).flatMap { list[$0]?.primary } ?? url
         refreshBackupState(key)
-        pairedBrowser?.reloadCurrentFolder()
+        if displayedItem?.group.primary == url { contentRoot.reloadInspectorFile() }
+        pairedBrowser?.fileContentsChanged([url])
         let allFlips = ops.allSatisfy { if case .rotate = $0 { return false }; return true }
         registerVersionUndo(url: url, step: FileVersionStep(record: first.backup),
                             actionName: allFlips ? "Flip" : "Rotate", undoToast: nil, redoToast: nil)
@@ -175,6 +196,8 @@ extension ViewerWindow {
         if let displayed = displayedItem?.group.primary,
            GroupList.canonical(displayed) == GroupList.canonical(url) {
             for op in ops.reversed() { applyToView(Self.inverse(op)) }
+        } else {
+            headerPixelSizes[url] = nil
         }
         contentRoot.toast(ToastContent(RotateCopy.failed(url.lastPathComponent), kind: .error))
     }

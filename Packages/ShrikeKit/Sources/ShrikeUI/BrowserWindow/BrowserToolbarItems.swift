@@ -104,7 +104,7 @@ public final class BrowserFilterPopover: NSViewController {
     }
 
     let ratingPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    let flaggedCheckbox = NSButton(checkboxWithTitle: "Flagged only", target: nil, action: nil)
+    let flagPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private(set) var kindBoxes: [BrowserFilterKind: NSButton] = [:]
     let clearButton = NSButton(title: "Clear", target: nil, action: nil)
 
@@ -138,8 +138,10 @@ public final class BrowserFilterPopover: NSViewController {
         ratingPopup.action = #selector(ratingChanged(_:))
         ratingPopup.setAccessibilityLabel("Rating")
 
-        flaggedCheckbox.target = self
-        flaggedCheckbox.action = #selector(flaggedChanged(_:))
+        for choice in BrowserFlagChoice.allCases { flagPopup.addItem(withTitle: choice.title) }
+        flagPopup.target = self
+        flagPopup.action = #selector(flagChanged(_:))
+        flagPopup.setAccessibilityLabel("Flag")
 
         var kindRows: [NSStackView] = []
         let kinds = BrowserFilterKind.allCases
@@ -166,8 +168,9 @@ public final class BrowserFilterPopover: NSViewController {
         clearRow.distribution = .fill
         clearRow.arrangedSubviews[0].setContentHuggingPriority(.init(1), for: .horizontal)
 
-        let flaggedRow = row([spacerView(), flaggedCheckbox])
-        let stack = NSStackView(views: [row([label("Rating"), ratingPopup]), flaggedRow, kindStack, clearRow])
+        let stack = NSStackView(views: [
+            row([label("Rating"), ratingPopup]), row([label("Flag"), flagPopup]), kindStack, clearRow,
+        ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = Self.rowGap
@@ -176,6 +179,7 @@ public final class BrowserFilterPopover: NSViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         clearRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * pad).isActive = true
         ratingPopup.widthAnchor.constraint(equalToConstant: Self.width - 2 * pad - 44 - 8).isActive = true
+        flagPopup.widthAnchor.constraint(equalTo: ratingPopup.widthAnchor).isActive = true
 
         let root = NSView()
         root.addSubview(stack)
@@ -200,7 +204,7 @@ public final class BrowserFilterPopover: NSViewController {
     private func refresh() {
         guard isViewLoaded else { return }
         ratingPopup.selectItem(at: BrowserRatingChoice.menuOrder.firstIndex(of: filter.ratingChoice) ?? 0)
-        flaggedCheckbox.state = filter.flaggedOnly ? .on : .off
+        flagPopup.selectItem(at: BrowserFlagChoice.allCases.firstIndex(of: filter.flagChoice) ?? 0)
         for (kind, box) in kindBoxes {
             box.state = filter.excludedKinds.contains(kind) ? .off : .on
         }
@@ -219,8 +223,10 @@ public final class BrowserFilterPopover: NSViewController {
         changed()
     }
 
-    @objc func flaggedChanged(_ sender: NSButton) {
-        filter.flaggedOnly = sender.state == .on
+    @objc func flagChanged(_ sender: NSPopUpButton) {
+        let all = BrowserFlagChoice.allCases
+        guard all.indices.contains(sender.indexOfSelectedItem) else { return }
+        filter.flagChoice = all[sender.indexOfSelectedItem]
         changed()
     }
 

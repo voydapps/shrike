@@ -2,8 +2,7 @@
 //  PanelPolishTests.swift
 //  ShrikeUITests
 //
-//  Panel polish: pin placement, edit rail inventory, the windowed edit
-//  rail, plus these behaviours:
+//  Panel polish: pin placement, the edit tool picker, plus these behaviours:
 //
 //   * the fullscreen filmstrip cell doesn't clip against the pin strip
 //   * the fullscreen filmstrip leaves enough headroom to scroll cleanly
@@ -33,9 +32,7 @@ final class PanelPolishTests: XCTestCase {
             "shrike.viewer.filmstrip.visibleInWindowed",
             "shrike.viewer.filmstrip.heightPt",
             "shrike.viewer.filmstrip.pinnedFullscreen",
-            "shrike.viewer.editRail.pinnedFullscreen",
             "shrike.viewer.exifPanel.pinnedFullscreen",
-            "shrike.viewer.editRail.visibleInWindowed",
             "shrike.viewer.chromeFadeOutDelayMs",
             "shrike.viewer.positionOverlayAutoHides",
         ] { ud.removeObject(forKey: key) }
@@ -85,21 +82,6 @@ final class PanelPolishTests: XCTestCase {
         XCTAssertEqual(strip.scrollerFrameForTesting.maxX, 1200, accuracy: 0.5, "no slot in a window")
     }
 
-    func testPin_EditRail_HeaderRowCentred() {
-        let rail = EditRail()
-        rail.setPinGlyphHidden(false)
-        rail.frame = CGRect(x: 0, y: 0, width: EditRail.totalWidth, height: 360)
-        rail.layoutSubtreeIfNeeded()
-
-        // The pin sits in the stack's first row; measure it
-        // in the rail's coordinates.
-        let overlay = rail.pinOverlayForTesting
-        let frame = rail.convert(overlay.frame, from: overlay.superview)
-        XCTAssertEqual(frame.width, 28, accuracy: 0.5)
-        XCTAssertEqual(frame.midX, EditRail.totalWidth / 2, accuracy: 0.5, "glyph centred")
-        XCTAssertEqual(frame.midY, 360 - 4 - 12, accuracy: 0.5, "in the 24 pt header row")
-    }
-
     func testPin_Inspector_TrailingEndOfHeaderRow() {
         let inspector = InspectorPanel()
         inspector.frame = CGRect(x: 0, y: 0, width: 280, height: 600)
@@ -117,10 +99,9 @@ final class PanelPolishTests: XCTestCase {
 
     // MARK: - Rotate Left / Right are toolbar (file) actions
 
-    func testRotateLeftRight_OnToolbarNotRail() {
-        let railActions = EditRail().buttonActionsForTesting()
-        XCTAssertFalse(railActions.contains(.rotateLeft), "not on the rail")
-        XCTAssertFalse(railActions.contains(.rotateRight), "not on the rail")
+    func testRotateLeftRight_OnToolbarNotInThePicker() {
+        XCTAssertEqual(EditChromeTools.order, [.crop, .rotate, .resize, .color, .levels],
+                       "the picker holds tools, not the file actions")
 
         let toolbar = ViewerToolbar()
         let toolbarActions = toolbar.buttonActionsForTesting()
@@ -136,161 +117,35 @@ final class PanelPolishTests: XCTestCase {
         XCTAssertEqual(toolRight, 1, "toolbar retains Rotate Right")
     }
 
-    // MARK: Rail inventory: Crop, Rotate, Resize, Color, Levels
+    // MARK: Tool picker inventory: Crop, Rotate, Resize, Color, Levels
 
-    func testEditRail_Inventory_CropRotateResizeColorLevels() {
-        let actions = EditRail().buttonActionsForTesting()
-        let expected: [ViewerAction] = [.crop, .selectEditTool(.rotate), .resize, .colorAdjust,
-                                        .selectEditTool(.levels)]
-        XCTAssertEqual(actions, expected, "order, Levels after Color")
-        XCTAssertFalse(actions.contains(.resetEdits), "Reset lives in the edit chrome")
-        XCTAssertFalse(actions.contains(.undoEdit), "Undo lives in the edit chrome")
+    func testToolPicker_Inventory_CropRotateResizeColorLevels() {
+        let picker = EditToolPicker()
+        XCTAssertEqual(picker.segmentCount, 5)
+        XCTAssertEqual(EditChromeTools.order.map(EditChromeTools.name), ["Crop", "Rotate", "Resize", "Color", "Levels"])
+        for i in 0..<5 {
+            XCTAssertEqual(picker.width(forSegment: i), 32)
+            XCTAssertNotNil(picker.image(forSegment: i))
+            XCTAssertEqual(picker.label(forSegment: i) ?? "", "", "icon-only")
+        }
+        XCTAssertEqual(picker.selectedSegment, -1, "no tool on entry")
+        XCTAssertEqual(picker.accessibilityLabel(), "Tool")
     }
 
-    func testEditRail_HasLevelsButNoCurves() {
-        // The rail has Levels. There is no Curves action.
-        XCTAssertEqual(EditRail().buttonActionsForTesting().count, 5)
-    }
+    // MARK: - ⇧⌘E is free
 
-    func testEditRail_WindowedTint_UsesLabelColor() {
-        let rail = EditRail()
-        rail.applyAppearance(.windowed)
-        XCTAssertEqual(rail.buttonTintColorForTesting(), NSColor.labelColor.withAlphaComponent(0.85),
-                       "windowed rail tint is labelColor@0.85")
-    }
-
-    func testEditRail_FullscreenTint_UsesWhiteAt85() {
-        let rail = EditRail()
-        rail.applyAppearance(.fullscreenHUD)
-        let expected = NSColor.labelColor.withAlphaComponent(0.85)
-        XCTAssertEqual(rail.buttonTintColorForTesting(), expected,
-                       "fullscreen rail tint is labelColor@0.85")
-    }
-
-    // MARK: - The rail in a window
-    //
-    //   * Shown only when `Prefs.editRailVisibleInWindowed` is on (View ›
-    //     Show Edit Rail, ⇧⌘E in a window). Default off.
-    //   * No hover reveal in a window.
-    //   * No pin glyph in a window; pins exist only in full screen.
-
-    func testWindowed_EditRailFloats_NotDocked_WhenPrefTrue() {
-        Prefs.editRailVisibleInWindowed = true
-        Prefs.editRailPinnedFullscreen = false
-        let content = makeContent()
-        content.windowMode = .windowed
-        content.simulateFirstFrameForTesting()
-        let imageFrame = content.layoutAndReturnImageViewFrameForTesting()
-
-        XCTAssertFalse(content.editRailForTesting.isHidden,
-                       "pref on: the rail shows in a window")
-        // imageView spans the full canvas — the rail floats over it.
-        XCTAssertEqual(imageFrame.minX, 0, accuracy: 0.5,
-                       "imageView leading is self.leading; rail floats over canvas")
-        XCTAssertFalse(content.editRailForTesting.pinGlyphShownForTesting,
-                       "no pin glyph in a window")
-    }
-
-    func testWindowed_EditRail_DefaultsOn_AfterTheFirstFrame() {
-        let content = makeContent()
-        content.animatesPanelFades = false
-        content.windowMode = .windowed
-        content.layoutSubtreeIfNeeded()
-        XCTAssertTrue(Prefs.editRailVisibleInWindowed, "default on")
-        XCTAssertTrue(content.editRailForTesting.isHidden, "nothing before the first frame (launch budget)")
-        content.simulateFirstFrameForTesting()
-        XCTAssertFalse(content.editRailForTesting.isHidden)
-    }
-
-    func testWindowed_EditRail_NoHoverReveal() {
-        Prefs.editRailVisibleInWindowed = false
-        Prefs.editRailPinnedFullscreen = false
-        let content = makeContent(size: CGSize(width: 1200, height: 800))
-        content.windowMode = .windowed
-        content.layoutSubtreeIfNeeded()
-
-        content.evaluateZonesForTesting(at: NSPoint(x: 4, y: 400))
-        XCTAssertFalse(content.isHoveredForTesting(.editRail),
-                       "the left edge does not reveal the rail in a window")
-        XCTAssertTrue(content.editRailForTesting.isHidden)
-    }
-
-    func testWindowed_EditRail_HoverDoesNotRevealOtherPanels() {
-        Prefs.editRailVisibleInWindowed = true
-        let content = makeContent(size: CGSize(width: 1200, height: 800))
-        content.windowMode = .windowed
-
-        content.evaluateZonesForTesting(at: NSPoint(x: 600, y: 798))
-        XCTAssertFalse(content.isHoveredForTesting(.filmstrip),
-                       "windowed mode: top edge does NOT reveal filmstrip via hover")
-        XCTAssertFalse(content.isHoveredForTesting(.toolbar))
-        XCTAssertFalse(content.isHoveredForTesting(.inspector))
-
-        content.evaluateZonesForTesting(at: NSPoint(x: 1196, y: 400))
-        XCTAssertFalse(content.isHoveredForTesting(.inspector),
-                       "windowed mode: right edge does NOT reveal inspector via hover")
-    }
-
-    func testWindowed_FullscreenPinDoesNotShowTheRail() {
-        Prefs.editRailVisibleInWindowed = false
-        Prefs.editRailPinnedFullscreen = true
-        let content = makeContent(size: CGSize(width: 1200, height: 800))
-        content.windowMode = .windowed
-        content.layoutSubtreeIfNeeded()
-        XCTAssertTrue(content.editRailForTesting.isHidden,
-                      "the full-screen pin has no meaning in a window")
-        XCTAssertFalse(content.editRailForTesting.pinGlyphShownForTesting)
-    }
-
-    func testWindowed_StaysVisibleWhenCursorLeaves() {
-        Prefs.editRailVisibleInWindowed = true
-        let content = makeContent(size: CGSize(width: 1200, height: 800))
-        content.animatesPanelFades = false
-        content.windowMode = .windowed
-        content.simulateFirstFrameForTesting()
-        content.evaluateZonesForTesting(at: NSPoint(x: 600, y: 400))
-        XCTAssertFalse(content.panelExitGraceActiveForTesting(.editRail), "no hover timer in a window")
-        XCTAssertFalse(content.editRailForTesting.isHidden)
-    }
-
-    // MARK: - ⇧⌘E: shows / hides the rail in a window, pins in full screen
-
-    func testToggleEditRail_Windowed_FlipsVisibleInWindowedPref() {
-        Prefs.editRailPinnedFullscreen = false
-        Prefs.editRailVisibleInWindowed = false
-        let content = makeContent()
-        content.animatesPanelFades = false
-        content.windowMode = .windowed
-        content.simulateFirstFrameForTesting()
-        XCTAssertFalse(content.isEditRailShown)
-
-        content.togglePanel(.editRail)
-
-        XCTAssertTrue(Prefs.editRailVisibleInWindowed, "⇧⌘E in a window sets the pref")
-        XCTAssertTrue(content.isEditRailShown)
-        XCTAssertFalse(content.editRailForTesting.isHidden)
-        XCTAssertFalse(content.isPinnedForTesting(.editRail), "pin state untouched in a window")
-        XCTAssertFalse(Prefs.editRailPinnedFullscreen)
-
-        content.togglePanel(.editRail)
-        XCTAssertFalse(Prefs.editRailVisibleInWindowed)
-        XCTAssertTrue(content.editRailForTesting.isHidden)
-    }
-
-    func testToggleEditRail_Fullscreen_FlipsPinnedFullscreenPref() {
-        Prefs.editRailPinnedFullscreen = false
-        Prefs.editRailVisibleInWindowed = false
-        let content = makeContent()
-        content.windowMode = .fullscreen
-        XCTAssertFalse(content.isPinnedForTesting(.editRail))
-        XCTAssertTrue(content.editRailForTesting.pinGlyphShownForTesting, "full screen keeps the pin")
-
-        content.togglePanel(.editRail)
-
-        XCTAssertTrue(content.isPinnedForTesting(.editRail))
-        XCTAssertTrue(Prefs.editRailPinnedFullscreen,
-                      "fullscreen toggle persists via editRailPinnedFullscreen")
-        XCTAssertFalse(Prefs.editRailVisibleInWindowed, "the window pref is untouched")
+    func testShiftCommandE_HasNoBindingAndNoCommand() {
+        let shiftCmdE = KeyBinding("e", [.command, .shift])
+        let contexts: [ShortcutContext] = [.viewer, .browser, .compare, .slideshow, .editMode]
+        for preset in ShortcutPreset.allCases {
+            for context in contexts {
+                for command in ShrikeCommand.allCases {
+                    let bound = ShortcutTable.bindings(for: command, context: context, preset: preset)
+                    XCTAssertFalse(bound.contains(shiftCmdE), "\(command) must not use ⇧⌘E (\(context))")
+                }
+            }
+        }
+        XCTAssertFalse(ShrikeCommand.allCases.contains { $0.rawValue.lowercased().contains("rail") })
     }
 
     // MARK: - Fullscreen filmstrip returns to 88/72
@@ -345,7 +200,6 @@ final class PanelPolishTests: XCTestCase {
 
     func testWindowed_PositionOverlay_AnchorsAboveFilmstrip() {
         Prefs.filmstripVisibleInWindowed = true
-        Prefs.editRailVisibleInWindowed = false
         let content = makeContent()
         content.windowMode = .windowed
         content.layoutSubtreeIfNeeded()
@@ -464,9 +318,9 @@ final class PanelPolishTests: XCTestCase {
     func testHover_ZoneHit_RevealsPanel() {
         let content = makeContent(size: CGSize(width: 1200, height: 800))
         content.windowMode = .fullscreen
-        // Cursor near the left edge (editRail zone).
-        content.evaluateZonesForTesting(at: NSPoint(x: 4, y: 400))
-        XCTAssertTrue(content.isHoveredForTesting(.editRail))
+        // Cursor near the left edge (inspector zone).
+        content.evaluateZonesForTesting(at: NSPoint(x: 1196, y: 400))
+        XCTAssertTrue(content.isHoveredForTesting(.inspector))
     }
 
     /// Once a panel is visible, the cursor may drift onto its body and
@@ -477,21 +331,20 @@ final class PanelPolishTests: XCTestCase {
         content.windowMode = .fullscreen
         content.layoutSubtreeIfNeeded()
 
-        // 1. Reveal editRail via zone.
-        content.evaluateZonesForTesting(at: NSPoint(x: 4, y: 400))
+        // 1. Reveal the inspector via zone.
+        content.evaluateZonesForTesting(at: NSPoint(x: 1196, y: 400))
         content.layoutSubtreeIfNeeded()
-        XCTAssertTrue(content.isHoveredForTesting(.editRail))
+        XCTAssertTrue(content.isHoveredForTesting(.inspector))
 
-        // 2. Move cursor onto the rail body (past the zone edge but still
-        //    within the rail's own frame). Rail is docked leading in
-        //    fullscreen too when we activate it via layout — use its
-        //    actual frame as source of truth.
-        let railFrame = content.editRailForTesting.frame
-        let bodyPoint = NSPoint(x: railFrame.midX, y: railFrame.midY)
+        // 2. Move cursor onto the inspector body (past the zone edge but still
+        //    within the inspector's own frame). Use the
+        //    panel's actual frame as source of truth.
+        let panelFrame = content.inspectorForTesting.frame
+        let bodyPoint = NSPoint(x: panelFrame.midX, y: panelFrame.midY)
         content.evaluateZonesForTesting(at: bodyPoint)
 
-        // editRail should still be considered hovered (body-hit path).
-        XCTAssertTrue(content.isHoveredForTesting(.editRail),
+        // the inspector should still be considered hovered (body-hit path).
+        XCTAssertTrue(content.isHoveredForTesting(.inspector),
                       "cursor over panel body must keep it in hoveredPanels")
     }
 
@@ -503,19 +356,19 @@ final class PanelPolishTests: XCTestCase {
         content.windowMode = .fullscreen
         content.layoutSubtreeIfNeeded()
 
-        // Reveal editRail.
-        content.evaluateZonesForTesting(at: NSPoint(x: 4, y: 400))
+        // Reveal the inspector.
+        content.evaluateZonesForTesting(at: NSPoint(x: 1196, y: 400))
         content.layoutSubtreeIfNeeded()
-        XCTAssertTrue(content.isHoveredForTesting(.editRail))
+        XCTAssertTrue(content.isHoveredForTesting(.inspector))
 
         // Move cursor to the middle of the canvas — well away from any
         // zone or panel body.
         content.evaluateZonesForTesting(at: NSPoint(x: 600, y: 400))
 
         // Grace timer should be scheduled, panel still listed as hovered.
-        XCTAssertTrue(content.panelExitGraceActiveForTesting(.editRail),
+        XCTAssertTrue(content.panelExitGraceActiveForTesting(.inspector),
                       "leaving the zone+body schedules a 200 ms exit-grace timer")
-        XCTAssertTrue(content.isHoveredForTesting(.editRail),
+        XCTAssertTrue(content.isHoveredForTesting(.inspector),
                       "panel is not immediately dropped — timer owns the hide")
     }
 
@@ -526,17 +379,17 @@ final class PanelPolishTests: XCTestCase {
         content.layoutSubtreeIfNeeded()
 
         // Reveal.
-        content.evaluateZonesForTesting(at: NSPoint(x: 4, y: 400))
+        content.evaluateZonesForTesting(at: NSPoint(x: 1196, y: 400))
         content.layoutSubtreeIfNeeded()
         // Exit.
         content.evaluateZonesForTesting(at: NSPoint(x: 600, y: 400))
-        XCTAssertTrue(content.panelExitGraceActiveForTesting(.editRail))
+        XCTAssertTrue(content.panelExitGraceActiveForTesting(.inspector))
 
         // Re-enter before the timer fires.
-        content.evaluateZonesForTesting(at: NSPoint(x: 4, y: 400))
-        XCTAssertFalse(content.panelExitGraceActiveForTesting(.editRail),
+        content.evaluateZonesForTesting(at: NSPoint(x: 1196, y: 400))
+        XCTAssertFalse(content.panelExitGraceActiveForTesting(.inspector),
                        "re-entry cancels the pending exit-grace timer")
-        XCTAssertTrue(content.isHoveredForTesting(.editRail))
+        XCTAssertTrue(content.isHoveredForTesting(.inspector))
     }
 
     /// Regression: "in fullscreen mode, panels are
@@ -591,7 +444,7 @@ final class PanelPolishTests: XCTestCase {
     /// never hides — matching the user-reported symptom.
     func testHover_ExitGraceFires_HidesPanelEvenWithRealWindow() {
         Prefs.filmstripPinnedFullscreen = false
-        Prefs.editRailPinnedFullscreen = false
+        Prefs.exifPanelPinnedFullscreen = false
         Prefs.exifPanelPinnedFullscreen = false
 
         let content = makeContent(size: CGSize(width: 1200, height: 800))
@@ -611,7 +464,7 @@ final class PanelPolishTests: XCTestCase {
         // Reveal all four panels by walking the cursor through every edge.
         for p in [
             NSPoint(x: 600, y: 4),    // bot  → filmstrip + capsule
-            NSPoint(x: 4,   y: 400),  // left → editRail
+            NSPoint(x: 4,   y: 400),  // left → nothing
             NSPoint(x: 1196, y: 400), // right→ inspector
         ] {
             content.evaluateZonesForTesting(at: p)
@@ -712,34 +565,31 @@ final class PanelPolishTests: XCTestCase {
         XCTAssertTrue(content.filmstripForTesting.isHidden)
     }
 
-    /// Same regression, exercised via the editRail. Independent assertion
-    /// because the editRail uses `editRailFullscreenConstraints` (leading
-    /// 16 pt, vertically centred, 56 pt wide) and is the panel f4d0645
-    /// most directly touched.
-    func testHover_ExitGraceFires_HidesEditRailOnceCursorLeftFullscreen() {
-        Prefs.editRailPinnedFullscreen = false
+    /// Same regression, exercised via the inspector (the right-edge panel).
+    func testHover_ExitGraceFires_HidesTheInspectorOnceCursorLeftFullscreen() {
+        Prefs.exifPanelPinnedFullscreen = false
         let content = makeContent(size: CGSize(width: 1200, height: 800))
         content.animatesPanelFades = false  // see the filmstrip variant above
         content.windowMode = .fullscreen
         content.layoutSubtreeIfNeeded()
 
-        // Reveal editRail via left-edge hover.
-        content.evaluateZonesForTesting(at: NSPoint(x: 4, y: 400))
+        // Reveal the inspector via right-edge hover.
+        content.evaluateZonesForTesting(at: NSPoint(x: 1196, y: 400))
         content.layoutSubtreeIfNeeded()
-        XCTAssertTrue(content.isHoveredForTesting(.editRail))
-        XCTAssertFalse(content.editRailForTesting.isHidden)
+        XCTAssertTrue(content.isHoveredForTesting(.inspector))
+        XCTAssertFalse(content.inspectorForTesting.isHidden)
 
         // Cursor moves to the middle of the canvas.
         content.evaluateZonesForTesting(at: NSPoint(x: 600, y: 400))
-        XCTAssertTrue(content.panelExitGraceActiveForTesting(.editRail))
+        XCTAssertTrue(content.panelExitGraceActiveForTesting(.inspector))
 
         // Fire the grace timer.
-        content.forceExitGraceFireForTesting(.editRail)
+        content.forceExitGraceFireForTesting(.inspector)
 
-        XCTAssertFalse(content.isHoveredForTesting(.editRail),
-                       "after grace fires, editRail must be removed from hoveredPanels")
-        XCTAssertTrue(content.editRailForTesting.isHidden,
-                      "after grace fires, editRail must be hidden")
+        XCTAssertFalse(content.isHoveredForTesting(.inspector),
+                       "after grace fires, the inspector must be removed from hoveredPanels")
+        XCTAssertTrue(content.inspectorForTesting.isHidden,
+                      "after grace fires, the inspector must be hidden")
     }
 
     // MARK: - Filmstrip aspect cache

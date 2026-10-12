@@ -508,7 +508,30 @@ final class InspectorPreviewImageView: NSImageView {
             setContentHuggingPriority(.init(1), for: axis)
             setContentCompressionResistancePriority(.init(1), for: axis)
         }
+        // A file that can't be previewed: glyph and one line (spec 25 §2.2).
+        brokenGlyph.image = Badges.brokenFileGlyph(pointSize: 32)
+        brokenGlyph.contentTintColor = Badges.brokenFileTint
+        brokenLabel.font = .systemFont(ofSize: 13)
+        brokenLabel.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [brokenGlyph, brokenLabel])
+        stack.orientation = .vertical
+        stack.spacing = 6
+        stack.alignment = .centerX
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        brokenStack = stack
+        stack.isHidden = true
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
     }
+
+    private let brokenGlyph = NSImageView()
+    private let brokenLabel = NSTextField(labelWithString: "Can't preview")
+    private var brokenStack: NSStackView?
+    /// The glyph and "Can't preview" show instead of an empty box.
+    var isShowingBroken: Bool { brokenStack?.isHidden == false }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
@@ -522,6 +545,7 @@ final class InspectorPreviewImageView: NSImageView {
 
     func show(_ url: URL, lookups: Lookups? = nil) {
         guard url != shownURL else { return }
+        brokenStack?.isHidden = true
         // A sharp picture (of this or an earlier photo) is on screen: hold it.
         let holding = sharpOnScreen && image != nil
         shownURL = url
@@ -569,7 +593,11 @@ final class InspectorPreviewImageView: NSImageView {
                 // never the last photo.
                 await self.standInTask?.value
                 guard !Task.isCancelled, self.shownURL == url else { return }
-                if self.quickShownURL != url { self.image = nil; self.sharpOnScreen = false }
+                if self.quickShownURL != url {
+                    self.image = nil
+                    self.sharpOnScreen = false
+                    self.brokenStack?.isHidden = false
+                }
             }
         }
     }
@@ -653,7 +681,7 @@ private struct FileInfoSection: View {
                         // The status bar's number and form.
                         Text(BrowserBottomBar.bytes(total))
                     } else if let size = state.commonFileSize {
-                        Text(Self.byteFormatter.string(fromByteCount: size))
+                        Text(FileSizeText.string(size))
                     } else {
                         Text("—").foregroundStyle(.secondary)
                     }
@@ -675,12 +703,6 @@ private struct FileInfoSection: View {
         guard let t else { return "—" }
         return t.localizedDescription ?? t.identifier
     }
-    private static let byteFormatter: ByteCountFormatter = {
-        let b = ByteCountFormatter()
-        b.countStyle = .file
-        b.allowedUnits = [.useKB, .useMB, .useGB]
-        return b
-    }()
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .medium

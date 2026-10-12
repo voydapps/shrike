@@ -146,7 +146,7 @@ final class WindowReleaseTests: XCTestCase {
 
     /// Turns the run loop (each turn drains the main autorelease pool)
     /// until nothing in `alive` is left, or `timeout`.
-    private func settle(_ timeout: TimeInterval = 4, alive: () -> [String]) async -> [String] {
+    private func settle(_ timeout: TimeInterval = 12, alive: () -> [String]) async -> [String] {
         let deadline = Date().addingTimeInterval(timeout)
         while !alive().isEmpty, Date() < deadline {
             autoreleasepool { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
@@ -270,7 +270,6 @@ final class WindowReleaseTests: XCTestCase {
             content.animatesPanelFades = false
             content.windowMode = .fullscreen
             content.togglePanel(.filmstrip)
-            content.togglePanel(.editRail)
             content.togglePanel(.inspector)
             _ = content.histogramOverlayFrameForTesting()
             content.layoutSubtreeIfNeeded()

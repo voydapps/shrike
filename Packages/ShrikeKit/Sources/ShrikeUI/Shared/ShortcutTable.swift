@@ -38,7 +38,7 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
     case sortByName, sortByDateCaptured, sortByDateModified, sortBySize, sortByRating, sortByKind, sortByDimensions
     case filter, largerThumbnails, smallerThumbnails
     case zoomIn, zoomOut, zoomToFit, actualSize, zoom200, zoom300, zoomBestFit, fitWidth, fitHeight, loupe
-    case toggleSidebar, toggleToolbar, customizeToolbar, toggleInspector, toggleFilmstrip, toggleHistogram, toggleEditRail
+    case toggleSidebar, toggleToolbar, customizeToolbar, toggleInspector, toggleFilmstrip, toggleHistogram
     case slideshow, compare, toggleFullScreen, unpinAllPanels
     // Image
     case rotateLeft, rotateRight, rotate180, flipHorizontal, flipVertical
@@ -53,6 +53,7 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
     // Compare window keys
     case compareNextAll, comparePreviousAll, compareFitAll, compareLock
     case compareFocus1, compareFocus2, compareFocus3, compareFocus4
+    case compareFocusNext, compareFocusPrevious
     // App
     case settings, keyboardShortcuts
 
@@ -121,7 +122,6 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
         case .toggleInspector: return "Show Inspector"
         case .toggleFilmstrip: return "Show Filmstrip"
         case .toggleHistogram: return "Show Histogram"
-        case .toggleEditRail: return "Show Edit Rail"
         case .slideshow: return "Slideshow…"
         case .compare: return "Compare"
         case .toggleFullScreen: return "Enter Full Screen"
@@ -175,6 +175,8 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
         case .compareFocus2: return "Focus Pane 2"
         case .compareFocus3: return "Focus Pane 3"
         case .compareFocus4: return "Focus Pane 4"
+        case .compareFocusNext: return "Next Pane"
+        case .compareFocusPrevious: return "Previous Pane"
         case .settings: return "Settings…"
         case .keyboardShortcuts: return "Keyboard Shortcuts"
         }
@@ -257,6 +259,7 @@ public enum SpecialKey {
     public static let enter = "\u{3}"
     public static let escape = "\u{1B}"
     public static let space = " "
+    public static let tab = "\t"
 
     static func isFunctionKey(_ key: String) -> Bool { key == f2 || key == f5 }
 
@@ -460,7 +463,7 @@ public enum ShortcutTable {
         if fs {
             add(.moveToTrash, v, k(K.forwardDelete), k(K.backspace, cmd))
         } else {
-            add(.moveToTrash, v, k(K.backspace), k(K.backspace, cmd), k(K.forwardDelete))
+            add(.moveToTrash, v, k(K.backspace, cmd))
         }
         add(.undo, v, k("z", cmd))
         add(.redo, v, k("z", cmdShift))
@@ -469,7 +472,6 @@ public enum ShortcutTable {
         add(.toggleHistogram, v, k("j", cmdShift))
         // ⌃H toggles the histogram in both presets.
         add(.toggleHistogram, v, k("h", .control))
-        add(.toggleEditRail, v, k("e", cmdShift))
         // ⌥R: view-only switch between a pair's primary and its RAW.
         add(.toggleRAWFile, v, k("r", .option))
         add(.toggleFullScreen, v, k("f", ctrlCmd))
@@ -527,7 +529,6 @@ public enum ShortcutTable {
         add(.rotateRight, e, k("r", cmd))
         add(.rotate180, e, k("r", cmdShift))
         add(.toggleFilmstrip, e, k("k", cmd))
-        add(.toggleEditRail, e, k("e", cmdShift))
         add(.toggleHistogram, e, k("j", cmdShift))
         add(.zoomIn, e, k("+", cmd), k("=", cmd))
         add(.zoomOut, e, k("-", cmd))
@@ -544,7 +545,7 @@ public enum ShortcutTable {
         if fs {
             add(.moveToTrash, b, k(K.forwardDelete), k(K.backspace, cmd))
         } else {
-            add(.moveToTrash, b, k(K.backspace), k(K.backspace, cmd), k(K.forwardDelete))
+            add(.moveToTrash, b, k(K.backspace, cmd))
         }
         for (n, c) in ratings.enumerated() { add(c, b, fs ? k("\(n)", .control) : k("\(n)")) }
         add(.toggleFlag, b, k("q"), k("\\"))
@@ -617,9 +618,11 @@ public enum ShortcutTable {
         if fs {
             add(.moveToTrash, c, k(K.forwardDelete), k(K.backspace, cmd))
         } else {
-            add(.moveToTrash, c, k(K.backspace), k(K.backspace, cmd), k(K.forwardDelete))
+            add(.moveToTrash, c, k(K.backspace, cmd))
         }
         for (n, command) in ShrikeCommand.compareFocusCommands.enumerated() { add(command, c, k("\(n + 1)", cmd)) }
+        add(.compareFocusNext, c, k(K.tab))
+        add(.compareFocusPrevious, c, k(K.tab, .shift))
         add(.undo, c, k("z", cmd))
         add(.redo, c, k("z", cmdShift))
         add(.escape, c, k(K.escape))

@@ -154,13 +154,13 @@ final class BrowserFilmstripHoverTests: XCTestCase {
         XCTAssertNil(collection.hoveredIndexPath)
     }
 
-    func testTheStripCellTooltipIsTheFileNameAndGridHasNone() async throws {
+    func testTheStripAndGridCellTooltipIsTheFullFileName() async throws {
         let browser = try await makeBrowser(count: 4)
         defer { browser.close() }
         let (content, collection) = filmstrip(browser)
         XCTAssertEqual(try XCTUnwrap(item(collection, 1)).view.toolTip, "p001.jpg")
         content.setMode(.grid)
         content.view.layoutSubtreeIfNeeded()
-        XCTAssertNil(item(collection, 1)?.view.toolTip)
+        XCTAssertEqual(item(collection, 1)?.view.toolTip, "p001.jpg", "spec 25 §6.3: the grid has it too")
     }
 }

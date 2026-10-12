@@ -145,12 +145,7 @@ final class PreferencesStore: ObservableObject {
 
 enum PreferencesByteFormat {
     static func string(fromBytes bytes: Int64) -> String {
-        let f = ByteCountFormatter()
-        f.countStyle = .binary
-        f.allowedUnits = [.useKB, .useMB, .useGB]
-        f.includesUnit = true
-        f.includesCount = true
-        return f.string(fromByteCount: bytes)
+        FileSizeText.string(bytes, style: .binary)
     }
 }
 

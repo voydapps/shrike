@@ -174,6 +174,8 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
     /// Items built once; `toolbar(_:itemForItemIdentifier:…)` hands them
     /// out (a palette copy gets a fresh item).
     private var built: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
+    /// Why Edit is off, shown under the Edit item's tooltip.
+    private var editExtraLine: String?
     private var shownFlag: Bool?
     private var shownRating: Int?
     /// The Zoom item's last accessibility value (outer nil = never set).
@@ -226,6 +228,12 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
         item.visibilityPriority = Self.visibilityPriority(itemIdentifier)
         if flag { built[itemIdentifier] = item }
         return item
+    }
+
+    /// The second tooltip line of the Edit item (nil: none).
+    func setEditExtraLine(_ line: String?) {
+        editExtraLine = line
+        if let item = item(ID.edit) { LiveTooltips.shared.setExtraLine(line, on: item) }
     }
 
     /// The item for `id` as the toolbar shows it (tests, validation).
@@ -361,7 +369,13 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
             item.image = symbol(name, label)
             item.label = label
             item.paletteLabel = label
-            item.toolTip = tip(command)
+            if id == ID.edit {
+                // Live key text, plus a second line when Edit is off (spec 26 §2).
+                LiveTooltips.shared.bind(item, command: command, context: .viewer)
+                LiveTooltips.shared.setExtraLine(editExtraLine, on: item)
+            } else {
+                item.toolTip = tip(command)
+            }
             item.target = self
             item.action = #selector(buttonItem(_:))
             item.isBordered = true

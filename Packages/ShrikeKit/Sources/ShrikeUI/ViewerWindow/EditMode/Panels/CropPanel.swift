@@ -2,7 +2,7 @@
 //  CropPanel.swift
 //  ShrikeUI
 //
-//  Right-rail Crop tool panel. Spec
+//  Right-side Crop tool panel. Spec
 //  Controls the aspect picker, W/H numeric fields, thirds / golden grid
 //  toggles, and Apply / Reset buttons. The on-canvas overlay (crop rect
 //  with 8 handles) lives in `CropOverlayView.swift`; this file emits the
@@ -84,18 +84,18 @@ final class CropPanel: NSView {
     // MARK: - Subviews
 
     private let aspectPopup = NSPopUpButton()
-    private let widthField = NSTextField()
-    private let heightField = NSTextField()
+    private let widthField = PanelTextField()
+    private let heightField = PanelTextField()
     private let thirdsCheckbox = NSButton(checkboxWithTitle: "Thirds grid",
                                           target: nil,
                                           action: nil)
     private let goldenCheckbox = NSButton(checkboxWithTitle: "Golden grid",
                                           target: nil,
                                           action: nil)
-    private let resetButton = NSButton(title: "Reset crop",
+    private let resetButton = NSButton(title: "Reset Crop",
                                        target: nil,
                                        action: nil)
-    private let applyButton = NSButton(title: "Apply",
+    private let applyButton = NSButton(title: "Apply Crop",
                                        target: nil,
                                        action: nil)
 
@@ -148,10 +148,12 @@ final class CropPanel: NSView {
 
         applyButton.translatesAutoresizingMaskIntoConstraints = false
         applyButton.bezelStyle = .rounded
-        applyButton.keyEquivalent = "\r"   // Default/Enter button
-        applyButton.useAccentFill()   // one accent
+        // Plain bezel, no key equivalent: Done is the one accent and the one Return (spec 25 §3.1).
         applyButton.target = self
         applyButton.action = #selector(handleApply(_:))
+        widthField.setAccessibilityLabel("Crop width, pixels")
+        heightField.setAccessibilityLabel("Crop height, pixels")
+        aspectPopup.setAccessibilityLabel("Aspect ratio")
 
         let widthRow = NSStackView(views: [widthLabel, widthField])
         widthRow.orientation = .horizontal
@@ -170,8 +172,8 @@ final class CropPanel: NSView {
             heightRow,
             thirdsCheckbox,
             goldenCheckbox,
-            resetButton,
             applyButton,
+            resetButton,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading

@@ -448,7 +448,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
         }
 
         for kind in LevelsHandleKind.allCases {
-            let f = NSTextField(string: "")
+            let f = PanelTextField(string: "")
             f.translatesAutoresizingMaskIntoConstraints = false
             f.alignment = .center
             f.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)

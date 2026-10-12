@@ -9,7 +9,7 @@
 //       fresh `EditRecipe`, flips `isActive` on, and returns ownership
 //       of the toolbar / parameter-panel / status-strip views to the
 //       window layer for mounting.
-//    2. `selectTool(_:)` switches the right-rail panel, wiring its
+//    2. `selectTool(_:)` switches the right-side panel, wiring its
 //       callbacks back into the controller. Tool-agnostic toolbar stays
 //       put; only the panel swaps.
 //    3. Each panel drives the controller via closures. Continuous events
@@ -90,14 +90,17 @@ public final class EditModeController {
     /// is a seam for later.
     private var lastColorParams = ColorAdjustParams.identity
 
+    /// Whether the edit bar is the full-screen capsule (the empty panel says "bottom").
+    var chooseToolInFullScreen: () -> Bool = { false }
+
     /// Synchronous mirror of "recipe has any ops or undo history" — used
-    /// by the (non-edit-mode) Reset button on the edit rail
+    /// by the (non-edit-mode) Reset button in the edit bar
     /// so the button can disable without an actor hop. Kept in
     /// sync by `refreshPendingEditsMirror()` after any recipe mutation.
     /// Outside an active session this is always false.
     public private(set) var hasPendingEdits: Bool = false
 
-    /// Fires when `hasPendingEdits` flips so the rail can refresh the
+    /// Fires when `hasPendingEdits` flips so the bar can refresh the
     /// Reset button's enabled state without polling.
     var onPendingEditsChanged: ((Bool) -> Void)?
 
@@ -156,8 +159,11 @@ public final class EditModeController {
     public func done() {
         guard isActive, let recipe else { return }
         let pendingCrop = currentTool == .crop ? pendingCropRect() : nil
+        let pendingResize = currentTool == .resize ? (installedTool as? ResizePanel)?.pendingSpec : nil
         endCoalescing()
         if let crop = pendingCrop { appendGeometry(.crop(crop)) }
+        // A typed size that was never applied is applied now (spec 25 §3.1).
+        if let spec = pendingResize { appendGeometry(.resize(spec)) }
         let queued = mutationTail
         Task { [weak self] in
             guard let self else { return }
@@ -247,7 +253,7 @@ public final class EditModeController {
         if let tool {
             selectTool(tool)
         } else {
-            parameterPanel.install(ChooseToolPanel())
+            parameterPanel.install(ChooseToolPanel(inFullScreen: chooseToolInFullScreen()))
             installedTool = nil
             cropOverlay.isHidden = true
             Culling.announce(Self.noToolAnnouncement)
@@ -362,7 +368,7 @@ public final class EditModeController {
 
     /// Revert every pending edit — wipes the whole recipe, clears the
     /// redo stack, and re-renders. Shown on the
-    /// windowed edit rail as the Reset button. Safe no-op when the
+    /// edit bar as the Reset button. Safe no-op when the
     /// recipe is absent or already empty.
     public func revertPendingEdits() {
         guard recipe != nil else {
@@ -659,12 +665,6 @@ public final class EditModeController {
             // Drop the last .rotate(degrees:) if the tail matches.
             self?.undoLastFreeRotate()
         }
-        panel.onApply = { [weak self] in
-            // Apply just collapses — the commit already landed on the
-            // recipe via the idle-commit path. It ends the drag.
-            self?.endCoalescing()
-            self?.refreshToolbarButtons()
-        }
         panel.onAutoCropChanged = { flag in
             Prefs.editAutoCropOnFreeRotate = flag
         }
@@ -703,10 +703,6 @@ public final class EditModeController {
         }
         panel.onResetAll = { [weak self] in
             self?.lastColorParams = .identity
-        }
-        panel.onApply = { [weak self] in
-            self?.endCoalescing()
-            self?.refreshToolbarButtons()
         }
         parameterPanel.install(panel)
         installedTool = panel
@@ -776,8 +772,8 @@ public final class EditModeController {
         undoNames[index] = name
     }
 
-    /// Auto Contrast / Auto Color: switch to Levels (as the rail
-    /// does), read the histogram of the image as it enters Levels, and
+    /// Auto Contrast / Auto Color: switch to Levels (as picking
+    /// the Levels tool does), read the histogram of the image as it enters Levels, and
     /// replace the recipe's Levels values with the result as one undo
     /// step — or, when the result is what the recipe already draws,
     /// write nothing and say why on the status line.

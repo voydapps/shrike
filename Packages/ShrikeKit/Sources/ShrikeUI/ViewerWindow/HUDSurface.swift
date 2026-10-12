@@ -4,7 +4,7 @@
 //
 //  The HUD surfaces.
 //
-//  * Tall panels (rail, inspector, filmstrip, histogram, edit card,
+//  * Tall panels (inspector, filmstrip, histogram, edit card,
 //    transfer panel) are SOLID: `hud.surface` (#1C1C1E at 95 %), a 1 pt
 //    hairline, a soft shadow, radius 16. They sample nothing, so a bright
 //    or coloured photo behind them can never tint them (the brown

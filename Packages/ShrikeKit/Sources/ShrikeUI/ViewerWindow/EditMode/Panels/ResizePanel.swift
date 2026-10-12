@@ -2,7 +2,7 @@
 //  ResizePanel.swift
 //  ShrikeUI
 //
-//  Right-rail Resize tool panel. Spec
+//  Right-side Resize tool panel. Spec
 //  W/H fields (linked by default), percent entry, prevent-upscale,
 //  interpolation popup, Apply.
 //
@@ -47,9 +47,9 @@ final class ResizePanel: NSView {
 
     // MARK: - Subviews
 
-    private let widthField = NSTextField()
-    private let heightField = NSTextField()
-    private let percentField = NSTextField()
+    private let widthField = PanelTextField()
+    private let heightField = PanelTextField()
+    private let percentField = PanelTextField()
     private let maintainCheckbox = NSButton(
         checkboxWithTitle: "Maintain aspect",
         target: nil,
@@ -62,7 +62,7 @@ final class ResizePanel: NSView {
     )
     private let interpPopup = NSPopUpButton()
     private let previewLabel = NSTextField(labelWithString: "—")
-    private let applyButton = NSButton(title: "Apply", target: nil, action: nil)
+    private let applyButton = NSButton(title: "Apply Resize", target: nil, action: nil)
 
     init() {
         super.init(frame: .zero)
@@ -111,8 +111,11 @@ final class ResizePanel: NSView {
         previewLabel.textColor = .secondaryLabelColor
 
         applyButton.bezelStyle = .rounded
-        applyButton.keyEquivalent = "\r"
-        applyButton.useAccentFill()   // one accent
+        // Plain bezel, no key equivalent: Done is the one accent and the one Return (spec 25 §3.1).
+        applyButton.isEnabled = false
+        widthField.setAccessibilityLabel("Resize width, pixels")
+        heightField.setAccessibilityLabel("Resize height, pixels")
+        percentField.setAccessibilityLabel("Resize percent")
         applyButton.translatesAutoresizingMaskIntoConstraints = false
         applyButton.target = self
         applyButton.action = #selector(handleApply(_:))
@@ -255,7 +258,16 @@ final class ResizePanel: NSView {
         percentField.stringValue = String(format: "%.1f", pct)
     }
 
+    /// The typed size when it is valid and differs from the image: what Done
+    /// applies and what enables Apply Resize.
+    var pendingSpec: ResizeSpec? {
+        guard let spec = currentSpec() else { return nil }
+        if spec.width == Int(sourcePixelSize.width), spec.height == Int(sourcePixelSize.height) { return nil }
+        return spec
+    }
+
     private func updatePreviewLabel() {
+        applyButton.isEnabled = pendingSpec != nil
         let sw = Int(sourcePixelSize.width)
         let sh = Int(sourcePixelSize.height)
         let tw = widthField.integerValue

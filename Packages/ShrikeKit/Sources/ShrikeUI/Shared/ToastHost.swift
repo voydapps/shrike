@@ -38,6 +38,21 @@ public struct ToastContent: Equatable, Sendable {
     /// 0…1 while a file operation runs: a 160 × 4 pt bar
     /// under the text, toast height 44 pt, no auto-dismiss.
     public var progress: Double?
+    /// Replaces the default duration (the Trash toast stays 6 s).
+    public var customDuration: TimeInterval?
+    /// VoiceOver label and tooltip of the action button, when they differ
+    /// from its title and the message.
+    public var actionAccessibilityLabel: String?
+    public var actionTooltip: String?
+
+    /// "Moved … to the Trash." with Undo: 6 s, "Undo  ·  ⌘Z" tooltip (spec 25 §5.1).
+    public static func trashed(_ message: String) -> ToastContent {
+        var content = ToastContent(message, actionTitle: "Undo")
+        content.customDuration = 6.0
+        content.actionAccessibilityLabel = "Undo move to Trash"
+        content.actionTooltip = "Undo  ·  ⌘Z"
+        return content
+    }
 
     public init(_ message: String, kind: Kind = .text, actionTitle: String? = nil) {
         self.message = message
@@ -47,6 +62,7 @@ public struct ToastContent: Equatable, Sendable {
 
     ///
     public var duration: TimeInterval {
+        if let customDuration { return customDuration }
         if actionTitle != nil { return 4.0 }
         return kind == .glyph ? 1.2 : 2.5
     }
@@ -223,8 +239,8 @@ public final class ToastHostView: HUDSurfaceView {
         if let title = content.actionTitle {
             button.title = title
             button.isHidden = false
-            button.setAccessibilityLabel(title)
-            button.toolTip = content.message
+            button.setAccessibilityLabel(content.actionAccessibilityLabel ?? title)
+            button.toolTip = content.actionTooltip ?? content.message
             buttonCollapsed?.isActive = false
             buttonGap?.isActive = true
         } else {

@@ -195,6 +195,8 @@ public struct BrowserFilter: Sendable, Hashable {
     public var searchTerm: String
     /// Only photos with no rating (the "Unrated" rating choice).
     public var unratedOnly: Bool = false
+    /// Only photos that are not flagged (the "Not flagged" flag choice).
+    public var unflaggedOnly: Bool = false
     /// Kinds unticked in the filter popover. Empty: every kind.
     public var excludedKinds: Set<BrowserFilterKind> = []
     /// Tag match — item must contain at least one of these (if non-empty).
@@ -233,6 +235,7 @@ public struct BrowserFilter: Sendable, Hashable {
             && !unratedOnly
             && excludedKinds.isEmpty
             && !flaggedOnly
+            && !unflaggedOnly
             && formats.isEmpty
             && modifiedFrom == nil
             && modifiedTo == nil
@@ -254,10 +257,20 @@ public struct BrowserFilter: Sendable, Hashable {
         }
     }
 
+    /// The popover's flag choice. Flagged and Not flagged exclude each other.
+    public var flagChoice: BrowserFlagChoice {
+        get { flaggedOnly ? .flagged : (unflaggedOnly ? .notFlagged : .any) }
+        set {
+            flaggedOnly = newValue == .flagged
+            unflaggedOnly = newValue == .notFlagged
+        }
+    }
+
     public func matches(_ item: BrowserItem) -> Bool {
         if minimumRating > 0 && item.rating < minimumRating { return false }
         if unratedOnly && item.rating > 0 { return false }
         if flaggedOnly && !item.isFlagged { return false }
+        if unflaggedOnly && item.isFlagged { return false }
         // A pair matches every kind it holds (a RAW+JPEG pair is RAW and
         // JPEG), so it passes while any of its kinds is still ticked.
         if !formats.isEmpty {
@@ -292,14 +305,14 @@ public struct BrowserFilter: Sendable, Hashable {
 
 // MARK: - Filter popover choices
 
-/// The Rating popup: Any, 1 star or more … 4 stars or more, 5 stars, Unrated.
+/// The Rating popup: Any, Unrated, 1 star or more … 4 stars or more, 5 stars.
 public enum BrowserRatingChoice: Sendable, Hashable {
     case any
     case atLeast(Int)
     case unrated
 
     public static let menuOrder: [BrowserRatingChoice] =
-        [.any, .atLeast(1), .atLeast(2), .atLeast(3), .atLeast(4), .atLeast(5), .unrated]
+        [.any, .unrated, .atLeast(1), .atLeast(2), .atLeast(3), .atLeast(4), .atLeast(5)]
 
     public var title: String {
         switch self {
@@ -308,6 +321,19 @@ public enum BrowserRatingChoice: Sendable, Hashable {
         case .atLeast(1): return "1 star or more"
         case .atLeast(let n): return "\(n) stars or more"
         case .unrated: return "Unrated"
+        }
+    }
+}
+
+/// The Flag popup: Any, Flagged, Not flagged.
+public enum BrowserFlagChoice: Sendable, Hashable, CaseIterable {
+    case any, flagged, notFlagged
+
+    public var title: String {
+        switch self {
+        case .any: return "Any"
+        case .flagged: return "Flagged"
+        case .notFlagged: return "Not flagged"
         }
     }
 }

@@ -96,13 +96,9 @@ public enum ViewerAction: Sendable, Hashable {
     /// Toolbar button presents the picker anchored to its own frame via
     /// `ViewerToolbar.showShare(from:)`.
     case share
-    /// Reset the pending edit recipe to identity. Shown
-    /// on the edit rail alongside the three tool buttons. Button is
-    /// disabled when `editModeController.hasPendingEdits == false`.
+    /// Reset the pending edit recipe to identity. Shown in the edit bar.
+    /// Button is disabled when `editModeController.hasPendingEdits == false`.
     case resetEdits
-    /// Toggle the persistent docked edit rail in windowed mode, or the
-    /// fullscreen pin state in fullscreen mode. `⌘⇧E`.
-    case toggleEditRail
 
     // Chord starters
     case beginCopyChord
@@ -308,7 +304,6 @@ public enum ViewerKeyMap {
         case .toggleInspector: return .toggleInspector
         case .toggleFilmstrip: return .toggleFilmstrip
         case .toggleHistogram: return .toggleHistogram
-        case .toggleEditRail: return .toggleEditRail
         case .toggleRAWFile: return .toggleRAWFile
         case .unpinAllPanels: return .unpinAllPanels
         case .toggleFullScreen: return .toggleFullscreen

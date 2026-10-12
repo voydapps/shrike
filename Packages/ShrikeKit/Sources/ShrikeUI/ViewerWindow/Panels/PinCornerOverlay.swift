@@ -3,7 +3,7 @@
 //  ShrikeUI
 //
 //  Shared corner-pin glyph used by all four chrome panels (filmstrip,
-//  toolbar, edit rail, inspector). It replaces a per-panel 20 pt pin
+//  toolbar, inspector). It replaces a per-panel 20 pt pin
 //  strip.
 //
 //  Look and behaviour:
@@ -18,7 +18,7 @@
 //     "Not pinned".
 //
 //  Pins exist only in full screen. Each panel places the glyph in its
-//  own slot (rail header row, filmstrip trailing slot, inspector header).
+//  own slot (filmstrip trailing slot, inspector header).
 //
 
 import AppKit

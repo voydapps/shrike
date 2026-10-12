@@ -95,9 +95,27 @@ public final class WindowCoordinator {
     /// Open Folder…: a Browser per folder (max 4), from any window.
     public func openFolders(_ folders: [URL]) {
         guard let services else { return }
-        for folder in folders.prefix(Self.maxFoldersPerOpen) {
-            openBrowser(at: folder, selecting: nil, services: services).window?.makeKeyAndOrderFront(nil)
+        openFolderBrowsers(folders, services: services)
+    }
+
+    /// A Browser per folder; a folder that is already open is brought
+    /// forward. The limit of 4 counts only the folders that need a new window.
+    @discardableResult
+    private func openFolderBrowsers(
+        _ folders: [URL], services: ShrikeServices
+    ) -> (last: BrowserWindowController?, skipped: Int) {
+        var created = 0
+        var skipped = 0
+        var last: BrowserWindowController?
+        for folder in folders {
+            if browser(showing: folder) == nil {
+                guard created < Self.maxFoldersPerOpen else { skipped += 1; continue }
+                created += 1
+            }
+            last = openBrowser(at: folder, selecting: nil, services: services)
+            last?.window?.makeKeyAndOrderFront(nil)
         }
+        return (last, skipped)
     }
 
     /// File ▸ New Browser Window (⌘N).
@@ -232,12 +250,9 @@ public final class WindowCoordinator {
             noteRecents(request.images + request.folders.prefix(Self.maxFoldersPerOpen),
                         after: request.images.isEmpty ? 0 : Self.recentNoteDelay)
         }
-        var lastBrowser: BrowserWindowController?
-        for folder in request.folders.prefix(Self.maxFoldersPerOpen) {
-            lastBrowser = openBrowser(at: folder, selecting: nil, services: services)
-            lastBrowser?.window?.makeKeyAndOrderFront(nil)
-        }
-        if request.folders.count > Self.maxFoldersPerOpen {
+        let opened = openFolderBrowsers(request.folders, services: services)
+        let lastBrowser = opened.last
+        if opened.skipped > 0 {
             lastBrowser?.toast("Opened \(Self.maxFoldersPerOpen) folders. Drop fewer folders to open the rest.")
         }
         guard !request.images.isEmpty else { return }
@@ -376,11 +391,36 @@ public final class WindowCoordinator {
         }
     }
 
-    /// A new Browser at `folder`, with `selecting` selected once listed.
+    /// The open Browser that shows `folder` right now (same canonical path),
+    /// or nil. A Browser that went into another folder does not count.
+    /// Several matches: the key one, else the most recent.
+    public func browser(showing folder: URL) -> BrowserWindowController? {
+        let key = GroupList.canonical(folder)
+        let matches = browsers.filter { browser in
+            guard let current = browser.currentFolder, browser.window != nil else { return false }
+            return GroupList.canonical(current) == key
+        }
+        return matches.first { $0.window?.isKeyWindow == true } ?? matches.last
+    }
+
+    /// A Browser at `folder`, with `selecting` selected once listed. A
+    /// folder that is already open in a Browser brings that window forward
+    /// instead of making a second one (spec 25 §4); no folder (⌘N) always
+    /// makes a new window.
     @discardableResult
     public func openBrowser(
         at folder: URL?, selecting: URL?, services: ShrikeServices
     ) -> BrowserWindowController {
+        if let folder, let existing = browser(showing: folder) {
+            if let window = existing.window {
+                if window.isMiniaturized { window.deminiaturize(nil) }
+                window.makeKeyAndOrderFront(nil)
+            }
+            if let selecting { existing.select(url: selecting) }
+            Self.noteRecent(folder)
+            onWindowOpened?()
+            return existing
+        }
         // The saved Browser size; 24 pt down-right of an open one.
         let cascadeFrom = browsers.last { $0.window?.isVisible == true }?.window
         let controller = BrowserWindowController(services: services, initialFolder: folder, selecting: selecting)

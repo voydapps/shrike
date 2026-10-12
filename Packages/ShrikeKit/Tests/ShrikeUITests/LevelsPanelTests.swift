@@ -434,12 +434,7 @@ final class LevelsPanelTests: XCTestCase {
 
     // MARK: Entry points
 
-    func testRailButtonAndMenuKeys() {
-        let rail = EditRail()
-        let button = rail.descendants(of: RailButton.self).first {
-            $0.accessibilityIdentifier() == "editRail.levels"
-        }
-        XCTAssertNotNil(button, "Levels sits on the rail")
+    func testLevelsPickerSymbolAndMenuKeys() {
         XCTAssertEqual(EditChromeTools.symbol(.levels), "slider.horizontal.below.rectangle")
         XCTAssertEqual(EditChromeTools.order.last, .levels, "after Color")
         XCTAssertEqual(ViewerKeyMap.action(for: .levels, context: .viewer), .selectEditTool(.levels))

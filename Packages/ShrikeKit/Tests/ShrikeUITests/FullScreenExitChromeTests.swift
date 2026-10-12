@@ -20,22 +20,20 @@ import AppKit
 final class FullScreenExitChromeTests: XCTestCase {
 
     private var root: URL!
-    private var saved: (strip: Bool, hist: Bool, stripPin: Bool, railPin: Bool, inspPin: Bool) = (false, false, false, false, false)
+    private var saved: (strip: Bool, hist: Bool, stripPin: Bool, inspPin: Bool) = (false, false, false, false)
 
     override func setUp() async throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("shrike-fsexit-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         saved = (Prefs.filmstripVisibleInWindowed, Prefs.viewerHistogramVisible,
-                 Prefs.filmstripPinnedFullscreen, Prefs.editRailPinnedFullscreen,
-                 Prefs.exifPanelPinnedFullscreen)
+                 Prefs.filmstripPinnedFullscreen, Prefs.exifPanelPinnedFullscreen)
     }
 
     override func tearDown() async throws {
         Prefs.filmstripVisibleInWindowed = saved.strip
         Prefs.viewerHistogramVisible = saved.hist
         Prefs.filmstripPinnedFullscreen = saved.stripPin
-        Prefs.editRailPinnedFullscreen = saved.railPin
         Prefs.exifPanelPinnedFullscreen = saved.inspPin
         try? FileManager.default.removeItem(at: root)
     }
@@ -53,8 +51,6 @@ final class FullScreenExitChromeTests: XCTestCase {
         viewer.imageViewForTesting.image = RotateDirectionTests.quadrants()
         let content = viewer.contentRootForTesting
         content.animatesPanelFades = false
-        content.voiceOverOverrideForTesting = false
-        content.simulateFirstFrameForTesting()
         content.layoutSubtreeIfNeeded()
         return viewer
     }
@@ -96,12 +92,11 @@ final class FullScreenExitChromeTests: XCTestCase {
     private struct Chrome: Equatable, CustomStringConvertible {
         var strip: Bool, stripFrame: NSRect
         var hist: Bool, histFrame: NSRect
-        var rail: Bool, railFrame: NSRect
         var canvas: NSRect
         /// Shown surfaces whose content lost its size.
         var collapsed: [String]
         var description: String {
-            "strip \(strip) \(stripFrame), hist \(hist) \(histFrame), rail \(rail) \(railFrame), canvas \(canvas), collapsed \(collapsed)"
+            "strip \(strip) \(stripFrame), hist \(hist) \(histFrame), canvas \(canvas), collapsed \(collapsed)"
         }
     }
 
@@ -114,17 +109,13 @@ final class FullScreenExitChromeTests: XCTestCase {
         }
         let strip = content.filmstripForTesting
         let hist = content.histogramOverlayForTesting
-        let rail = content.editRailForTesting
         let stripShows = shows(strip)
         let histShows = shows(hist)
-        let railShows = shows(rail)
         var collapsed: [String] = []
         if contentCollapsed(strip) { collapsed.append("strip") }
-        if contentCollapsed(rail) { collapsed.append("rail") }
         if let surface = hist as? HUDSurfaceView, contentCollapsed(surface) { collapsed.append("hist") }
         return Chrome(strip: stripShows, stripFrame: stripShows ? inRoot(strip) : .zero,
                       hist: histShows, histFrame: histShows ? inRoot(hist) : .zero,
-                      rail: railShows, railFrame: railShows ? inRoot(rail) : .zero,
                       canvas: inRoot(viewer.imageViewForTesting), collapsed: collapsed)
     }
 
@@ -170,10 +161,9 @@ final class FullScreenExitChromeTests: XCTestCase {
         Prefs.filmstripVisibleInWindowed = false
         Prefs.viewerHistogramVisible = false
         Prefs.filmstripPinnedFullscreen = false
-        Prefs.editRailPinnedFullscreen = true
         let viewer = try makeViewer()
         defer { viewer.close() }
-        // The window rail's band ends at the pill: the same pill before
+        // The pill belongs to the photo: the same pill before
         // and after (the round trip moves to another photo).
         viewer.dispatch(.nextImage)
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
@@ -191,10 +181,9 @@ final class FullScreenExitChromeTests: XCTestCase {
         Prefs.filmstripVisibleInWindowed = true
         Prefs.viewerHistogramVisible = true
         Prefs.filmstripPinnedFullscreen = true
-        Prefs.editRailPinnedFullscreen = true
         let viewer = try makeViewer()
         defer { viewer.close() }
-        // The window rail's band ends at the pill: the same pill before
+        // The pill belongs to the photo: the same pill before
         // and after (the round trip moves to another photo).
         viewer.dispatch(.nextImage)
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))

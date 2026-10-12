@@ -141,6 +141,41 @@ final class ViewerSplitController: NSSplitViewController {
         onInspectorShownChanged?(shown)
     }
 
+    // MARK: Edit mode makes room for the tool panel (spec 26 §5)
+
+    /// The canvas needs the tool panel column (280 + 16) plus the crop handle
+    /// margins and a strip of photo. Narrower than this, the inspector steps
+    /// aside while editing (at the 480 pt window minimum the canvas is only
+    /// 240 pt with it open, and the panel would run off the left edge).
+    static let canvasWidthForEditPanel: CGFloat = 360
+    /// True while this controller has collapsed the inspector for editing.
+    private(set) var inspectorCollapsedForEdit = false
+    private var isEditing = false
+
+    /// Edit mode started or ended. On end, an inspector we collapsed returns.
+    func editModeChanged(active: Bool) {
+        isEditing = active
+        guard !active, inspectorCollapsedForEdit else { return }
+        inspectorCollapsedForEdit = false
+        // The pref was never touched, so it still says "open".
+        inspectorItem.isCollapsed = false
+        inspectorShown(true)
+    }
+
+    /// Called on every edit-mode layout. Collapses the inspector when the
+    /// canvas is too narrow (also when ⌘I opens it again mid-edit); never
+    /// re-opens it until edit mode ends (no flip-flop at the threshold). Not `setInspectorShown`: that writes the pref.
+    func editCanvasWidth(_ width: CGFloat) {
+        guard isEditing, isInspectorShown, width > 0,
+              width < Self.canvasWidthForEditPanel else { return }
+        inspectorCollapsedForEdit = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            inspectorItem.isCollapsed = true
+        }
+        inspectorShown(false)
+    }
+
     // MARK: Full screen
 
     /// Remembers the state, then collapses with no animation.

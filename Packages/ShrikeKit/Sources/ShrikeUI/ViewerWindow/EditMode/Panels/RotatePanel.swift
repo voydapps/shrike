@@ -2,7 +2,7 @@
 //  RotatePanel.swift
 //  ShrikeUI
 //
-//  Right-rail Rotate tool panel. Spec
+//  Right-side Rotate tool panel. Spec
 //  Quick ±90° / 180° buttons plus a ±45° free-rotate slider with auto-crop
 //  toggle.
 //
@@ -37,7 +37,6 @@ final class RotatePanel: NSView {
     /// Fired when the slider reset to 0.
     var onReset: (() -> Void)?
     /// Fired when the user clicks Apply.
-    var onApply: (() -> Void)?
     /// Fired when the auto-crop toggle flips.
     var onAutoCropChanged: ((Bool) -> Void)?
 
@@ -64,7 +63,6 @@ final class RotatePanel: NSView {
         action: nil
     )
     private let resetButton = NSButton(title: "Reset", target: nil, action: nil)
-    private let applyButton = NSButton(title: "Apply", target: nil, action: nil)
 
     init() {
         super.init(frame: .zero)
@@ -113,12 +111,7 @@ final class RotatePanel: NSView {
         resetButton.target = self
         resetButton.action = #selector(handleReset(_:))
 
-        applyButton.bezelStyle = .rounded
-        applyButton.keyEquivalent = "\r"
-        applyButton.useAccentFill()   // one accent
-        applyButton.translatesAutoresizingMaskIntoConstraints = false
-        applyButton.target = self
-        applyButton.action = #selector(handleApply(_:))
+        angleSlider.setAccessibilityLabel("Rotation angle, degrees")
 
         let stack = NSStackView(views: [
             sectionLabel("Quick"),
@@ -128,7 +121,6 @@ final class RotatePanel: NSView {
             angleLabel,
             autoCropCheckbox,
             resetButton,
-            applyButton,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -145,7 +137,6 @@ final class RotatePanel: NSView {
             angleSlider.widthAnchor.constraint(equalTo: stack.widthAnchor),
             angleLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             resetButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            applyButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
 
@@ -165,6 +156,7 @@ final class RotatePanel: NSView {
     @objc private func handleAngleSlider(_ sender: NSSlider) {
         angle = max(-45, min(45, sender.doubleValue))
         angleLabel.stringValue = String(format: "%.1f°", angle)
+        angleSlider.setAccessibilityValueDescription(String(format: "%.1f degrees", angle))
         onAngleChanged?(angle)
 
         // 500 ms idle-commit — matches the coalescer rule.
@@ -198,12 +190,6 @@ final class RotatePanel: NSView {
         onReset?()
     }
 
-    @objc private func handleApply(_ sender: NSButton) {
-        // Ensure the committed value is flushed before Apply runs.
-        idleCommitTask?.cancel()
-        onAngleCommitted?(angle)
-        onApply?()
-    }
 
     // MARK: - Public setters
 
@@ -211,6 +197,7 @@ final class RotatePanel: NSView {
         angle = max(-45, min(45, degrees))
         angleSlider.doubleValue = angle
         angleLabel.stringValue = String(format: "%.1f°", angle)
+        angleSlider.setAccessibilityValueDescription(String(format: "%.1f degrees", angle))
     }
 
     func setAutoCrop(_ enabled: Bool) {
@@ -220,7 +207,6 @@ final class RotatePanel: NSView {
     // MARK: - Test seams
 
     internal var _angleSlider: NSSlider { angleSlider }
-    internal var _applyButton: NSButton { applyButton }
     internal var _quickCW: NSButton { quickCW }
     internal var _quickCCW: NSButton { quickCCW }
     internal var _quickHalf: NSButton { quickHalf }

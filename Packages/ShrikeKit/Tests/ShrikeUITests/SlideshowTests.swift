@@ -156,7 +156,11 @@ final class SlideshowTests: XCTestCase {
         XCTAssertEqual(s.allTitle, "All 180 images in “Italy 2026”")
         XCTAssertEqual(s.selectedTitle, "The 12 selected images")
         XCTAssertTrue(s.offersSelection)
-        XCTAssertFalse(SlideshowScope(allCount: 5, folderName: "x", selectedCount: 1).offersSelection)
+        let one = SlideshowScope(allCount: 5, folderName: "x", selectedCount: 1)
+        XCTAssertTrue(one.offersSelection, "offered from 1")
+        XCTAssertFalse(one.defaultsToSelection, "but not the default")
+        XCTAssertTrue(s.defaultsToSelection)
+        XCTAssertFalse(SlideshowScope(allCount: 5, folderName: "x", selectedCount: 0).offersSelection)
     }
 
     // MARK: Rating in a show reaches the store

@@ -109,7 +109,8 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
             return hasPixels && !edit
         case .editImage:
             // RAW is never written (spec 24 §4.5): edit the JPEG instead.
-            return hasPixels && !edit && !(item?.isRAWShown ?? false)
+            // A photo that can't be opened has nothing to edit (spec 26 §2).
+            return hasPixels && !edit && !(item?.isRAWShown ?? false) && !contentRoot.isShowingDecodeError
         case .zoomIn:
             return hasPixels && contentRoot.imageView.canZoomIn
         case .zoomOut:
@@ -118,13 +119,14 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
             return hasPixels
         case .editCrop, .editRotate, .editResize, .editColor,
              .levels, .autoContrast, .autoColor:
-            // The edit tools never open on a RAW view (spec 24 §4.5).
-            return hasPixels && !(item?.isRAWShown ?? false)
+            // The edit tools never open on a RAW view (spec 24 §4.5), nor on a decode error.
+            return hasPixels && !(item?.isRAWShown ?? false) && !contentRoot.isShowingDecodeError
         case .resetEdits:
             return edit && contentRoot.editModeController.hasPendingEdits
         case .toggleFilmstrip:
-            return !edit
-        case .toggleInspector, .toggleHistogram, .toggleEditRail,
+            // A window keeps its strip in edit mode (spec 25 §3.3); full screen has none then.
+            return !edit || contentRoot.windowMode == .windowed
+        case .toggleInspector, .toggleHistogram,
              .toggleFullScreen, .showInBrowser, .goToFolder:
             return true
         case .unpinAllPanels:
@@ -239,12 +241,10 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         contentRoot.toast(ToastContent(ShowInMaps.noLocation))
     }
 
-    /// "Show …" / "Hide …" by the setting (a faded or
-    /// squeezed-out rail still reads "Hide"); nil for other commands.
+    /// "Show …" / "Hide …" by the setting; nil for other commands.
     func panelMenuTitle(_ command: ShrikeCommand) -> String? {
         switch command {
         case .toggleInspector: return inspectorMenuTitle()
-        case .toggleEditRail: return contentRoot.isEditRailShown ? "Hide Edit Rail" : "Show Edit Rail"
         case .toggleFilmstrip: return contentRoot.isFilmstripShown ? "Hide Filmstrip" : "Show Filmstrip"
         case .toggleHistogram: return contentRoot.isHistogramShown ? "Hide Histogram" : "Show Histogram"
         case .toggleRAWFile: return rawSwitchMenuTitle
@@ -256,7 +256,6 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         switch command {
         case .loupe: return contentRoot.isLoupeActive ? .on : .off
         case .toggleHistogram: return contentRoot.isHistogramShown ? .on : .off
-        case .toggleEditRail: return contentRoot.isEditRailShown ? .on : .off
         case .rate0, .rate1, .rate2, .rate3, .rate4, .rate5, .toggleFlag:
             return cullingMenuState(for: command)
         default: return .off

@@ -23,6 +23,7 @@ final class ComparePaneView: NSView {
     var isFocused = false {
         didSet {
             focusRing.isHidden = !isFocused
+            footerLabel.alphaValue = isFocused ? 1 : 0.6
             setAccessibilitySelected(isFocused)
         }
     }
@@ -42,7 +43,7 @@ final class ComparePaneView: NSView {
         footer.autoresizingMask = [.width, .maxYMargin]
         footerLabel.font = .systemFont(ofSize: CompareFooter.fontSize)
         footerLabel.textColor = .labelColor
-        footerLabel.lineBreakMode = .byTruncatingMiddle
+        footerLabel.lineBreakMode = .byTruncatingTail
         footerLabel.maximumNumberOfLines = 1
         footerLabel.cell?.truncatesLastVisibleLine = true
         footerLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -84,7 +85,41 @@ final class ComparePaneView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     /// Footer text with the stars and flag in their badge colours.
-    func setFooter(_ text: String) {
+    func setFooter(_ text: String, name: String? = nil) {
+        footerFullText = text
+        footerName = name
+        footer.toolTip = name
+        refitFooter()
+    }
+
+    private var footerFullText = ""
+    private var footerName: String?
+
+    override func layout() {
+        super.layout()
+        refitFooter()
+    }
+
+    /// The name is cut with `FileNameFit` so the rest of the footer stays whole.
+    private func refitFooter() {
+        var text = footerFullText
+        let available = footer.bounds.width - 2 * WindowCornerInset.side
+        if let name = footerName, !name.isEmpty, text.hasPrefix(name), available > 0 {
+            let suffix = String(text.dropFirst(name.count))
+            let font = NSFont.systemFont(ofSize: CompareFooter.fontSize)
+            let fitted = FileNameFit.fit(name) {
+                (($0 + suffix) as NSString).size(withAttributes: [.font: font]).width <= available
+            }
+            text = fitted + suffix
+        }
+        if text == renderedFooterText, !text.isEmpty { return }
+        renderedFooterText = text
+        applyFooterText(text)
+    }
+
+    private var renderedFooterText = ""
+
+    private func applyFooterText(_ text: String) {
         let attributed = NSMutableAttributedString(string: text, attributes: [
             .font: NSFont.systemFont(ofSize: CompareFooter.fontSize),
             .foregroundColor: NSColor.labelColor,
@@ -105,6 +140,8 @@ final class ComparePaneView: NSView {
         setAccessibilityLabel(text)
     }
 
+    var footerAlphaForTesting: CGFloat { footerLabel.alphaValue }
+
     func showError(_ text: String?) {
         errorLabel.stringValue = text ?? ""
         errorLabel.isHidden = text == nil
@@ -118,12 +155,12 @@ final class ComparePaneView: NSView {
     }
 }
 
-/// The 2 pt inner border of the focused pane. Its colour follows the
+/// The 3 pt inner border of the focused pane. Its colour follows the
 /// accent colour and the appearance.
 @MainActor
 final class CompareFocusRingView: NSView {
 
-    static let width: CGFloat = 2
+    static let width: CGFloat = 3
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)

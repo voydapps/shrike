@@ -113,9 +113,9 @@ final class HistogramLazyBuildTests: XCTestCase {
             "large-open": NSRect(x: 1464, y: 92, width: 320, height: 180),
             "large-toggled": NSRect(x: 1464, y: 92, width: 320, height: 180),
             "fullscreen": NSRect(x: 868, y: 16, width: 320, height: 180),
-            // Edit mode hides the docked strip, so the
-            // histogram drops to the 16 pt bottom inset while editing.
-            "edit-toggled": NSRect(x: 452, y: 16, width: 248, height: 139.5),
+            // Spec 25: the docked strip stays in a window's edit mode, so the
+            // histogram stays above it; the edit panel is 16 pt from the edge (x 444).
+            "edit-toggled": NSRect(x: 444, y: 92, width: 248, height: 139.5),
             "edit-after": NSRect(x: 736, y: 92, width: 248, height: 139.5),
         ]
         let now = try frames()

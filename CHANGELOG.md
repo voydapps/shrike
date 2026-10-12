@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.2.7 - 2026-10-12
+### New
+- Help > Keyboard Shortcuts (Cmd+/) opens a window you can search. Type a name, a key or a section. It stays open next to your photos.
+- Menus now show the plain keys, such as Q for Flag and 1 to 5 for the stars. They sit on the right of the menu item.
+- In Compare, Tab and Shift+Tab move from one pane to the next. The active pane has a thicker ring. The window title tells you about the keys.
+- The Browser filter has a Flag choice: Any, Flagged or Not flagged. Unrated is now the second line of the Rating choice.
+- The right-click menu in the Browser has Copy to Folder, Move to Folder and Rename.
+- A photo that can't be opened shows two buttons: Next and Reveal in Finder.
+- Slideshow and contact sheet start with your photos when you select two or more.
+- Opening a folder that is already open brings its window forward. No second window.
+### Changed
+- On the Mac keys, only Cmd+Delete moves a photo to the Trash. A plain Delete shows a short hint, once.
+- The Trash message with Undo stays 6 seconds.
+- Edit mode has one way to finish. Done saves everything. Cancel throws it away. Apply is only on Crop and Resize, and Done also applies a size you typed.
+- In edit mode the tool panel is as tall as its content.
+- The tools to edit (Crop, Rotate, Resize, Color, Levels) are in the bar at the top, and in full screen in the bar at the bottom. Point at an icon to see its name. The tool strip on the left is gone, with its menu item and its setting. Edit Image is now also in the right-click menu.
+- In a window, the filmstrip stays in edit mode. Click another photo to edit it next.
+- Long file names keep their number and their end, so IMG_4245_new.jpg and IMG_4245.jpg look different. This holds in the position pill of the viewer too. Point at a name to see all of it.
+- The inspector in full screen has bigger text and the same yellow stars as the Browser. The Clear link next to the stars gets an underline when you point at it.
+### Fixed
+- After you rotate a photo, the size in the title, the inspector and Actual Size now match the photo you see. The Browser list (Dimensions column and sort) and the Browser inspector show the new size too, also after a save, an undo or a change made outside Shrike.
+- In the Browser right-click menu, Rename is off when you select several photos. Use Batch for those.
+- A file smaller than 1 KB shows its size in bytes, not 0 KB.
+- A damaged photo shows a warning sign in the filmstrip and in the Browser inspector. The error text fits its box.
+- VoiceOver reads each thumbnail as one item, such as "IMG_4222.JPG, 3 stars, flagged", in the filmstrip too. The edit fields have names too.
+- The text on the "can't open" card wraps onto two lines instead of being cut.
+- In edit mode, Return in a size field sets the value. The next Return is Done.
+- The viewer inspector no longer shows the stars and flag of the previous photo after you open another one from the Browser.
+- Rename shows F2, not Cmd+F2, in the Browser right-click menu, and F2 is shown in the viewer right-click menu. Actual Size and Edit Image show only their Cmd key.
+- Share works in the Browser right-click menu.
+- The Browser list shows the new size of a file that was changed without a new date.
+
 ## 0.2.6 - 2026-10-11
 ### Faster
 - Scrolling fast through a big folder no longer leaves work behind. Thumbnails for photos you scrolled past are not made any more. In a test with 1000 photos, the work after the scroll stopped went from about 3 seconds to under 1 second. The processor load in the next 12 seconds fell from about 17 seconds of work to 5.

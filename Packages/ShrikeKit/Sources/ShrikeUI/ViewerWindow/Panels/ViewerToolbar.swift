@@ -297,6 +297,12 @@ final class ViewerToolbar: HUDSurfaceView {
         buttonsByAction[Self.key(for: action)] = btn
     }
 
+    /// Why Edit is off, as a second tooltip line (nil: none).
+    func setEditExtraLine(_ line: String?) {
+        guard let btn = buttonsByAction[Self.key(for: .openEditMode)] else { return }
+        LiveTooltips.shared.setExtraLine(line, on: btn)
+    }
+
     private func addSeparator() {
         let v = NSView()
         v.translatesAutoresizingMaskIntoConstraints = false

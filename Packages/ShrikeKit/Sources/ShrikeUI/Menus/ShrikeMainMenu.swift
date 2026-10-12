@@ -217,6 +217,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
 
     public func menuNeedsUpdate(_ menu: NSMenu) {
         apply(surface: MenuSurface.of(NSApp?.mainWindow))
+        applyKeyHints(opening: menu)
         switch menu {
         case openRecentMenu: fillOpenRecent()
         case copyToMenu: fillDestinations(copyToMenu, command: .copyToFolder)
@@ -311,6 +312,65 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         menu.addItem(submenuItem(windowMenuBuilt()))
         menu.addItem(submenuItem(helpMenuBuilt()))
         apply(surface: surface)
+        // The hints are NOT drawn here: that cost ~4 ms of the `mainMenu`
+        // launch signpost. Each top-level menu draws its own the first time
+        // it opens (`menuNeedsUpdate`), and again after a preset switch
+        // (spec 25 §13.1).
+        for item in menu.items {
+            guard let sub = item.submenu, sub !== servicesMenu, sub !== windowMenu, sub !== helpMenu,
+                  sub.items.contains(where: { $0.shrikeCommand != nil || $0.submenu != nil }) else { continue }
+            if sub.delegate == nil { sub.delegate = self }
+            hintMenus.append(sub)
+        }
+        presetObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.hintedMenus.isEmpty,
+                      self.hintedPreset != ShortcutTable.livePreset else { return }
+                // Redraw the menus that were opened; the others draw when they open.
+                self.hintedMenus.removeAll()
+                self.hintedPreset = nil
+            }
+        }
+    }
+
+    private var presetObserver: (any NSObjectProtocol)?
+    private var hintedPreset: ShortcutPreset?
+    /// The top-level menus that can show hints, and those already drawn for `hintedPreset`.
+    private var hintMenus: [NSMenu] = []
+    private var hintedMenus: Set<ObjectIdentifier> = []
+
+    /// Items that have their own key on some surface: they get no hint
+    /// (hidden ones have their key removed for now).
+    private var keyedItems: Set<ObjectIdentifier> {
+        Set(surfaceItems.filter { !$0.key.isEmpty }.map { ObjectIdentifier($0.item) })
+    }
+
+    /// Bare keys drawn in the titles (display only). Draws every menu that
+    /// has not been drawn for the live preset (tests, preset switch).
+    func applyKeyHints() {
+        let preset = ShortcutTable.livePreset
+        if hintedPreset != preset { hintedMenus.removeAll() }
+        hintedPreset = preset
+        let keyed = keyedItems
+        for sub in hintMenus where !hintedMenus.contains(ObjectIdentifier(sub)) {
+            MenuKeyHints.apply(to: sub, context: .viewer, preset: preset,
+                               hasOwnKey: { !$0.keyEquivalent.isEmpty || keyed.contains(ObjectIdentifier($0)) })
+            hintedMenus.insert(ObjectIdentifier(sub))
+        }
+    }
+
+    /// Draws the hints of one top-level menu, once per preset.
+    private func applyKeyHints(opening opened: NSMenu) {
+        guard hintMenus.contains(where: { $0 === opened }) else { return }
+        let preset = ShortcutTable.livePreset
+        if hintedPreset != preset { hintedMenus.removeAll(); hintedPreset = preset }
+        guard !hintedMenus.contains(ObjectIdentifier(opened)) else { return }
+        let keyed = keyedItems
+        MenuKeyHints.apply(to: opened, context: .viewer, preset: preset,
+                           hasOwnKey: { !$0.keyEquivalent.isEmpty || keyed.contains(ObjectIdentifier($0)) })
+        hintedMenus.insert(ObjectIdentifier(opened))
     }
 
     private func submenuItem(_ submenu: NSMenu) -> NSMenuItem {
@@ -487,7 +547,6 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         add(.toggleInspector, to: m)
         add(.toggleFilmstrip, to: m, .viewer)
         add(.toggleHistogram, to: m, .viewer)
-        add(.toggleEditRail, to: m, .viewer)
         add(.unpinAllPanels, to: m, .viewer)
         m.addItem(.separator())
         add(.slideshow, to: m)

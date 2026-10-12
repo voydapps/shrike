@@ -33,6 +33,17 @@ final class SlideshowSheetTests: XCTestCase {
         XCTAssertEqual(SlideshowIntervalFormatter.clamp("7"), 7)
     }
 
+    // Spec 25 §9.
+    func testDefaultRadioFollowsTheSelectionCount() {
+        let settings = SlideshowSettings.fromPrefs()
+        for (selected, selectedOn) in [(0, false), (1, false), (2, true), (12, true)] {
+            let scope = SlideshowScope(allCount: 25, folderName: "F", selectedCount: selected)
+            let sheet = SlideshowSheet.makeForTesting(scope: scope, settings: settings) { _ in }
+            XCTAssertEqual(sheet.selectedRadioForTesting.state == .on, selectedOn, "\(selected) selected")
+            XCTAssertEqual(sheet.allRadioForTesting.state == .on, !selectedOn, "\(selected) selected")
+        }
+    }
+
     func testStepperRangeIsOneToSixty() {
         var settings = SlideshowSettings.fromPrefs()
         settings.intervalSec = 4

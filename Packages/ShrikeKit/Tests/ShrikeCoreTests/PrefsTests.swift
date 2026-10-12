@@ -48,7 +48,6 @@ final class PrefsTests: XCTestCase {
                       "docked filmstrip visible by default in windowed mode")
         XCTAssertEqual(Prefs.filmstripHeightPt, 80)
         XCTAssertFalse(Prefs.filmstripPinnedFullscreen)
-        XCTAssertFalse(Prefs.editRailPinnedFullscreen)
         XCTAssertFalse(Prefs.exifPanelPinnedFullscreen)
         XCTAssertEqual(Prefs.chromeFadeOutDelayMs, 1500)
 
@@ -146,20 +145,33 @@ final class PrefsTests: XCTestCase {
 
     func testChromePinStates_roundtrip() {
         Prefs.filmstripPinnedFullscreen = true
-        Prefs.editRailPinnedFullscreen = true
         Prefs.exifPanelPinnedFullscreen = true
 
         XCTAssertTrue(Prefs.filmstripPinnedFullscreen)
-        XCTAssertTrue(Prefs.editRailPinnedFullscreen)
         XCTAssertTrue(Prefs.exifPanelPinnedFullscreen)
 
         Prefs.filmstripPinnedFullscreen = false
-        Prefs.editRailPinnedFullscreen = false
         Prefs.exifPanelPinnedFullscreen = false
 
         XCTAssertFalse(Prefs.filmstripPinnedFullscreen)
-        XCTAssertFalse(Prefs.editRailPinnedFullscreen)
         XCTAssertFalse(Prefs.exifPanelPinnedFullscreen)
+    }
+
+    /// Spec 26 §4.1: the three keys of the removed tool strip are deleted at
+    /// launch; a second call is harmless; other settings are untouched.
+    func testRemoveRetiredEditRailKeys_clearsAllThreeAndIsIdempotent() {
+        let keys = Prefs.retiredEditRailKeysForTesting
+        XCTAssertEqual(keys.count, 3)
+        for key in keys { ShrikeDefaults.store.set(true, forKey: key) }
+        Prefs.filmstripPinnedFullscreen = true
+        defer { Prefs.filmstripPinnedFullscreen = false }
+
+        Prefs.removeRetiredEditRailKeys()
+        for key in keys { XCTAssertNil(ShrikeDefaults.store.object(forKey: key), key) }
+        XCTAssertTrue(Prefs.filmstripPinnedFullscreen, "other settings stay")
+
+        Prefs.removeRetiredEditRailKeys()
+        for key in keys { XCTAssertNil(ShrikeDefaults.store.object(forKey: key), key) }
     }
 
     func testChromeFadeOutDelayMs_roundtripAndClamp() {
@@ -255,7 +267,6 @@ final class PrefsTests: XCTestCase {
         Prefs.filmstripVisibleInWindowed = false
         Prefs.filmstripHeightPt = 96
         Prefs.filmstripPinnedFullscreen = true
-        Prefs.editRailPinnedFullscreen = true
         Prefs.exifPanelPinnedFullscreen = true
         Prefs.chromeFadeOutDelayMs = 500
         Prefs.editJPEGQualityDefault = 78
@@ -282,7 +293,6 @@ final class PrefsTests: XCTestCase {
         XCTAssertTrue(Prefs.filmstripVisibleInWindowed)
         XCTAssertEqual(Prefs.filmstripHeightPt, 80)
         XCTAssertFalse(Prefs.filmstripPinnedFullscreen)
-        XCTAssertFalse(Prefs.editRailPinnedFullscreen)
         XCTAssertFalse(Prefs.exifPanelPinnedFullscreen)
         XCTAssertEqual(Prefs.chromeFadeOutDelayMs, 1500)
         XCTAssertEqual(Prefs.editJPEGQualityDefault, 92)

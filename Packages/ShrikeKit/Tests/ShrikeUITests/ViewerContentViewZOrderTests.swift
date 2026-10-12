@@ -6,7 +6,7 @@
 //  the bottom→top order of the tracked surfaces must be:
 //
 //      image < canvas dim
-//          < filmstrip < toolbar < editRail < inspector
+//          < filmstrip < toolbar < inspector
 //          < position overlay < PREVIEW badge < error overlay
 //
 //  Chrome panels land between canvasDim and the feedback surfaces so
@@ -24,7 +24,7 @@
 //      the position overlay pill, and the PREVIEW badge all painted on
 //      top of it.
 //    * The four chrome panels (filmstrip /
-//      toolbar / editRail / inspector) slot between canvasDim and
+//      toolbar / inspector) slot between canvasDim and
 //      navPositionOverlay, in that exact sibling order. Getting this
 //      wrong means a pinned inspector panel hides the PREVIEW pill, or
 //      the canvas dim paints over a pinned filmstrip.
@@ -44,7 +44,7 @@ final class ViewerContentViewZOrderTests: XCTestCase {
         content.layoutSubtreeIfNeeded()
         // The full-screen capsule ("toolbar") is built on
         // the first full-screen entry, in its slot between the filmstrip
-        // and the edit rail.
+        // and the inspector.
         XCTAssertFalse(content.feedbackPipelineSubviewOrderForTesting().contains("toolbar"))
         content.windowMode = .fullscreen
         content.layoutSubtreeIfNeeded()
@@ -54,7 +54,6 @@ final class ViewerContentViewZOrderTests: XCTestCase {
             "canvasDim",
             "filmstrip",
             "toolbar",
-            "editRail",
             "inspector",
             "navPositionOverlay",
             "previewBadge",
@@ -65,7 +64,7 @@ final class ViewerContentViewZOrderTests: XCTestCase {
             content.feedbackPipelineSubviewOrderForTesting(),
             expected,
             "z-order must be image < canvasDim "
-            + "< filmstrip < toolbar < editRail < inspector "
+            + "< filmstrip < toolbar < inspector "
             + "< navPositionOverlay < previewBadge < errorOverlay"
         )
     }
@@ -109,11 +108,9 @@ final class ViewerContentViewZOrderTests: XCTestCase {
         )
     }
 
-    /// The crop overlay's dim outside the crop rect sat over
-    /// the edit rail, so its glyphs (the active tool's accent too) looked
-    /// disabled. The chrome now paints above the overlay, and the rail in
-    /// a window rests at the label colour; the active tool takes the accent.
-    func testEditRailIsAboveTheCropDimAndUsesTheLabelColour() {
+    /// The crop overlay's dim outside the crop rect sat over the chrome
+    /// panels, so their glyphs looked disabled. The chrome paints above the overlay.
+    func testChromeIsAboveTheCropDim() {
         let services = ShrikeServices.makeDefault()
         let content = ViewerContentView(services: services)
         content.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
@@ -128,33 +125,11 @@ final class ViewerContentViewZOrderTests: XCTestCase {
         let order = content.editModeSubviewOrderForTesting(includingChrome: true)
         let crop = order.firstIndex(of: "cropOverlay")
         XCTAssertNotNil(crop)
-        for chrome in ["filmstrip", "editRail", "navPositionOverlay"] {
+        for chrome in ["filmstrip", "navPositionOverlay"] {
             let index = order.firstIndex(of: chrome)
             XCTAssertNotNil(index, chrome)
             XCTAssertGreaterThan(index ?? -1, crop ?? Int.max, "\(chrome) paints above the crop dim: \(order)")
         }
         XCTAssertLessThan(order.firstIndex(of: "imageView") ?? Int.max, crop ?? -1)
-
-        let rail = content.editRailForTesting
-        XCTAssertEqual(rail.buttonTintColorForTesting(), NSColor.labelColor.withAlphaComponent(0.85),
-                       "the window tint is the label colour at 85 %")
-        XCTAssertEqual(rail.activeToolsForTesting(), [.crop])
-        let buttons = Self.railButtons(in: rail)
-        XCTAssertFalse(buttons.isEmpty)
-        for button in buttons {
-            XCTAssertEqual(button.contentTintColor,
-                           button.isActiveTool ? .labelColor : NSColor.labelColor.withAlphaComponent(0.85),
-                           button.toolTip ?? "")
-            XCTAssertEqual(button.alphaValue, 1, "no rail button is faded")
-            XCTAssertTrue(button.isEnabled)
-        }
-        XCTAssertEqual(buttons.filter(\.isActiveTool).count, 1)
-    }
-
-    private static func railButtons(in view: NSView) -> [RailButton] {
-        view.subviews.flatMap { sub -> [RailButton] in
-            if let button = sub as? RailButton { return [button] }
-            return railButtons(in: sub)
-        }
     }
 }

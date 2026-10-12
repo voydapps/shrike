@@ -17,7 +17,6 @@ final class FullScreenChromeTests: XCTestCase {
 
     private let pinKeys = [
         "shrike.viewer.filmstrip.pinnedFullscreen",
-        "shrike.viewer.editRail.pinnedFullscreen",
         "shrike.viewer.exifPanel.pinnedFullscreen",
         "shrike.viewer.histogramVisible",
     ]
@@ -105,17 +104,15 @@ final class FullScreenChromeTests: XCTestCase {
             XCTAssertFalse(content.isHoveredForTesting(panel))
         }
         content.togglePanel(.filmstrip)
-        content.togglePanel(.editRail)
         content.togglePanel(.inspector)
         content.layoutSubtreeIfNeeded()
         for view in [content.filmstripForTesting, content.toolbarForTesting,
-                     content.editRailForTesting, content.inspectorForTesting] as [NSView] {
+                     content.inspectorForTesting] as [NSView] {
             // The inspector's top is 12 pt below the safe-area top.
             let limit: CGFloat = view === content.inspectorForTesting ? 900 - 12 : 900 - 24
             XCTAssertLessThanOrEqual(view.frame.maxY, limit + 0.5, "\(type(of: view)) stays out of the menu-bar zone")
         }
         content.togglePanel(.filmstrip)
-        content.togglePanel(.editRail)
         content.togglePanel(.inspector)
     }
 
@@ -192,10 +189,10 @@ final class FullScreenChromeTests: XCTestCase {
         let content = makeContent()
         content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 97))
         XCTAssertFalse(content.isHoveredForTesting(.filmstrip), "the bottom zone is 96 pt")
-        content.evaluateZonesForTesting(at: NSPoint(x: 57, y: 450))
-        XCTAssertFalse(content.isHoveredForTesting(.editRail), "the side zones are 56 pt")
-        content.evaluateZonesForTesting(at: NSPoint(x: 55, y: 450))
-        XCTAssertTrue(content.isHoveredForTesting(.editRail))
+        content.evaluateZonesForTesting(at: NSPoint(x: 1440 - 57, y: 450))
+        XCTAssertFalse(content.isHoveredForTesting(.inspector), "the right zone is 56 pt")
+        content.evaluateZonesForTesting(at: NSPoint(x: 1440 - 55, y: 450))
+        XCTAssertTrue(content.isHoveredForTesting(.inspector))
     }
 
     func testThePointerOnTheCapsuleKeepsTheWholeStack() {
@@ -221,34 +218,10 @@ final class FullScreenChromeTests: XCTestCase {
         content.togglePanel(.filmstrip)
         XCTAssertFalse(visiblePins(in: content).isEmpty, "precondition: full screen draws pins when panels show")
         content.windowMode = .windowed
-        Prefs.editRailVisibleInWindowed = true
         content.layoutSubtreeIfNeeded()
         XCTAssertTrue(visiblePins(in: content).isEmpty, "no pin glyph in a window")
         content.windowMode = .fullscreen
         content.togglePanel(.filmstrip)
-        ShrikeDefaults.store.removeObject(forKey: "shrike.viewer.editRail.visibleInWindowed")
-    }
-
-    // MARK: Rail pin row does not overlap Crop
-
-    func testVector4_RailPinHasItsOwnRow() {
-        let content = makeContent()
-        content.togglePanel(.editRail)
-        content.layoutSubtreeIfNeeded()
-        let rail = content.editRailForTesting
-        rail.layoutSubtreeIfNeeded()
-        // The pin lives in its own row view; read it in the
-        // rail's coordinates.
-        let pinView = rail.pinOverlayForTesting
-        let pin = rail.convert(pinView.bounds, from: pinView)
-        let crop = try? XCTUnwrap(rail.buttonFramesForTesting().first)
-        XCTAssertNotNil(crop)
-        XCTAssertFalse(pin.intersects(crop ?? .zero), "the pin does not overlap Crop")
-        XCTAssertGreaterThan(pin.minY, crop?.maxY ?? .infinity, "the pin sits above the first tool")
-        XCTAssertEqual(crop?.height ?? 0, 50, accuracy: 0.5, "Crop is a 48×50 labelled cell")
-        XCTAssertEqual(pin.width, 28, accuracy: 0.5)
-        XCTAssertTrue(rail.bounds.contains(pin), "the row is inside the rail")
-        content.togglePanel(.editRail)
     }
 
     // MARK: ⌘K pins the filmstrip; VoiceOver
@@ -277,7 +250,6 @@ final class FullScreenChromeTests: XCTestCase {
 
     func testPinLabelsNameTheirPanels() {
         let content = makeContent()
-        XCTAssertEqual(content.editRailForTesting.pinOverlayForTesting.accessibilityLabel(), "Pin Edit Rail")
         XCTAssertEqual(content.inspectorForTesting.pinOverlayForTesting.accessibilityLabel(), "Pin Inspector")
         XCTAssertEqual(PinCornerOverlay.hitSize, 28)
     }
@@ -296,21 +268,21 @@ final class FullScreenChromeTests: XCTestCase {
         XCTAssertFalse(content.toolbarForTesting.isHidden)
         XCTAssertFalse(pill.intersects(capsule), "pill \(pill) vs capsule \(capsule)")
         XCTAssertEqual(pill.minX, 12, accuracy: 0.5)
-        content.togglePanel(.editRail)
         content.layoutSubtreeIfNeeded()
-        XCTAssertEqual(content.pillFrameForTesting.minX, 12, accuracy: 0.5, "the pill shares the rail's left edge")
-        XCTAssertGreaterThanOrEqual(content.editRailForTesting.frame.minY - content.pillFrameForTesting.maxY, 12 - 0.5,
-                                    "the rail clears the pill by the 12 pt gap")
-        content.togglePanel(.editRail)
         content.togglePanel(.filmstrip)
     }
 
-    // MARK: Rail inventory
+    // MARK: Left edge (spec 26 §3, vector 12)
 
-    // Adds Levels after Color.
-    func testVector7_RailShowsExactlyCropRotateResizeColorLevels() {
-        let actions = EditRail().buttonActionsForTesting()
-        XCTAssertEqual(actions, [.crop, .selectEditTool(.rotate), .resize, .colorAdjust, .selectEditTool(.levels)])
+    func testTheLeftEdgeRevealsNothing() {
+        let content = makeContent()
+        // `rested: true` is the pointer having waited in the zone already.
+        content.evaluateZonesForTesting(at: NSPoint(x: 8, y: 450), rested: true)
+        for panel in ViewerContentView.PanelKind.allCases {
+            XCTAssertFalse(content.isHoveredForTesting(panel), "\(panel) stays down at the left edge")
+        }
+        XCTAssertTrue(ViewerContentView.zonePanels(at: NSPoint(x: 8, y: 450), in: content.bounds).isEmpty)
+        XCTAssertEqual(ViewerContentView.zonePanels(at: NSPoint(x: 1435, y: 450), in: content.bounds), [.inspector])
     }
 
     // MARK: Histogram

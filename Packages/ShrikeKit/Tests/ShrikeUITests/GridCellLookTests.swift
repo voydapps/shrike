@@ -234,11 +234,28 @@ final class GridCellLookTests: XCTestCase {
         XCTAssertNil(big.view.toolTip)
     }
 
+    // MARK: VoiceOver (spec 25 §7.3)
+
+    func testCellIsOneElementWithWordsAndSelectedState() {
+        let (item, _) = makeCell(name: "IMG_4222.JPG")
+        item.applyBadges(ItemBadges(rating: 3, flagged: true))
+        XCTAssertEqual(item.view.accessibilityLabel(), "IMG_4222.JPG, 3 stars, flagged")
+        XCTAssertTrue(item.view.accessibilityChildren()?.isEmpty ?? true)
+        XCTAssertTrue(item.view.isAccessibilityElement())
+        XCTAssertFalse(item.view.isAccessibilitySelected())
+        item.isSelected = true
+        XCTAssertTrue(item.view.isAccessibilitySelected())
+        item.applyBadges(ItemBadges(rating: 1))
+        XCTAssertEqual(item.view.accessibilityLabel(), "IMG_4222.JPG, 1 star")
+    }
+
     // MARK: Hover
 
     func testHoverChangesNoPixel() {
         let (item, _) = makeCell()
-        XCTAssertTrue(item.view.trackingAreas.isEmpty, "no hover tracking on a cell")
+        // The tooltip adds AppKit-owned tracking areas; the cell adds none of its own.
+        XCTAssertTrue(item.view.trackingAreas.filter { $0.owner === item.view || $0.owner === item }.isEmpty,
+                      "no hover tracking on a cell")
         XCTAssertTrue(CATransform3DIsIdentity(item.view.layer?.transform ?? CATransform3DIdentity), "no hover scale")
     }
 }

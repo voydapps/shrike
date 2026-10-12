@@ -197,6 +197,16 @@ final class InspectorPanel: HUDSurfaceView {
         applyURL(url)
     }
 
+    /// The shown file changed on disk (rotate, save, watcher): the File
+    /// rows (size, dimensions) are read again.
+    func reloadFileFacts() {
+        guard let url = viewModel.url ?? pendingURL else { return }
+        viewModel.url = nil
+        pendingURL = url
+        guard headerReadsEnabled else { return }
+        applyURL(url)
+    }
+
     private func applyURL(_ url: URL?) {
         guard url != viewModel.url else { return }
         viewModel.url = url
@@ -333,7 +343,7 @@ struct InspectorContent: View {
                         .truncationMode(.middle)
                     if let also = model.alsoLine {
                         Text(also)
-                            .font(.system(size: 11))
+                            .font(.system(size: InspectorStyle.smallFontSize))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -341,7 +351,7 @@ struct InspectorContent: View {
                 }
                 if !model.indexSummary.isEmpty {
                     Text(model.indexSummary)
-                        .font(.system(size: 11))
+                        .font(.system(size: InspectorStyle.smallFontSize))
                         .foregroundStyle(.secondary)
                 }
 
@@ -364,7 +374,7 @@ struct InspectorContent: View {
                     VStack(alignment: .leading, spacing: 6) {
                         header("Edits")
                         Text(since)
-                            .font(.system(size: 11))
+                            .font(.system(size: InspectorStyle.smallFontSize))
                             .foregroundStyle(.secondary)
                         Button("Revert to Original…") { model.actions.revert() }
                             .controlSize(.small)
@@ -400,34 +410,34 @@ struct InspectorContent: View {
     }
 
     private var cullingSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             header("Culling")
-            HStack(spacing: 3) {
+            HStack(spacing: 0) {
                 ForEach(1...5, id: \.self) { i in
                     let filled = model.marks.rating >= i
                     Button { model.actions.rate(i) } label: {
                         Image(systemName: filled ? "star.fill" : "star")
-                            .font(.system(size: 14))
-                            .foregroundStyle(filled ? Color(nsColor: .controlAccentColor) : Color.secondary)
+                            .font(.system(size: InspectorStyle.starSize))
+                            .foregroundStyle(filled ? Color(nsColor: InspectorStyle.filledStarColor) : Color.secondary)
+                            .frame(width: InspectorStyle.starHitSize, height: InspectorStyle.starHitSize)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Rate \(i) star\(i == 1 ? "" : "s")")
                 }
                 if model.marks.rating > 0 {
-                    Button("Clear") { model.actions.rate(0) }
-                        .buttonStyle(.link)
-                        .font(.system(size: 11))
+                    InspectorClearLink { model.actions.rate(0) }
                         .padding(.leading, 6)
                 }
             }
             Toggle("Flag", isOn: Binding(get: { model.marks.flagged },
                                          set: { _ in model.actions.toggleFlag() }))
                 .toggleStyle(.checkbox)
-                .font(.system(size: 11))
+                .font(.system(size: InspectorStyle.smallFontSize))
             HStack(spacing: 4) {
                 ForEach(model.marks.tags, id: \.name) { tag in
                     HStack(spacing: 3) {
-                        Text(tag.name).font(.system(size: 11))
+                        Text(tag.name).font(.system(size: InspectorStyle.smallFontSize))
                         Button { model.actions.removeTag(tag.name) } label: {
                             Image(systemName: "xmark.circle.fill").font(.caption)
                         }
@@ -451,18 +461,18 @@ struct InspectorContent: View {
 
     private func header(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 11, weight: .semibold))
+            .font(.system(size: InspectorStyle.smallFontSize, weight: .semibold))
             .foregroundStyle(.secondary)
     }
 
     @ViewBuilder private func section(_ title: String, rows: [InspectorRow]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
             header(title)
             ForEach(rows) { r in
                 HStack(alignment: .firstTextBaseline) {
                     if !r.label.isEmpty {
                         Text(r.label)
-                            .font(.system(size: 11))
+                            .font(.system(size: InspectorStyle.smallFontSize))
                             .foregroundStyle(.secondary)
                         Spacer(minLength: 8)
                     }
@@ -473,13 +483,13 @@ struct InspectorContent: View {
                             NSWorkspace.shared.activateFileViewerSelecting([model.url ?? folder])
                         }
                         .buttonStyle(.plain)
-                        .font(.system(size: 11))
+                        .font(.system(size: InspectorStyle.smallFontSize))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     } else {
                         Text(r.value)
-                            .font(.system(size: 11))
+                            .font(.system(size: InspectorStyle.smallFontSize))
                             .foregroundStyle(.primary)
                             .lineLimit(r.label.isEmpty ? 3 : 1)
                             .truncationMode(.middle)
@@ -501,4 +511,39 @@ private struct TagsAnchorReporter: NSViewRepresentable {
         return view
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// Sizes and colours of the inspector (spec 25 §8): one step up from 11 pt,
+/// the same rating yellow as the Browser cell.
+/// The "Clear" link next to the stars (spec 25 §8): secondary grey, 12 pt,
+/// underlined while the pointer is over it.
+struct InspectorClearLink: View {
+    let action: () -> Void
+    @State private var hovered = false
+
+    /// The link's text; underlined when `hovered`.
+    static func title(hovered: Bool) -> AttributedString {
+        var text = AttributedString("Clear")
+        if hovered { text.underlineStyle = .single }
+        return text
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(Self.title(hovered: hovered))
+                .foregroundStyle(Color.secondary)
+                .font(.system(size: InspectorStyle.smallFontSize))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .accessibilityLabel("Clear rating")
+    }
+}
+
+enum InspectorStyle {
+    static let smallFontSize: CGFloat = 12
+    static let starSize: CGFloat = 16
+    static let starHitSize: CGFloat = 24
+    static var filledStarColor: NSColor { Badges.ratingColor }
 }

@@ -140,7 +140,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
 
     // MARK: - Subviews / layers
 
-    private let label = NSTextField(labelWithString: "")
+    private let label = PillTextLabel()
     /// Hairline sublayer — the visible fill. Single layer; its width is
     /// the only animated property. Inside the pill's `masksToBounds`, so
     /// the 6 pt corner radii clip the ends of the stripe.
@@ -389,7 +389,10 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
         label.font = PillMarks.nameFont
         label.textColor = .white
         label.maximumNumberOfLines = 1
-        label.lineBreakMode = .byTruncatingMiddle
+        // The name is cut by `FileNameFit` (spec 25 §6.2), never by the
+        // system's middle truncation.
+        label.lineBreakMode = .byClipping
+        label.refit = { [weak self] in self?.refitName() }
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         // Marks sit in their own label after the text and never
@@ -573,6 +576,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
             text = position
         }
         baseLabelText = text
+        toolTip = filename?.isEmpty == false ? filename : nil
 
         if isInErrorState {
             clearErrorState(animated: false)
@@ -1609,10 +1613,34 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
 
     /// Text plus marks; white on the HUD.
     private func renderLabel() {
-        label.attributedStringValue = PillMarks.baseText(baseLabelText)
+        label.fullText = PillMarks.baseText(baseLabelText)
+        label.attributedStringValue = PillMarks.baseText(
+            Self.fittedBase(baseLabelText, width: label.hasLayout ? label.bounds.width : 0))
         marksLabel.attributedStringValue = PillMarks.marksText(marks)
         marksLabel.isHidden = marks.isEmpty
         setAccessibilityValue(accessibilityValueString())
+    }
+
+    /// The counter and the name, with the name cut by `FileNameFit` to the
+    /// label's width (frame number and extension stay). A width of 0
+    /// (not laid out yet) or no name keeps the text whole.
+    @MainActor
+    static func fittedBase(_ base: String, width: CGFloat) -> String {
+        guard width > 0, let split = base.range(of: PillMarks.nameSeparator) else { return base }
+        let prefix = String(base[..<split.upperBound])
+        let name = String(base[split.upperBound...])
+        let available = width - PillTextLabel.padding
+        let fitted = FileNameFit.fit(name) {
+            PillMarks.baseText(prefix + $0).size().width <= available
+        }
+        return prefix + fitted
+    }
+
+    /// Called from the label's layout: cut the name again for its width.
+    private func refitName() {
+        guard !isInErrorState, !baseLabelText.isEmpty, label.hasLayout else { return }
+        let text = PillMarks.baseText(Self.fittedBase(baseLabelText, width: label.bounds.width))
+        if !label.attributedStringValue.isEqual(to: text) { label.attributedStringValue = text }
     }
 
     /// The pointer moved over the canvas of a window (spec 24 §5.1): an
@@ -1951,7 +1979,7 @@ public struct PillMarks: Equatable, Sendable {
     @MainActor
     static func baseText(_ base: String) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingMiddle
+        paragraph.lineBreakMode = .byClipping
         let primary: [NSAttributedString.Key: Any] = [
             .foregroundColor: NSColor.white, .paragraphStyle: paragraph,
         ]

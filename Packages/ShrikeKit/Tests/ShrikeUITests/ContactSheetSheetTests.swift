@@ -104,6 +104,17 @@ final class ContactSheetSheetTests: XCTestCase {
 
     // MARK: The sheet's controls
 
+    // Spec 25 §9: 2+ selected default to the selection; 1 or 0 to All.
+    func testDefaultRadioFollowsTheSelectionCount() {
+        let initial = ContactSheetOptions(title: "T", columns: 5, paper: .usLetter, caption: .fileName)
+        for (selected, selectedOn) in [(0, false), (1, false), (2, true), (12, true)] {
+            let scope = ContactSheetScope(allCount: 25, folderName: "F", selectedCount: selected)
+            let sheet = ContactSheetSheet.makeForTesting(scope: scope, initial: initial) { _ in }
+            XCTAssertEqual(sheet.selectedRadioForTesting.state == .on, selectedOn, "\(selected) selected")
+            XCTAssertEqual(sheet.allRadioForTesting.state == .on, !selectedOn, "\(selected) selected")
+        }
+    }
+
     func testControlsMapToOptions() {
         let scope = ContactSheetScope(allCount: 180, folderName: "Italy 2026", selectedCount: 12)
         XCTAssertEqual(scope.allTitle, "All 180 in “Italy 2026”")
@@ -118,7 +129,8 @@ final class ContactSheetSheetTests: XCTestCase {
         XCTAssertEqual(sheet.paperPopupForTesting.titleOfSelectedItem, "US Letter")
         XCTAssertEqual(sheet.captionPopupForTesting.itemTitles, ["None", "File name", "File name and date"])
         XCTAssertEqual(sheet.captionPopupForTesting.titleOfSelectedItem, "File name")
-        XCTAssertEqual(sheet.allRadioForTesting.state, .on)
+        XCTAssertEqual(sheet.allRadioForTesting.state, .off, "12 selected: the selection is the default")
+        XCTAssertEqual(sheet.selectedRadioForTesting.state, .on)
 
         // A typed 12 is clamped to 8 on Export….
         sheet.columnsFieldForTesting.stringValue = "12"

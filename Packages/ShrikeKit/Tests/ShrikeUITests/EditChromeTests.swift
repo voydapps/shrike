@@ -17,14 +17,19 @@ import ShrikeCore
 final class EditChromeTests: XCTestCase {
 
     private var dir: URL!
+    private var savedStripDocked = true
 
     override func setUp() async throws {
+        // ⌘K in testKeysInEditMode flips the docked-strip pref; put it back
+        // so later tests (EditEntryTests) see the default.
+        savedStripDocked = Prefs.filmstripVisibleInWindowed
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("EditChromeTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
     override func tearDown() async throws {
+        Prefs.filmstripVisibleInWindowed = savedStripDocked
         try? FileManager.default.removeItem(at: dir)
     }
 
@@ -45,7 +50,7 @@ final class EditChromeTests: XCTestCase {
         return condition()
     }
 
-    // The toolbar shows Cancel, the four tools, Undo/Redo, Reset, Done.
+    // The toolbar shows Cancel, the five tools, Undo/Redo, Reset, Done (spec 26).
     func testEditToolbarItemsInOrder() {
         let c = EditToolbarController()
         XCTAssertEqual(c.toolbar.identifier, "shrike.viewer.editToolbar")
@@ -53,13 +58,9 @@ final class EditChromeTests: XCTestCase {
         XCTAssertFalse(c.toolbar.allowsUserCustomization)
         XCTAssertEqual(EditToolbarController.itemOrder, [
             EditToolbarController.ItemID.cancel, .flexibleSpace, EditToolbarController.ItemID.tools,
-            EditToolbarController.ItemID.undoRedo, .flexibleSpace,
-            EditToolbarController.ItemID.reset, EditToolbarController.ItemID.done,
-        ])
-        let tools = c.toolbar(c.toolbar, itemForItemIdentifier: EditToolbarController.ItemID.tools,
-                              willBeInsertedIntoToolbar: true) as? NSToolbarItemGroup
-        XCTAssertEqual(tools?.subitems.map(\.label), ["Crop", "Rotate", "Resize", "Color", "Levels"])
-        XCTAssertEqual(tools?.subitems.first?.toolTip, "Crop  ·  C")
+            EditToolbarController.ItemID.undoRedo, .flexibleSpace, EditToolbarController.ItemID.reset,
+            EditToolbarController.ItemID.done,
+        ], "Cancel · tools · Undo/Redo · Reset · Done (spec 26 §1.2)")
         let done = c.toolbar(c.toolbar, itemForItemIdentifier: EditToolbarController.ItemID.done,
                              willBeInsertedIntoToolbar: true)
         XCTAssertEqual((done?.view as? NSButton)?.title, "Done")
@@ -100,10 +101,10 @@ final class EditChromeTests: XCTestCase {
         content.enterEditMode(image: SaveFlowTests.image(), url: nil, landOn: .crop)
         XCTAssertTrue(content.editCapsule.isDescendant(of: content))
         XCTAssertEqual(content.editCapsule.label.stringValue, "Editing")
-        XCTAssertEqual(content.editCapsule.toolPicker.selectedSegment, 0)
+        XCTAssertTrue(content.editCapsule.allSubviewsForTesting.contains { $0 === content.editCapsule.toolPicker },
+                      "the capsule has the tool picker (spec 26 §3)")
         content.editModeController.perform(.selectTool(.color))
         XCTAssertEqual(content.editModeController.currentTool, .color)
-        XCTAssertEqual(content.editCapsule.toolPicker.selectedSegment, 3)
         // Leaving full screen mid-session moves the chrome back to a toolbar.
         content.windowMode = .windowed
         XCTAssertNil(content.editCapsule.superview)

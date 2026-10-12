@@ -136,6 +136,68 @@ final class CompareWindowTests: XCTestCase {
         XCTAssertEqual(CompareFooter.errorText("x.jpg"), "Shrike can't open “x.jpg”.")
     }
 
+    // Spec 25 §11.
+    func testTabKeysAndRingAndSubtitle() async throws {
+        XCTAssertEqual(key(SpecialKey.tab)?.command, .compareFocusNext)
+        XCTAssertEqual(key(SpecialKey.tab, .shift)?.command, .compareFocusPrevious)
+        XCTAssertEqual(CompareFocusRingView.width, 3)
+        XCTAssertEqual(CompareWindow.subtitle(paneCount: 2), "2 images · Tab switches pane · ← → change its photo")
+        XCTAssertEqual(CompareWindow.subtitle(paneCount: 1), "1 image")
+
+        let browser = try await browser(["a.jpg", "b.jpg", "c.jpg"])
+        defer { browser.close() }
+        browser.contentController.select(urls: ["a.jpg", "b.jpg", "c.jpg"].map { dir.appendingPathComponent($0) })
+        browser.perform(.compare)
+        let window = try XCTUnwrap(CompareWindow.current)
+        XCTAssertEqual(window.focusedIndex, 0)
+        window.perform(try XCTUnwrap(key(SpecialKey.tab)))
+        XCTAssertEqual(window.focusedIndex, 1)
+        window.perform(try XCTUnwrap(key(SpecialKey.tab)))
+        window.perform(try XCTUnwrap(key(SpecialKey.tab)))
+        XCTAssertEqual(window.focusedIndex, 0, "wraps")
+        window.perform(try XCTUnwrap(key(SpecialKey.tab, .shift)))
+        XCTAssertEqual(window.focusedIndex, 2, "⇧Tab from the first goes to the last")
+        XCTAssertEqual(window.panes.map(\.view.footerAlphaForTesting), [0.6, 0.6, 1])
+        XCTAssertFalse(window.firstResponder is NSButton, "Tab does not move the key view to a button")
+    }
+
+    /// The unfocused footers are dimmed on screen, not just in a property: the brightest
+    /// footer pixel of an unfocused pane is clearly darker than the focused pane's.
+    func testUnfocusedFooterIsDrawnDimmer() async throws {
+        let browser = try await browser(["a.jpg", "b.jpg"])
+        defer { browser.close() }
+        browser.contentController.select(urls: ["a.jpg", "b.jpg"].map { dir.appendingPathComponent($0) })
+        browser.perform(.compare)
+        let window = try XCTUnwrap(CompareWindow.current)
+        window.setContentSize(NSSize(width: 900, height: 500))
+        window.contentView?.layoutSubtreeIfNeeded()
+        func peak(_ pane: ComparePaneView) -> Double {
+            pane.layoutSubtreeIfNeeded()
+            let rect = pane.footer.convert(pane.footer.bounds, to: pane)
+            let size = pane.bounds.size
+            guard let rep = pane.bitmapImageRepForCachingDisplay(in: pane.bounds) else { return 0 }
+            pane.cacheDisplay(in: pane.bounds, to: rep)
+            var best = 0.0
+            for y in 0..<rep.pixelsHigh {
+                for x in 0..<rep.pixelsWide {
+                    let px = CGPoint(x: Double(x) / Double(rep.pixelsWide) * size.width,
+                                     y: Double(y) / Double(rep.pixelsHigh) * size.height)
+                    // bitmap rows run top-down; the pane is not flipped
+                    let flipped = CGPoint(x: px.x, y: size.height - px.y)
+                    guard rect.contains(flipped),
+                          let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                    best = max(best, Double(c.redComponent + c.greenComponent + c.blueComponent) / 3)
+                }
+            }
+            return best
+        }
+        XCTAssertEqual(window.focusedIndex, 0)
+        let focused = peak(window.panes[0].view)
+        let dimmed = peak(window.panes[1].view)
+        XCTAssertGreaterThan(focused, 0.5, "the focused footer text is drawn")
+        XCTAssertLessThan(dimmed, focused - 0.15, "the unfocused footer is dimmer (\(dimmed) vs \(focused))")
+    }
+
     func testKeysFollowSection9() {
         XCTAssertEqual(key(SpecialKey.right)?.command, .nextImage)
         XCTAssertEqual(key(SpecialKey.right, .shift)?.command, .compareNextAll)
@@ -149,7 +211,8 @@ final class CompareWindowTests: XCTestCase {
         XCTAssertEqual(key("q", .shift), CompareKeyMap.Hit(command: .toggleFlag, allPanes: true))
         XCTAssertEqual(key("2", .command)?.command, .compareFocus2)
         XCTAssertEqual(key("l", .command)?.command, .rotateLeft)
-        XCTAssertEqual(key(SpecialKey.backspace)?.command, .moveToTrash)
+        XCTAssertNil(key(SpecialKey.backspace), "plain ⌫ trashes nothing in the Mac preset")
+        XCTAssertEqual(key(SpecialKey.backspace, .command)?.command, .moveToTrash)
         XCTAssertEqual(key(SpecialKey.escape)?.command, .escape)
         // FastStone: ⌃1–⌃5 rate, L / R rotate, ⌦ trashes.
         let fs = { (k: String, f: NSEvent.ModifierFlags) in
@@ -173,7 +236,7 @@ final class CompareWindowTests: XCTestCase {
         browser.perform(.compare)
         let window = try XCTUnwrap(CompareWindow.current)
         XCTAssertEqual(names(window), ["a.jpg", "c.jpg", "d.jpg"])
-        XCTAssertEqual(window.subtitle, "3 images")
+        XCTAssertEqual(window.subtitle, "3 images · Tab switches pane · ← → change its photo")
         window.setContentSize(NSSize(width: 1200, height: 700))
         window.contentView?.layoutSubtreeIfNeeded()
         window.layoutPanes()
@@ -293,7 +356,7 @@ final class CompareWindowTests: XCTestCase {
         let window = try XCTUnwrap(CompareWindow.current)
         window.fileOps = fakeOps()
         window.focus(1)
-        window.perform(try XCTUnwrap(key(SpecialKey.backspace)))
+        window.perform(try XCTUnwrap(key(SpecialKey.backspace, .command)))
         // Same turn: pane 2 moves past c.jpg (pane 3 shows it) to d.jpg.
         XCTAssertEqual(names(window), ["a.jpg", "d.jpg", "c.jpg"])
         await window.waitForPendingTrash()

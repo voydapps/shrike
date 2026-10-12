@@ -78,16 +78,34 @@ final class ToastView: HUDSurfaceView {
 @MainActor
 final class ErrorOverlayView: NSView {
 
+    static let message = "This file appears to be damaged or isn't a supported format."
+
+    /// The wrapped height of the message at 272 pt (at most 3 lines), so the
+    /// card sizes right in one layout pass.
+    static let bodyHeight: CGFloat = {
+        let font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        let rect = (message as NSString).boundingRect(
+            with: NSSize(width: 272, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
+        return min(ceil(rect.height), ceil(font.boundingRectForFont.height) * 3)
+    }()
+
     private let title = NSTextField(labelWithString: "Can't open")
-    private let body = NSTextField(labelWithString:
-        "This file appears to be damaged or isn't a supported format.")
+    private let body = NSTextField(wrappingLabelWithString: ErrorOverlayView.message)
+    let nextButton = NSButton(title: "Next", target: nil, action: nil)
+    let revealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
+    private let container = NSView()
+
+    /// Same action as the → key.
+    var onNext: (() -> Void)?
+    /// The Reveal in Finder command.
+    var onReveal: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
 
-        let container = NSView()
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor(white: 0.15, alpha: 0.85).cgColor
         container.layer?.cornerRadius = 12
@@ -105,15 +123,48 @@ final class ErrorOverlayView: NSView {
         title.alignment = .center
         title.translatesAutoresizingMaskIntoConstraints = false
 
+        // Wraps inside the 320 pt card (272 pt of text), up to 3 lines.
         body.font = .systemFont(ofSize: 12, weight: .regular)
         body.textColor = NSColor.white.withAlphaComponent(0.75)
         body.alignment = .center
+        body.preferredMaxLayoutWidth = 272
         body.maximumNumberOfLines = 3
+        // Word wrap: a truncating mode made AppKit draw ONE line ending in "…".
+        body.lineBreakMode = .byWordWrapping
+        body.cell?.wraps = true
+        body.cell?.isScrollable = false
+        body.cell?.usesSingleLineMode = false
+        body.setContentCompressionResistancePriority(.required, for: .vertical)
         body.translatesAutoresizingMaskIntoConstraints = false
+
+        for button in [nextButton, revealButton] {
+            button.bezelStyle = .rounded
+            button.refusesFirstResponder = true   // the keys stay with the window
+            button.target = self
+            button.translatesAutoresizingMaskIntoConstraints = false
+        }
+        nextButton.action = #selector(nextTapped(_:))
+        revealButton.action = #selector(revealTapped(_:))
+        nextButton.useAccentFill()
+        nextButton.keyEquivalent = ""   // a stray Return must not skip
+        LiveTooltips.shared.bind(nextButton, command: .nextImage, context: .viewer)
+        LiveTooltips.shared.bind(revealButton, command: .revealInFinder, context: .viewer)
+
+        let buttons = NSStackView(views: [nextButton, revealButton])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        buttons.translatesAutoresizingMaskIntoConstraints = false
 
         container.addSubview(icon)
         container.addSubview(title)
         container.addSubview(body)
+        container.addSubview(buttons)
+
+        // VoiceOver: one group with the two buttons inside.
+        container.setAccessibilityElement(true)
+        container.setAccessibilityRole(.group)
+        container.setAccessibilityLabel("Can't open. \(Self.message)")
+        container.setAccessibilityChildren([nextButton, revealButton])
 
         NSLayoutConstraint.activate([
             container.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -128,11 +179,45 @@ final class ErrorOverlayView: NSView {
             body.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
             body.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
             body.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
-            body.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -24),
+            body.widthAnchor.constraint(equalToConstant: 272),
+            body.heightAnchor.constraint(equalToConstant: Self.bodyHeight),
+            buttons.topAnchor.constraint(equalTo: body.bottomAnchor, constant: 12),
+            buttons.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            buttons.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -20),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Only the card takes clicks; the rest of the overlay lets them through.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+
+    func setNextEnabled(_ enabled: Bool) { nextButton.isEnabled = enabled }
+
+    /// On show: VoiceOver says what happened.
+    func announce() {
+        NSAccessibility.post(element: self, notification: .announcementRequested,
+                             userInfo: [.announcement: "Can't open this file.",
+                                        .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+
+    @objc private func nextTapped(_ sender: Any?) { onNext?() }
+    @objc private func revealTapped(_ sender: Any?) { onReveal?() }
+
+    var cardFrameForTesting: NSRect { layoutSubtreeIfNeeded(); return container.frame }
+    var bodyLineCountForTesting: Int {
+        layoutSubtreeIfNeeded()
+        return Int((body.frame.height / (body.font?.boundingRectForFont.height ?? 14)).rounded())
+    }
+    var bodyFrameForTesting: NSRect { body.frame }
+    /// Height the text needs at the card's text width (tests): two lines or more.
+    var bodyNeededHeightForTesting: CGFloat {
+        body.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: 272, height: 10_000)).height ?? 0
+    }
+    var bodyForTesting: NSTextField { body }
 }
 
 // MARK: - Page indicator

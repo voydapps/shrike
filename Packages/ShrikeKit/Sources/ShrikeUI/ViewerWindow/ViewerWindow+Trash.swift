@@ -56,7 +56,7 @@ extension ViewerWindow {
         }
         windowUndoManager.setActionName("Move to Trash")
         contentRoot.toast(
-            ToastContent(FileActionCopy.movedToTrash(receipt.trashedGroups), actionTitle: "Undo")
+            ToastContent.trashed(FileActionCopy.movedToTrash(receipt.trashedGroups))
         ) { [weak self] in
             self?.performUndo()
         }

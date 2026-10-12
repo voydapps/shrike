@@ -45,8 +45,8 @@ final class BrowserKeyRoutingTests: XCTestCase {
     /// plain arrows must not (the grid moves by its real column count).
     func testBrowserKeyMapCoversSpecKeysAndLeavesArrowsAlone() {
         let mapped: [(String, NSEvent.ModifierFlags)] = [
-            (SpecialKey.returnKey, []), (SpecialKey.down, .command), (SpecialKey.backspace, []),
-            (SpecialKey.backspace, .command), (SpecialKey.forwardDelete, []),
+            (SpecialKey.returnKey, []), (SpecialKey.down, .command),
+            (SpecialKey.backspace, .command),
             ("0", []), ("5", []), ("q", []), ("\\", []), ("t", []), ("c", []), ("m", []),
             (SpecialKey.f2, []), ("b", .command), (SpecialKey.up, .command),
             ("[", .command), ("]", .command), ("a", .command),

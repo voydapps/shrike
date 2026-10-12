@@ -124,12 +124,16 @@ final class RAWSwitchTests: XCTestCase {
         XCTAssertFalse(window.contentRootForTesting.isEditModeActive)
         XCTAssertEqual(try Data(contentsOf: raw), before, "nothing was written")
         XCTAssertEqual(ViewerWindow.rawEditBlockedCopy, "RAW files are not changed. Switch to the JPEG to edit.")
-        // The rail's buttons are off too; back on the JPEG they return.
-        XCTAssertTrue(window.contentRootForTesting.railToolsBlocked)
+        // The Edit button says why; back on the JPEG it is plain again.
+        XCTAssertTrue(window.contentRootForTesting.editBlockedByRAW)
+        let editItem = try XCTUnwrap(window.toolbarController?.item(ViewerWindowToolbar.ID.edit))
+        XCTAssertTrue(try XCTUnwrap(editItem.toolTip).hasSuffix("\n" + ViewerWindow.rawEditBlockedCopy),
+                      "the Edit button's tooltip carries the reason: \(editItem.toolTip ?? "nil")")
         window.perform(.toggleRAWFile)
         let off = await waitUntil { window.displayedItem?.shownURL == pair.primary }
         XCTAssertTrue(off)
-        XCTAssertFalse(window.contentRootForTesting.railToolsBlocked)
+        XCTAssertFalse(window.contentRootForTesting.editBlockedByRAW)
+        XCTAssertFalse(try XCTUnwrap(editItem.toolTip).contains("\n"), "the reason is gone on the JPEG")
         XCTAssertTrue(window.canPerform(.editImage))
     }
 

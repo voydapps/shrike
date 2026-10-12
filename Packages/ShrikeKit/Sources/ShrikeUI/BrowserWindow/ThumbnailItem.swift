@@ -41,7 +41,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
 
     private let imageBackground: NSView
     private let thumbnailView: NSImageView
-    private let nameLabel: NSTextField
+    private let nameLabel: FittedNameLabel
     private let formatBadge: NSTextField
     // Badges: flag top-left, badge row top-right (RAW chip,
     // livephoto, pencil), stars bottom-left, tag dots after the name.
@@ -128,9 +128,8 @@ public final class ThumbnailItem: NSCollectionViewItem {
         formatBadge.isHidden = true
         imageBackground.addSubview(formatBadge)
 
-        failureIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
-        failureIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
-        failureIcon.contentTintColor = .tertiaryLabelColor
+        failureIcon.image = Badges.brokenFileGlyph(pointSize: 20)
+        failureIcon.contentTintColor = Badges.brokenFileTint
         failureLabel.font = .systemFont(ofSize: 11)
         failureLabel.textColor = .secondaryLabelColor
         failureLabel.alignment = .center
@@ -153,7 +152,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
         nameLabel.font = .systemFont(ofSize: Self.nameFontSize)
         nameLabel.textColor = .labelColor
         nameLabel.maximumNumberOfLines = 1
-        nameLabel.lineBreakMode = .byTruncatingMiddle
+        nameLabel.lineBreakMode = .byClipping
         nameLabel.drawsBackground = false
         nameLabel.isBezeled = false
         nameLabel.isEditable = false
@@ -296,7 +295,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
     public override init(nibName nibNameOrNil: NSNib.Name?, bundle nibBundleOrNil: Bundle?) {
         self.imageBackground = NSView()
         self.thumbnailView = NSImageView()
-        self.nameLabel = NSTextField(labelWithString: "")
+        self.nameLabel = FittedNameLabel()
         self.formatBadge = NSTextField(labelWithString: "")
         super.init(nibName: nil, bundle: nil)
     }
@@ -316,7 +315,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
         loadTask = nil
         thumbnailView.image = nil
         thumbnailView.layer?.removeAnimation(forKey: Self.fadeInKey)
-        nameLabel.stringValue = ""
+        nameLabel.fullName = ""
         applyBadges(ItemBadges())
         formatBadge.stringValue = ""
         formatBadge.isHidden = true
@@ -328,6 +327,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
 
     public override var isSelected: Bool {
         didSet {
+            if isViewLoaded { view.setAccessibilitySelected(isSelected) }
             updateSelectionAppearance()
             applyHover(animated: false)
         }
@@ -371,7 +371,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
         cache: ThumbnailCache
     ) {
         currentItem = item
-        nameLabel.stringValue = item.displayName
+        nameLabel.fullName = item.displayName
         applyBadges(item.badges)
 
         let bucket = BrowserFormatBucket.bucket(for: item.utType)
@@ -385,8 +385,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
 
         // Accessibility payload — filename + rating + flag.
         setFailed(false)
-        view.setAccessibilityRole(.button)
-        view.setAccessibilityValueDescription(item.displayName + PillMarks(item.badges).accessibilitySuffix)
+        updateAccessibility()
 
         // Kick off the thumbnail decode. Cancellation happens in
         // `prepareForReuse` or `didEndDisplaying`.
@@ -462,7 +461,30 @@ public final class ThumbnailItem: NSCollectionViewItem {
     }
 
     /// Shows only set values: no empty stars, nothing for rating 0.
+    /// One accessibility element per cell, words instead of glyphs
+    /// (spec 25 §7.2): "IMG_4222.JPG, 3 stars, flagged".
+    private var accessibilityBadges = ItemBadges()
+
+    private func updateAccessibility() {
+        guard isViewLoaded else { return }
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.button)
+        view.setAccessibilityChildren([])
+        view.setAccessibilitySelected(isSelected)
+        view.setAccessibilityLabel(CellAccessibility.label(
+            name: currentItem?.displayName ?? "", rating: accessibilityBadges.rating,
+            flagged: accessibilityBadges.flagged, isPair: accessibilityBadges.hasRAW, failed: isFailed))
+    }
+
     func applyBadges(_ badges: ItemBadges) {
+        let changed = accessibilityBadges != badges
+        accessibilityBadges = badges
+        defer {
+            if changed, isViewLoaded {
+                updateAccessibility()
+                NSAccessibility.post(element: view, notification: .valueChanged)
+            }
+        }
         flagView.isHidden = !badges.flagged
         starsLabel.stringValue = Badges.stars(badges.rating)
         starsLabel.isHidden = badges.rating <= 0
@@ -501,8 +523,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
     private func setFailed(_ failed: Bool) {
         isFailed = failed
         failureStack.isHidden = !failed
-        let name = currentItem?.displayName ?? ""
-        view.setAccessibilityLabel(failed ? "\(name), can't preview" : name)
+        updateAccessibility()
         updateToolTip()
         updateFailureLabel()
     }
@@ -513,7 +534,8 @@ public final class ThumbnailItem: NSCollectionViewItem {
         if isFailed {
             view.toolTip = "Shrike can't read this file."
         } else {
-            view.toolTip = showsNameTooltip ? currentItem?.displayName : nil
+            // The full name always (spec 25 §6.3); the layout changes with the window.
+            view.toolTip = currentItem?.displayName
         }
     }
 
@@ -586,6 +608,8 @@ public final class ThumbnailItem: NSCollectionViewItem {
     }
 
     var nameFontForTesting: NSFont? { nameLabel.font }
+    /// Test seam: the caption as fitted now.
+    var captionForTesting: String { nameLabel.stringValue }
     /// Test seam: how many times the colours were set (`updateLayer`).
     private(set) var colorPassesForTesting = 0
     var failureShownForTesting: (icon: Bool, text: Bool) {

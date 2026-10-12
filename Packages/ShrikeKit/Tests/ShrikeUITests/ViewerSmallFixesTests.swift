@@ -5,7 +5,7 @@
 //  Small viewer fixes: centred fill on the colour sliders; the histogram
 //  fits the canvas and stays clear of the edit panel; the full-screen
 //  bottom stack stays while the pointer rests in its zone, the corner
-//  never reveals the inspector, never two histograms; the rail shows the
+//  never reveals the inspector, never two histograms; the tool picker shows the
 //  active tool; no icon column in the viewer's right-click menu; the
 //  window stays put across edit -> Don't Save -> slideshow sheet; every
 //  shortcut key shows a real Mac key symbol.
@@ -28,7 +28,7 @@ final class ViewerSmallFixesTests: XCTestCase {
             .appendingPathComponent("A2sPolish-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedHistogram = Prefs.viewerHistogramVisible
-        for key in ["shrike.viewer.filmstrip.pinnedFullscreen", "shrike.viewer.editRail.pinnedFullscreen",
+        for key in ["shrike.viewer.filmstrip.pinnedFullscreen",
                     "shrike.viewer.exifPanel.pinnedFullscreen"] {
             ShrikeDefaults.store.removeObject(forKey: key)
         }
@@ -182,7 +182,7 @@ final class ViewerSmallFixesTests: XCTestCase {
         content.evaluateZonesForTesting(at: NSPoint(x: 1435, y: 10))
         XCTAssertTrue(content.isHoveredForTesting(.filmstrip), "the bottom corner is the bottom zone")
         XCTAssertFalse(content.isHoveredForTesting(.inspector), "the corner never slides the inspector in")
-        XCTAssertFalse(ViewerContentView.zonePanels(at: NSPoint(x: 5, y: 10), in: content.bounds).contains(.editRail))
+        XCTAssertFalse(ViewerContentView.zonePanels(at: NSPoint(x: 5, y: 450), in: content.bounds).contains(.inspector))
         XCTAssertEqual(ViewerContentView.zonePanels(at: NSPoint(x: 1435, y: 450), in: content.bounds), [.inspector])
     }
 
@@ -205,20 +205,20 @@ final class ViewerSmallFixesTests: XCTestCase {
         XCTAssertTrue(content.histogramOverlayVisibleForTesting, "back when the inspector hides")
     }
 
-    // MARK: 2.4 Rail
+    // MARK: 2.4 Tool picker
 
-    func testTheRailShowsTheActiveTool() throws {
+    func testThePickerShowsTheActiveTool() throws {
         let viewer = try viewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
-        let rail = content.editRailForTesting
-        XCTAssertEqual(rail.activeToolsForTesting(), [], "nothing active outside edit mode")
+        let picker = content.editToolbarController.toolPicker
+        XCTAssertEqual(picker.selectedSegment, -1, "nothing lit outside edit mode")
         content.enterEditMode(image: SaveFlowTests.image(), url: nil, landOn: .crop)
-        XCTAssertEqual(rail.activeToolsForTesting(), [.crop])
+        XCTAssertEqual(picker.selectedSegment, 0)
         content.editModeController.selectTool(.color)
-        XCTAssertEqual(rail.activeToolsForTesting(), [.color], "follows the capsule / toolbar picker")
+        XCTAssertEqual(picker.selectedSegment, 3, "follows the chosen tool")
         content.editModeController.finalizeExit()
-        XCTAssertEqual(rail.activeToolsForTesting(), [])
+        XCTAssertEqual(picker.selectedSegment, -1)
     }
 
     // MARK: 2.5 Right-click menu

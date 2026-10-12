@@ -18,6 +18,7 @@
 //
 
 import XCTest
+import ShrikeCore
 import AppKit
 @testable import ShrikeUI
 import ShrikeEdit
@@ -199,26 +200,85 @@ final class EditToolPanelsTests: XCTestCase {
         XCTAssertEqual(panel._saturationSlider.doubleValue, 0.8, accuracy: 1e-9)
     }
 
-    func testColorAdjustPanel_ApplyFiresCommittedThenApply() {
+    // Spec 25 §3.1: Color is a live tool, so it has Reset all and no Apply.
+    func testColorAdjustPanel_HasResetAllAndNoApply() {
         let panel = ColorAdjustPanel()
-        panel.setParams(ColorAdjustParams(brightness: 0.1,
-                                          contrast: 0.2,
-                                          saturation: -0.3))
+        let titles = allButtons(in: panel).map(\.title)
+        XCTAssertEqual(titles, ["Reset all"])
+    }
 
-        var committed: [ColorAdjustParams] = []
-        var applyCount = 0
-        panel.onParamsCommitted = { committed.append($0) }
-        panel.onApply = { applyCount += 1 }
+    func testRotatePanelHasResetOnly_CropAndResizeHaveApplyWithoutReturn() {
+        XCTAssertEqual(allButtons(in: RotatePanel()).filter { !$0.title.contains("°") }.map(\.title)
+            .filter { $0 == "Reset" || $0.hasPrefix("Apply") }, ["Reset"])
+        let crop = CropPanel()
+        XCTAssertEqual(crop._applyButton.title, "Apply Crop")
+        let cropTitles = allButtons(in: crop).map(\.title).filter { $0.contains("Crop") }
+        XCTAssertEqual(cropTitles, ["Apply Crop", "Reset Crop"], "Apply Crop above Reset Crop")
+        XCTAssertEqual(ResizePanel()._applyButton.title, "Apply Resize")
+        for button in [crop._applyButton, ResizePanel()._applyButton] {
+            XCTAssertEqual(button.keyEquivalent, "", "Return belongs to Done only")
+            XCTAssertNotEqual(button.accentFillMechanism, expectedAccentMechanism, "no accent fill: Done is the one accent")
+        }
+    }
 
-        panel._applyButton.sendAction(
-            panel._applyButton.action!,
-            to: panel._applyButton.target!
-        )
+    func testResizeApplyIsDisabledUntilTheSizeDiffersAndDoneAppliesIt() {
+        let panel = ResizePanel()
+        panel.sourcePixelSize = CGSize(width: 6000, height: 4000)
+        XCTAssertFalse(panel._applyButton.isEnabled)
+        XCTAssertNil(panel.pendingSpec)
+        panel._widthField.stringValue = "3000"
+        panel._heightField.stringValue = "2000"
+        panel._widthField.sendAction(panel._widthField.action, to: panel._widthField.target)
+        XCTAssertTrue(panel._applyButton.isEnabled)
+        XCTAssertEqual(panel.pendingSpec?.width, 3000)
+        XCTAssertEqual(panel.pendingSpec?.height, 2000)
+    }
 
-        XCTAssertEqual(committed.count, 1,
-                       "Apply must flush one committed-params event")
-        XCTAssertEqual(committed.first?.brightness ?? -999, 0.1, accuracy: 1e-9)
-        XCTAssertEqual(applyCount, 1)
+    func testPanelFieldsAreLabelledForVoiceOver() {
+        let crop = CropPanel(), rotate = RotatePanel(), resize = ResizePanel()
+        for (name, panel) in [("Crop", crop as NSView), ("Rotate", rotate), ("Resize", resize)] {
+            for control in allControls(in: panel) where !(control is NSButton) {
+                if let field = control as? NSTextField, !field.isEditable { continue }
+                XCTAssertFalse(control.accessibilityLabel()?.isEmpty ?? true, "\(name): \(type(of: control)) has no label")
+            }
+        }
+        XCTAssertEqual(resize._widthField.accessibilityLabel(), "Resize width, pixels")
+        XCTAssertEqual(resize._percentField.accessibilityLabel(), "Resize percent")
+    }
+
+    // Spec 26 §6.7: Done is the only button with Return as its key, and the
+    // picker's platter is a 30 % accent tint (not a button fill).
+    func testOnlyDoneHasReturnAndThePickerPlatterIsAccentAt30Percent() {
+        let content = ViewerContentView(services: .makeDefault())
+        content.frame = NSRect(x: 0, y: 0, width: 700, height: 500)
+        content.enterEditMode(image: SaveFlowTests.image(), url: nil, landOn: nil)
+        let bar = content.editToolbarController
+        XCTAssertEqual(bar.doneButton.keyEquivalent, "\r")
+        XCTAssertEqual(bar.cancelButton.keyEquivalent, "")
+        XCTAssertEqual(bar.resetButton.keyEquivalent, "")
+        let platter = bar.toolPicker.selectedSegmentBezelColor?.usingColorSpace(.deviceRGB)
+        let accent = NSColor.controlAccentColor.withAlphaComponent(EditToolPicker.platterAlpha).usingColorSpace(.deviceRGB)
+        XCTAssertEqual(platter?.alphaComponent ?? 0, 0.30, accuracy: 0.001)
+        XCTAssertEqual(platter?.redComponent ?? 0, accent?.redComponent ?? 1, accuracy: 0.01)
+        content.editModeController.finalizeExit()
+    }
+
+    private var expectedAccentMechanism: String {
+        if #available(macOS 26, *) { return "prominent" }
+        return "accent"
+    }
+
+    private func allControls(in view: NSView) -> [NSControl] {
+        var out: [NSControl] = []
+        for sub in view.subviews {
+            if let c = sub as? NSControl { out.append(c) }
+            out += allControls(in: sub)
+        }
+        return out
+    }
+
+    private func allButtons(in view: NSView) -> [NSButton] {
+        allControls(in: view).compactMap { $0 as? NSButton }.filter { $0.bezelStyle == .rounded && $0.allowsMixedState == false && !$0.title.isEmpty && $0.bezelStyle == .rounded }
     }
 
     func testColorAdjustPanel_ResetAllZerosOutAndCommitsIdentity() {

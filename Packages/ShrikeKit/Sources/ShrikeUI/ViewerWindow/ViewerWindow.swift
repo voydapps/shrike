@@ -289,6 +289,13 @@ public final class ViewerWindow: NSWindow {
             if shown { self?.contentRoot.inspectorPanel.headerReadsEnabled = true }
             self?.contentRoot.setWindowedInspectorShown(shown)
         }
+        // Edit mode on a narrow canvas: the inspector steps aside (spec 26 §5).
+        contentRoot.onEditModeActiveChanged = { [weak split] active in
+            split?.editModeChanged(active: active)
+        }
+        contentRoot.onEditCanvasWidth = { [weak split] width in
+            DispatchQueue.main.async { split?.editCanvasWidth(width) }
+        }
         // The split read the pref in viewDidLoad, before this callback; assigning
         // the callback replays that state (so the header reads are on). This call
         // only syncs the content view's layout with it.
@@ -298,6 +305,9 @@ public final class ViewerWindow: NSWindow {
         let viBar = ShrikeSignposts.launch.begin("viToolbar")
         let bar = ViewerWindowToolbar(host: nil)
         toolbarController = bar
+        // The Edit item's tooltip says why Edit is off (RAW shown, decode error).
+        contentRoot.onEditEntryReasonChanged = { [weak bar] reason in bar?.setEditExtraLine(reason) }
+        bar.setEditExtraLine(contentRoot.editEntryReason)
         toolbar = bar.toolbar
         bar.host = self
         toolbarHover = ToolbarHover.install(in: self)
@@ -314,6 +324,8 @@ public final class ViewerWindow: NSWindow {
         wireInspectorActions()
         installAutoHide()
         // Edit mode owns the subtitle and the close-button dot.
+        contentRoot.onDecodeErrorNext = { [weak self] in self?.dispatch(.nextImage) }
+        contentRoot.onDecodeErrorReveal = { [weak self] in self?.dispatch(.revealInFinder) }
         contentRoot.onEditSubtitleChanged = { [weak self] state in
             guard let self else { return }
             if let state {
@@ -321,6 +333,8 @@ public final class ViewerWindow: NSWindow {
                 self.isDocumentEdited = state.hasEdits
             } else {
                 self.isDocumentEdited = false
+                // Any exit outcome: the size is read again (spec 25 §1.1).
+                self.forgetDrawnSizes()
                 self.updateTitle()
             }
         }
@@ -363,10 +377,13 @@ public final class ViewerWindow: NSWindow {
         // Drag a filmstrip cell out (the whole group).
         contentRoot.filmstripGroups = { [weak self] index in self?.list[index] }
         contentRoot.onFilmstripJump = { [weak self] globalIndex in
-            self?.leaveEditModeThen(reason: .navigation) { [weak self] in
+            guard let self else { return }
+            let windowed = self.contentRoot.windowMode == .windowed
+            self.leaveEditModeThen(reason: .navigation) { [weak self] in
                 self?.coalesceNav { [weak self] in
                     await self?.navigate(to: globalIndex)
                 }
+                if windowed { self?.reenterEditModeAfterNavigation() }
             }
         }
         // Filmstrip scroll-wheel scrub Positive delta =
@@ -476,6 +493,9 @@ public final class ViewerWindow: NSWindow {
     /// Oriented pixel sizes read from file headers, by URL, so "100 %" is
     /// known at once when a photo comes back.
     var headerPixelSizes: [URL: CGSize] = [:]
+    /// Files turned for viewing only (types that can't be written): the
+    /// turn is dropped on navigation, so their cached size is too.
+    var viewOnlyTurnedURLs: Set<URL> = []
     var fullResHairlineShown = false
     /// The edit exit alert asked by a close or a
     /// navigation. One at a time; a second request while it runs is dropped.
@@ -938,7 +958,7 @@ public final class ViewerWindow: NSWindow {
             // 400 ms hold, then revert, preempted by the next nav.
             contentRoot.clearCanvasDim()
             contentRoot.flashPositionOverlayError()
-            contentRoot.showDecodeError()
+            contentRoot.showDecodeError(nextEnabled: target.index < list.count - 1)
             markDisplayed(target.index)
             ShrikeSignposts.navigation.event(
                 "navigateFailed",
@@ -1096,7 +1116,8 @@ public final class ViewerWindow: NSWindow {
             return
         } catch {
             if Task.isCancelled { return }
-            contentRoot.showDecodeError()
+            let index = displayedItem?.listIndex ?? intent.currentIndex
+            contentRoot.showDecodeError(nextEnabled: index < list.count - 1)
         }
     }
 
@@ -1277,6 +1298,12 @@ public final class ViewerWindow: NSWindow {
             return true
         }
 
+        // Mac preset: a plain ⌫ / ⌦ trashes nothing; one hint per run.
+        if context == .viewer,
+           TrashKeyHint.handle(snapshot, preset: ShortcutTable.livePreset, responder: firstResponder,
+                               toast: { [weak self] in self?.contentRoot.toast($0) }) {
+            return true
+        }
         // Navigation keys in edit mode are in the edit keymap now: they
         // reach `dispatch`, which asks through the exit alert.
         return false
@@ -1369,7 +1396,13 @@ public final class ViewerWindow: NSWindow {
         // Leaving the photo while editing asks first
         // (Save / Don't Save / Cancel), then goes on.
         if contentRoot.isEditModeActive, Self.leavesPhoto(action) {
-            leaveEditModeThen(reason: .navigation) { [weak self] in self?.dispatch(action) }
+            // Window: edit mode ends for the move and starts again, with no tool,
+            // on the new photo (spec 25 §3.3). Full screen has no strip and stays inert.
+            let windowed = contentRoot.windowMode == .windowed
+            leaveEditModeThen(reason: .navigation) { [weak self] in
+                self?.dispatch(action)
+                if windowed { self?.reenterEditModeAfterNavigation() }
+            }
             return
         }
         switch action {
@@ -1438,8 +1471,8 @@ public final class ViewerWindow: NSWindow {
                 splitController?.toggleInspector(nil)
             }
         case .toggleFilmstrip:
-            // ⌘K does nothing in edit mode.
-            guard !contentRoot.isEditModeActive else { break }
+            // ⌘K works in a window's edit mode; full screen has no strip there.
+            guard !(contentRoot.isEditModeActive && contentRoot.windowMode == .fullscreen) else { break }
             contentRoot.togglePanel(.filmstrip)
         case .toggleHistogram:
             contentRoot.toggleHistogramOverlay()
@@ -1559,11 +1592,6 @@ public final class ViewerWindow: NSWindow {
         case .resetEdits:
             // Edit › Reset Edits (the edit chrome).
             contentRoot.editModeController.revertPendingEdits()
-        case .toggleEditRail:
-            // ⇧⌘E shows or hides the rail in a window
-            // (`editRailVisibleInWindowed`) and pins it in full screen
-            // (`editRailPinnedFullscreen`).
-            contentRoot.togglePanel(.editRail)
         case .prevFolder:
             goToAdjacentFolder(.previous)
         case .nextFolder:
@@ -1578,6 +1606,13 @@ public final class ViewerWindow: NSWindow {
     /// be a preview or subsampled, and `sourcePixelSize` must be the
     /// file's. Over 150 ms shows "Loading full image…"; Esc cancels.
     func enterEditMode(landOn tool: EditTool?, then afterEnter: (@MainActor () -> Void)? = nil) {
+        // A photo that cannot be opened has nothing to edit. The image view still holds the
+        // previous photo's pixels behind the error card, so without this the keys (E, C, R...)
+        // would edit and save the wrong pixels over the broken file (spec 26 §2).
+        if contentRoot.isShowingDecodeError {
+            contentRoot.toast(ViewerContentView.decodeErrorEditReason)
+            return
+        }
         guard let shown = contentRoot.imageView.image else {
             contentRoot.toast("No image to edit")
             return
@@ -1674,6 +1709,20 @@ public final class ViewerWindow: NSWindow {
     /// doesn't cancel the actual GPU/ImageIO work — it just drops this
     /// window's *interest* in the stale target. The prefetch window keeps
     /// cached neighbours warm so single taps remain near-instant.
+    /// After a move that left edit mode: wait for the new photo, then start
+    /// edit mode again with no tool, so a run of photos can be edited in turn.
+    func reenterEditModeAfterNavigation() {
+        Task { @MainActor [weak self] in
+            var waited = 0
+            while let self, !self.navCoalescer.isIdle, waited < 300 {
+                try? await Task.sleep(for: .milliseconds(10))
+                waited += 1
+            }
+            guard let self, !self.contentRoot.isEditModeActive, self.displayedItem != nil else { return }
+            self.enterEditMode(landOn: nil)
+        }
+    }
+
     func coalesceNav(_ body: @escaping @MainActor @Sendable () async -> Void) {
         navCoalescer.run(body)
     }

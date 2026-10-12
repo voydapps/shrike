@@ -132,7 +132,8 @@ public final class AppCommands: NSObject, NSMenuItemValidation {
     }
 
     @objc public func showKeyboardShortcuts(_ sender: Any?) {
-        onShowSettings?(.shortcuts)
+        ShortcutsWindowController.shared.openSettings = { [weak self] in self?.onShowSettings?(.shortcuts) }
+        ShortcutsWindowController.shared.toggle()
     }
 
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { true }

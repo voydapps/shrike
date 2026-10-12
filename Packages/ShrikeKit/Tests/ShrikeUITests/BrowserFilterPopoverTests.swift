@@ -31,11 +31,12 @@ final class BrowserFilterPopoverTests: XCTestCase {
         try? FileManager.default.removeItem(at: dir)
     }
 
-    private func item(_ name: String, type: UTType = .jpeg, rating: Int = 0, rawPair: Bool = false) -> BrowserItem {
+    private func item(_ name: String, type: UTType = .jpeg, rating: Int = 0, rawPair: Bool = false, flagged: Bool = false) -> BrowserItem {
         let url = URL(fileURLWithPath: "/tmp/\(name)")
         var item = BrowserItem(url: url, displayName: name, fileSize: 1, modificationDate: Date(),
                                creationDate: nil, captureDate: nil, utType: type,
                                pixelWidth: nil, pixelHeight: nil, rating: rating)
+        item.isFlagged = flagged
         if rawPair {
             item.group = ImageGroup(primary: url, companions: [
                 .init(url: url.deletingPathExtension().appendingPathExtension("ORF"), kind: .raw),
@@ -76,9 +77,10 @@ final class BrowserFilterPopoverTests: XCTestCase {
         XCTAssertEqual(stack?.edgeInsets.top, 16)
         XCTAssertEqual(stack?.spacing, 12)
         XCTAssertEqual(popover.ratingPopup.itemTitles,
-                       ["Any", "1 star or more", "2 stars or more", "3 stars or more", "4 stars or more",
-                        "5 stars", "Unrated"])
-        XCTAssertEqual(popover.flaggedCheckbox.title, "Flagged only")
+                       ["Any", "Unrated", "1 star or more", "2 stars or more", "3 stars or more",
+                        "4 stars or more", "5 stars"])
+        XCTAssertEqual(popover.flagPopup.itemTitles, ["Any", "Flagged", "Not flagged"])
+        XCTAssertEqual(BrowserRatingChoice.menuOrder[1], .unrated)
         XCTAssertEqual(BrowserFilterKind.allCases.compactMap { popover.kindBoxes[$0]?.title },
                        ["JPEG", "HEIC", "PNG", "RAW", "Other"])
         XCTAssertTrue(popover.kindBoxes.values.allSatisfy { $0.state == .on }, "every kind ticked")
@@ -96,8 +98,8 @@ final class BrowserFilterPopoverTests: XCTestCase {
         XCTAssertEqual(applied.last?.ratingChoice, .unrated)
         XCTAssertTrue(popover.clearButton.isEnabled)
 
-        popover.flaggedCheckbox.state = .on
-        popover.flaggedChanged(popover.flaggedCheckbox)
+        popover.flagPopup.selectItem(withTitle: "Flagged")
+        popover.flagChanged(popover.flagPopup)
         let png = popover.kindBoxes[.png]!
         png.state = .off
         popover.kindChanged(png)
@@ -109,6 +111,26 @@ final class BrowserFilterPopoverTests: XCTestCase {
         XCTAssertFalse(popover.clearButton.isEnabled)
         XCTAssertEqual(png.state, .on)
         XCTAssertEqual(popover.ratingPopup.titleOfSelectedItem, "Any")
+        XCTAssertEqual(popover.flagPopup.titleOfSelectedItem, "Any")
+    }
+
+    func testFlagChoicesExcludeEachOtherAndNotFlaggedMatches() {
+        var f = BrowserFilter.none
+        f.flagChoice = .flagged
+        XCTAssertTrue(f.flaggedOnly)
+        f.flagChoice = .notFlagged
+        XCTAssertFalse(f.flaggedOnly)
+        XCTAssertTrue(f.unflaggedOnly)
+        XCTAssertFalse(f.popoverPartIsEmpty, "Clear enables for Not flagged")
+        f.flagChoice = .flagged
+        XCTAssertFalse(f.unflaggedOnly)
+
+        let items = (0..<25).map { item("p\($0).jpg", rating: $0 < 5 ? 3 : 0, flagged: [0, 6, 7].contains($0)) }
+        var review = BrowserFilter.none
+        review.ratingChoice = .unrated
+        review.flagChoice = .notFlagged
+        // 5 rated (0-4), 3 flagged (0, 6, 7): union = 7 items.
+        XCTAssertEqual(items.filter(review.matches).count, 25 - 7)
     }
 
     // MARK: Matching

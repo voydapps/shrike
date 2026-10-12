@@ -52,6 +52,9 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
         case ShrikeMainMenu.commandAction, #selector(NSText.copy(_:)),
              #selector(NSText.selectAll(_:)):
             guard let command = menuItem.shrikeCommand else { return false }
+            // The right-click menu's Rename… is for one photo (spec 25 §12.1).
+            if menuItem.identifier == BrowserContentViewController.contextRenameIdentifier,
+               contentController.selectedItems.count != 1 { return false }
             menuItem.state = menuState(for: command)
             switch command {
             case .toggleSidebar:

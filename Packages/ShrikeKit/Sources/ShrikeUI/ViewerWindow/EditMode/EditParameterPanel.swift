@@ -2,7 +2,7 @@
 //  EditParameterPanel.swift
 //  ShrikeUI
 //
-//  Right-rail container that hosts whichever tool panel the user is
+//  Right-side container that hosts whichever tool panel the user is
 //  currently driving. Spec
 //
 //  Width: 280 pt, flush with the right edge, full canvas height minus
@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import ShrikeRendering
 
 @MainActor
 final class EditParameterPanel: HUDSurfaceView {
@@ -25,7 +26,7 @@ final class EditParameterPanel: HUDSurfaceView {
     init() {
         super.init(frame: .zero)
         // The same surface, radius, hairline and
-        // shadow as the rail; opaque over the black canvas band.
+        // shadow as the other panels; opaque over the black canvas band.
         usesOpaqueFill = true
         translatesAutoresizingMaskIntoConstraints = false
     }
@@ -33,19 +34,79 @@ final class EditParameterPanel: HUDSurfaceView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    /// The height available to the panel (the canvas band). A tool view taller
+    /// than this scrolls (spec 25 §3.2). Nil or ≤ 0: no limit known yet.
+    var bandHeightProvider: (() -> CGFloat)?
+
+    /// The panel is as tall as its content (priority below the owner's
+    /// "stay inside the band" limits).
+    private var heightConstraint: NSLayoutConstraint?
+    private var scrollWrapper: NSScrollView?
+    /// Content height of the installed view (tests).
+    private(set) var contentHeight: CGFloat = 0
+    var isScrolling: Bool { scrollWrapper != nil }
+
     /// Replace the installed panel with `view`. Pass `nil` to clear.
     func install(_ view: NSView?) {
+        let previousHeight = heightConstraint?.constant
         installed?.removeFromSuperview()
+        scrollWrapper?.removeFromSuperview()
+        scrollWrapper = nil
+        heightConstraint?.isActive = false
+        heightConstraint = nil
         installed = view
         guard let view else { return }
         view.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(view)
-        NSLayoutConstraint.activate([
-            view.topAnchor.constraint(equalTo: topAnchor),
-            view.bottomAnchor.constraint(equalTo: bottomAnchor),
-            view.leadingAnchor.constraint(equalTo: leadingAnchor),
-            view.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
+        view.widthAnchor.constraint(equalToConstant: Self.panelWidth).isActive = true
+        let height = ceil(view.fittingSize.height)
+        contentHeight = height
+
+        let band = bandHeightProvider?() ?? 0
+        if band > 0, height > band {
+            let scroll = NSScrollView()
+            scroll.translatesAutoresizingMaskIntoConstraints = false
+            scroll.drawsBackground = false
+            scroll.hasVerticalScroller = true
+            scroll.hasHorizontalScroller = false
+            scroll.autohidesScrollers = true
+            scroll.scrollerStyle = .overlay
+            addSubview(scroll)
+            scroll.documentView = view
+            NSLayoutConstraint.activate([
+                scroll.topAnchor.constraint(equalTo: topAnchor),
+                scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+                scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+                scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+                view.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+                view.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+                view.heightAnchor.constraint(equalToConstant: height),
+            ])
+            scrollWrapper = scroll
+        } else {
+            addSubview(view)
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: topAnchor),
+                view.bottomAnchor.constraint(equalTo: bottomAnchor),
+                view.leadingAnchor.constraint(equalTo: leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ])
+        }
+
+        let constraint = heightAnchor.constraint(equalToConstant: height)
+        constraint.priority = .defaultHigh
+        constraint.isActive = true
+        heightConstraint = constraint
+        // A tool change eases the height over 120 ms; Reduce Motion: at once.
+        if let previousHeight, previousHeight > 0, previousHeight != height, window != nil, !ReduceMotion.isOn {
+            constraint.constant = previousHeight
+            layoutSubtreeIfNeeded()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.allowsImplicitAnimation = true
+                constraint.animator().constant = height
+            }
+        }
     }
 
     // MARK: - Test seam
@@ -58,12 +119,23 @@ final class EditParameterPanel: HUDSurfaceView {
 final class ChooseToolPanel: NSView {
 
     static let title = "Choose a Tool"
-    static let body = "Pick Crop, Rotate, Resize, Color or Levels."
+
+    /// Spec 26 §1.6: the picker is icon-only, so this text names the tools and says where they are.
+    static func body(inFullScreen: Bool) -> String {
+        "Pick Crop, Rotate, Resize, Color or Levels in the bar at the \(inFullScreen ? "bottom" : "top")."
+    }
 
     let titleLabel = NSTextField(labelWithString: ChooseToolPanel.title)
-    let bodyLabel = NSTextField(wrappingLabelWithString: ChooseToolPanel.body)
+    let bodyLabel: NSTextField
 
-    init() {
+    /// Where the bar is: the window's top bar or the full-screen bottom capsule.
+    var inFullScreen: Bool {
+        didSet { bodyLabel.stringValue = Self.body(inFullScreen: inFullScreen) }
+    }
+
+    init(inFullScreen: Bool = false) {
+        self.inFullScreen = inFullScreen
+        bodyLabel = NSTextField(wrappingLabelWithString: Self.body(inFullScreen: inFullScreen))
         super.init(frame: .zero)
         // The tool-title style (the Levels panel header).
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)

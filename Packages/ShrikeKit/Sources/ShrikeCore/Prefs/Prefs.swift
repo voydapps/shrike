@@ -81,12 +81,7 @@ public enum Prefs {
         static let filmstripVisibleInWindowed   = "shrike.viewer.filmstrip.visibleInWindowed"
         static let filmstripHeightPt            = "shrike.viewer.filmstrip.heightPt"
         static let filmstripPinnedFullscreen    = "shrike.viewer.filmstrip.pinnedFullscreen"
-        static let editRailPinnedFullscreen     = "shrike.viewer.editRail.pinnedFullscreen"
         static let exifPanelPinnedFullscreen    = "shrike.viewer.exifPanel.pinnedFullscreen"
-        /// The rail shown in a window (View › Show Edit Rail).
-        static let editRailVisibleInWindowed    = "shrike.viewer.editRail.visibleInWindowed"
-        /// The one-time "rail on" switch has run.
-        static let editRailDefaultOnApplied     = "shrike.viewer.editRail.defaultOnApplied"
         /// Hidden pref — not surfaced in Preferences UI. `defaults write` only.
         static let chromeFadeOutDelayMs         = "shrike.viewer.chromeFadeOutDelayMs"
 
@@ -135,10 +130,7 @@ public enum Prefs {
             filmstripVisibleInWindowed,
             filmstripHeightPt,
             filmstripPinnedFullscreen,
-            editRailPinnedFullscreen,
             exifPanelPinnedFullscreen,
-            editRailVisibleInWindowed,
-            editRailDefaultOnApplied,
             chromeFadeOutDelayMs,
             editJPEGQualityDefault,
             editHEICQualityDefault,
@@ -371,13 +363,6 @@ public enum Prefs {
         set { defaults.set(newValue, forKey: Key.filmstripPinnedFullscreen) }
     }
 
-    /// Pin state for the left edge-hover edit rail in fullscreen. Default
-    /// `false`. Toggled by `⇧⌘E` or the on-panel pin glyph.
-    public static var editRailPinnedFullscreen: Bool {
-        get { defaults.bool(forKey: Key.editRailPinnedFullscreen) }
-        set { defaults.set(newValue, forKey: Key.editRailPinnedFullscreen) }
-    }
-
     /// Pin state for the right edge-hover EXIF/histogram panel in
     /// fullscreen. Default `false`. Toggled by `⌘I` or the on-panel pin
     /// glyph.
@@ -386,27 +371,22 @@ public enum Prefs {
         set { defaults.set(newValue, forKey: Key.exifPanelPinnedFullscreen) }
     }
 
-    /// The edit rail shows in a window only when this is
-    /// on (View › Show Edit Rail, ⇧⌘E in a window). Default off. There
-    /// is no hover reveal in a window; full screen keeps its edge zone
-    /// and pin (`editRailPinnedFullscreen`).
-    /// Default **on** (a missing value reads true).
-    public static var editRailVisibleInWindowed: Bool {
-        get { defaults.object(forKey: Key.editRailVisibleInWindowed) as? Bool ?? true }
-        set { defaults.set(newValue, forKey: Key.editRailVisibleInWindowed) }
+    /// The three settings of the removed left tool strip (spec 26). Raw
+    /// strings, kept only so a launch can delete them from the plist.
+    private static let retiredEditRailKeys = [
+        "shrike.viewer.editRail.pinnedFullscreen",
+        "shrike.viewer.editRail.visibleInWindowed",
+        "shrike.viewer.editRail.defaultOnApplied",
+    ]
+
+    /// Run at launch, before the first viewer: removes the retired keys.
+    /// Idempotent; a second call finds nothing to remove.
+    public static func removeRetiredEditRailKeys() {
+        for key in retiredEditRailKeys { defaults.removeObject(forKey: key) }
     }
 
-    /// Run once at launch, before the first viewer. Without
-    /// the marker, a stored value becomes true (a chosen "off" can't be
-    /// told from the old default), then the marker is set; after that the
-    /// value is never touched again.
-    public static func applyEditRailDefaultOnce() {
-        guard defaults.object(forKey: Key.editRailDefaultOnApplied) == nil else { return }
-        if defaults.object(forKey: Key.editRailVisibleInWindowed) != nil {
-            defaults.set(true, forKey: Key.editRailVisibleInWindowed)
-        }
-        defaults.set(true, forKey: Key.editRailDefaultOnApplied)
-    }
+    /// Test seam: the retired keys.
+    static var retiredEditRailKeysForTesting: [String] { retiredEditRailKeys }
 
     /// Cursor-idle delay (ms) before hover-revealed chrome panels fade
     /// out in fullscreen mode. Default `1500` (1.5 s). Hidden pref —

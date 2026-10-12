@@ -34,8 +34,8 @@ enum EditChromeAction: Equatable {
 }
 
 /// Tool picker order, symbols, names and key letters.
-/// Levels joins after Color, as on the rail,
-/// so the picker always shows the tool in use.
+/// Levels joins after Color, so the picker
+/// always shows the tool in use.
 enum EditChromeTools {
     static let order: [EditTool] = [.crop, .rotate, .resize, .color, .levels]
 
@@ -83,6 +83,245 @@ enum EditChromeTools {
     }
 }
 
+// MARK: - The tool picker (window toolbar and capsule share it)
+
+/// The five edit tools as one icon-only, single-choice control (spec 26 §1.3).
+/// The window's toolbar item and the full-screen capsule use this one class.
+/// It is drawn here, not by `NSSegmentedControl`: on macOS 26 the toolbar
+/// ignores a segmented control's bezel colour and paints the chosen segment
+/// grey, so the accent platter would never show. Nothing selected
+/// (`selectedSegment == -1`) until a tool is chosen.
+///
+/// Accessibility: a radio group named "Tool"; each segment is a radio button
+/// named after its tool, value 1 when chosen, and it can be pressed.
+/// Keyboard (when the picker has focus): Left / Right choose the previous /
+/// next tool, Space chooses the focused one.
+@MainActor
+final class EditToolPicker: NSControl {
+
+    static let segmentWidth: CGFloat = 32
+    static let height: CGFloat = 28
+    /// The active tool's platter: a selection tint, not a button fill.
+    static let platterAlpha: CGFloat = 0.30
+
+    /// Fires with the tool the user clicked.
+    var onPick: ((EditTool) -> Void)?
+
+    /// The platter of the chosen segment (accent at `platterAlpha`).
+    var selectedSegmentBezelColor: NSColor? {
+        NSColor.controlAccentColor.withAlphaComponent(Self.platterAlpha)
+    }
+
+    var selectedSegment = -1 {
+        didSet {
+            guard selectedSegment != oldValue else { return }
+            for (i, seg) in segments.enumerated() { seg.isChosen = (i == selectedSegment) }
+        }
+    }
+    private var focusedSegment = 0
+    private let segments: [SegmentView]
+
+    var segmentCount: Int { segments.count }
+
+    init() {
+        let tools = EditChromeTools.order
+        segments = tools.map { SegmentView(tool: $0) }
+        super.init(frame: NSRect(x: 0, y: 0, width: CGFloat(tools.count) * Self.segmentWidth, height: Self.height))
+        for (i, seg) in segments.enumerated() {
+            seg.picker = self
+            seg.index = i
+            addSubview(seg)
+            if tools[i] == .levels {
+                LiveTooltips.shared.bind(seg, command: .levels, context: .viewer,
+                                         title: EditChromeTools.name(tools[i]))
+            } else {
+                seg.toolTip = EditChromeTools.tooltip(tools[i])
+            }
+        }
+        target = self
+        action = #selector(picked)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.radioGroup)
+        setAccessibilityLabel("Tool")
+        setAccessibilityChildren(segments)
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: CGFloat(tools.count) * Self.segmentWidth).isActive = true
+        heightAnchor.constraint(equalToConstant: Self.height).isActive = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("programmatic only") }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: CGFloat(segments.count) * Self.segmentWidth, height: Self.height)
+    }
+
+    override func layout() {
+        super.layout()
+        for (i, seg) in segments.enumerated() {
+            seg.frame = NSRect(x: CGFloat(i) * Self.segmentWidth, y: 0, width: Self.segmentWidth, height: bounds.height)
+        }
+    }
+
+    // MARK: Segmented-control surface (tests and callers)
+
+    func width(forSegment i: Int) -> CGFloat { segments.indices.contains(i) ? Self.segmentWidth : 0 }
+    func image(forSegment i: Int) -> NSImage? { segments.indices.contains(i) ? segments[i].glyph : nil }
+    /// Icon-only: no segment has a text label.
+    func label(forSegment i: Int) -> String? { "" }
+    func toolTip(forSegment i: Int) -> String? { segments.indices.contains(i) ? segments[i].toolTip : nil }
+    func isEnabled(forSegment i: Int) -> Bool { segments.indices.contains(i) }
+    /// The segment views (tests: pixel and hover checks).
+    var segmentViewsForTesting: [NSView] { segments }
+
+    /// Lights the segment of `tool`; nil lights nothing.
+    func show(tool: EditTool?) {
+        let index = tool.flatMap { EditChromeTools.order.firstIndex(of: $0) } ?? -1
+        if index >= 0 { focusedSegment = index }
+        selectedSegment = index
+    }
+
+    /// A click or key chose segment `i`.
+    fileprivate func choose(_ i: Int) {
+        guard segments.indices.contains(i) else { return }
+        focusedSegment = i
+        selectedSegment = i
+        _ = sendAction(action, to: target)
+    }
+
+    @objc private func picked() {
+        guard EditChromeTools.order.indices.contains(selectedSegment) else { return }
+        onPick?(EditChromeTools.order[selectedSegment])
+    }
+
+    // MARK: Keyboard
+
+    override var acceptsFirstResponder: Bool { true }
+    override var canBecomeKeyView: Bool { NSApp.isFullKeyboardAccessEnabled }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+    }
+    override func becomeFirstResponder() -> Bool { noteFocusRingMaskChanged(); return true }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 123: choose(max(0, (selectedSegment < 0 ? focusedSegment : selectedSegment) - 1))
+        case 124: choose(min(segments.count - 1, (selectedSegment < 0 ? focusedSegment : selectedSegment) + 1))
+        case 49: choose(focusedSegment)
+        default: super.keyDown(with: event)
+        }
+    }
+
+    // MARK: One segment
+
+    /// One icon with its platter. A plain view (not a button), so the
+    /// toolbar cannot restyle it.
+    final class SegmentView: NSView {
+        let tool: EditTool
+        weak var picker: EditToolPicker?
+        var index = 0
+        let glyph: NSImage
+        private let imageView = NSImageView()
+        private var area: NSTrackingArea?
+        private var hovered = false { didSet { if hovered != oldValue { needsDisplay = true } } }
+        private var pressed = false { didSet { if pressed != oldValue { needsDisplay = true } } }
+        var isChosen = false {
+            didSet {
+                guard isChosen != oldValue else { return }
+                needsDisplay = true
+                NSAccessibility.post(element: self, notification: .valueChanged)
+            }
+        }
+
+        init(tool: EditTool) {
+            self.tool = tool
+            glyph = EditChromeTools.image(tool)
+            super.init(frame: .zero)
+            imageView.image = glyph
+            imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+            imageView.contentTintColor = .labelColor
+            imageView.imageScaling = .scaleNone
+            imageView.setAccessibilityElement(false)
+            addSubview(imageView)
+            setAccessibilityElement(true)
+            setAccessibilityRole(.radioButton)
+            setAccessibilityLabel(EditChromeTools.name(tool))
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("programmatic only") }
+
+        override var isFlipped: Bool { false }
+        override func layout() {
+            super.layout()
+            imageView.frame = bounds
+        }
+
+        /// The platter's rect: inside the segment, like the toolbar hover.
+        var platterRect: NSRect { bounds.insetBy(dx: ToolbarHover.inset, dy: ToolbarHover.inset) }
+
+        override func draw(_ dirtyRect: NSRect) {
+            let r = platterRect
+            let path = NSBezierPath(roundedRect: r, xRadius: min(r.width, r.height) / 2, yRadius: min(r.width, r.height) / 2)
+            if isChosen {
+                NSColor.controlAccentColor.withAlphaComponent(EditToolPicker.platterAlpha).setFill()
+                path.fill()
+            }
+            if hovered || pressed {
+                let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                let base: NSColor = dark ? .white : .black
+                base.withAlphaComponent((dark ? ToolbarHover.darkAlpha : ToolbarHover.lightAlpha) * (pressed ? 1.6 : 1)).setFill()
+                path.fill()
+            }
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            needsDisplay = true
+        }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let area { removeTrackingArea(area) }
+            let new = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                     owner: self, userInfo: nil)
+            addTrackingArea(new)
+            area = new
+        }
+
+        override func mouseEntered(with event: NSEvent) { hovered = true }
+        override func mouseExited(with event: NSEvent) { hovered = false }
+        override func viewDidHide() { super.viewDidHide(); hovered = false; pressed = false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override var mouseDownCanMoveWindow: Bool { false }
+
+        override func mouseDown(with event: NSEvent) {
+            pressed = true
+            // Track until release; a click chooses on mouse-up inside.
+            while let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+                let inside = bounds.contains(convert(next.locationInWindow, from: nil))
+                if next.type == .leftMouseUp {
+                    pressed = false
+                    if inside { picker?.choose(index) }
+                    return
+                }
+                pressed = inside
+            }
+            pressed = false
+        }
+
+        override func accessibilityValue() -> Any? { isChosen ? 1 : 0 }
+        override func accessibilityHelp() -> String? { toolTip }
+        override func accessibilityPerformPress() -> Bool { picker?.choose(index); return true }
+        override func isAccessibilitySelected() -> Bool { isChosen }
+        override var focusRingMaskBounds: NSRect { bounds }
+
+        // Test seams.
+        var isHoveredForTesting: Bool { get { hovered } set { hovered = newValue } }
+    }
+}
+
 // MARK: - Windowed: NSToolbar
 
 @MainActor
@@ -104,13 +343,23 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         .flexibleSpace, ItemID.reset, ItemID.done,
     ]
 
+    /// Which items leave the bar first in a narrow window (spec 26 §1.4).
+    static func visibilityPriority(_ id: NSToolbarItem.Identifier) -> NSToolbarItem.VisibilityPriority {
+        switch id {
+        case ItemID.cancel, ItemID.done: return .high
+        case ItemID.tools: return .standard
+        default: return .low
+        }
+    }
+
     var onAction: ((EditChromeAction) -> Void)?
 
     let toolbar: NSToolbar
     let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     let resetButton = NSButton(title: "Reset", target: nil, action: nil)
     let doneButton = NSButton(title: "Done", target: nil, action: nil)
-    private(set) var toolGroup: NSToolbarItemGroup?
+    let toolPicker = EditToolPicker()
+    private(set) var toolItem: NSToolbarItem?
     private(set) var undoGroup: NSToolbarItemGroup?
     private(set) var chromeState = EditChromeState()
 
@@ -138,6 +387,7 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         LiveTooltips.shared.bind(cancelButton, command: .exitEditMode, context: .editMode, title: "Cancel")
         resetButton.toolTip = "Reset All Edits"
         LiveTooltips.shared.bind(doneButton, command: .editDone, context: .editMode)
+        toolPicker.onPick = { [weak self] tool in self?.onAction?(.selectTool(tool)) }
         toolbar.delegate = self
         apply(chromeState)
     }
@@ -145,10 +395,18 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
     func apply(_ newState: EditChromeState) {
         chromeState = newState
         resetButton.isEnabled = newState.hasEdits
-        if let group = toolGroup {
-            // No tool on entry shows nothing selected.
-            group.selectedIndex = newState.tool.flatMap { EditChromeTools.order.firstIndex(of: $0) } ?? -1
+        toolPicker.show(tool: newState.tool)
+        if let menu = toolItem?.menuFormRepresentation?.submenu {
+            for (i, entry) in menu.items.enumerated() {
+                entry.state = EditChromeTools.order.indices.contains(i)
+                    && newState.tool == EditChromeTools.order[i] ? .on : .off
+            }
         }
+        if let menu = undoGroup?.menuFormRepresentation?.submenu, menu.items.count == 2 {
+            menu.items[0].isEnabled = newState.canUndo
+            menu.items[1].isEnabled = newState.canRedo
+        }
+        resetMenuItem?.isEnabled = newState.hasEdits
         if let group = undoGroup, group.subitems.count == 2 {
             group.subitems[0].isEnabled = newState.canUndo
             group.subitems[1].isEnabled = newState.canRedo
@@ -164,31 +422,37 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
                  itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
-        case ItemID.cancel: return viewItem(itemIdentifier, cancelButton, label: "Cancel")
-        case ItemID.reset: return viewItem(itemIdentifier, resetButton, label: "Reset")
+        case ItemID.cancel:
+            return viewItem(itemIdentifier, cancelButton, label: "Cancel", menuTitle: "Cancel", action: #selector(cancelClicked))
+        case ItemID.reset:
+            let item = viewItem(itemIdentifier, resetButton, label: "Reset", menuTitle: "Reset All Edits", action: #selector(resetClicked))
+            resetMenuItem = item.menuFormRepresentation
+            resetMenuItem?.isEnabled = chromeState.hasEdits
+            return item
         case ItemID.done:
             // The button carries the accent fill itself (`useAccentFill`).
-            return viewItem(itemIdentifier, doneButton, label: "Done")
+            return viewItem(itemIdentifier, doneButton, label: "Done", menuTitle: "Done", action: #selector(doneClicked))
         case ItemID.tools:
-            let tools = EditChromeTools.order
-            let group = NSToolbarItemGroup(
-                itemIdentifier: itemIdentifier,
-                images: tools.map(EditChromeTools.image),
-                selectionMode: .selectOne,
-                labels: tools.map(EditChromeTools.name),
-                target: self, action: #selector(toolPicked(_:))
-            )
-            group.label = "Tool"
-            for (sub, tool) in zip(group.subitems, tools) {
-                if tool == .levels {
-                    LiveTooltips.shared.bind(sub, command: .levels, context: .viewer, title: EditChromeTools.name(tool))
-                } else {
-                    sub.toolTip = EditChromeTools.tooltip(tool)
-                }
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = toolPicker
+            item.label = "Tool"
+            item.paletteLabel = "Tool"
+            item.autovalidates = false
+            item.visibilityPriority = Self.visibilityPriority(itemIdentifier)
+            // The overflow form: a "Tool" submenu with a check on the current tool.
+            let form = NSMenuItem(title: "Tool", action: nil, keyEquivalent: "")
+            let sub = NSMenu(title: "Tool")
+            for (i, tool) in EditChromeTools.order.enumerated() {
+                let entry = NSMenuItem(title: EditChromeTools.name(tool), action: #selector(toolMenuPicked(_:)), keyEquivalent: "")
+                entry.target = self
+                entry.tag = i
+                sub.addItem(entry)
             }
-            toolGroup = group
+            form.submenu = sub
+            item.menuFormRepresentation = form
+            toolItem = item
             apply(chromeState)
-            return group
+            return item
         case ItemID.undoRedo:
             let group = NSToolbarItemGroup(
                 itemIdentifier: itemIdentifier,
@@ -207,6 +471,16 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
                 for sub in group.subitems { sub.autovalidates = false }
             }
             group.autovalidates = false
+            group.visibilityPriority = Self.visibilityPriority(itemIdentifier)
+            let form = NSMenuItem(title: "Undo / Redo", action: nil, keyEquivalent: "")
+            let sub = NSMenu(title: "Undo / Redo")
+            for (title, sel) in [("Undo", #selector(undoMenu)), ("Redo", #selector(redoMenu))] {
+                let entry = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+                entry.target = self
+                sub.addItem(entry)
+            }
+            form.submenu = sub
+            group.menuFormRepresentation = form
             undoGroup = group
             apply(chromeState)
             return group
@@ -215,13 +489,21 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         }
     }
 
-    private func viewItem(_ id: NSToolbarItem.Identifier, _ button: NSButton, label: String) -> NSToolbarItem {
+    private func viewItem(_ id: NSToolbarItem.Identifier, _ button: NSButton, label: String,
+                          menuTitle: String, action: Selector) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: id)
         item.view = button
         item.label = label
         item.autovalidates = false
+        item.visibilityPriority = Self.visibilityPriority(id)
+        let form = NSMenuItem(title: menuTitle, action: action, keyEquivalent: "")
+        form.target = self
+        item.menuFormRepresentation = form
         return item
     }
+
+    /// The Reset row of the overflow menu (enabled with the recipe's edits).
+    private var resetMenuItem: NSMenuItem?
 
     // MARK: Actions
 
@@ -229,16 +511,17 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
     @objc private func resetClicked() { onAction?(.reset) }
     @objc private func doneClicked() { onAction?(.done) }
 
-    @objc private func toolPicked(_ sender: Any?) {
-        guard let group = toolGroup,
-              EditChromeTools.order.indices.contains(group.selectedIndex) else { return }
-        onAction?(.selectTool(EditChromeTools.order[group.selectedIndex]))
-    }
-
     @objc private func undoRedoPicked(_ sender: Any?) {
         guard let group = undoGroup else { return }
         onAction?(group.selectedIndex == 1 ? .redo : .undo)
     }
+
+    @objc private func toolMenuPicked(_ sender: NSMenuItem) {
+        guard EditChromeTools.order.indices.contains(sender.tag) else { return }
+        onAction?(.selectTool(EditChromeTools.order[sender.tag]))
+    }
+    @objc private func undoMenu() { onAction?(.undo) }
+    @objc private func redoMenu() { onAction?(.redo) }
 }
 
 // MARK: - Full screen: the edit capsule
@@ -250,7 +533,7 @@ final class EditCapsuleView: HUDSurfaceView {
 
     let label = NSTextField(labelWithString: "Editing")
     let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
-    let toolPicker = NSSegmentedControl()
+    let toolPicker = EditToolPicker()
     let undoRedo = NSSegmentedControl()
     let resetButton = NSButton(title: "Reset", target: nil, action: nil)
     let doneButton = NSButton(title: "Done", target: nil, action: nil)
@@ -291,23 +574,6 @@ final class EditCapsuleView: HUDSurfaceView {
         resetButton.toolTip = "Reset All Edits"
         LiveTooltips.shared.bind(doneButton, command: .editDone, context: .editMode)
 
-        let tools = EditChromeTools.order
-        toolPicker.segmentCount = tools.count
-        toolPicker.trackingMode = .selectOne
-        for (i, tool) in tools.enumerated() {
-            toolPicker.setImage(EditChromeTools.image(tool), forSegment: i)
-            if tool == .levels {
-                LiveTooltips.shared.bind(toolPicker, segment: i, command: .levels, context: .viewer,
-                                         title: EditChromeTools.name(tool))
-            } else {
-                toolPicker.setToolTip(EditChromeTools.tooltip(tool), forSegment: i)
-            }
-            toolPicker.setWidth(32, forSegment: i)
-        }
-        toolPicker.target = self
-        toolPicker.action = #selector(toolPicked)
-        toolPicker.setAccessibilityLabel("Tool")
-
         undoRedo.segmentCount = 2
         undoRedo.trackingMode = .momentary
         undoRedo.setImage(NSImage(systemSymbolName: "arrow.uturn.backward", accessibilityDescription: "Undo"), forSegment: 0)
@@ -316,6 +582,8 @@ final class EditCapsuleView: HUDSurfaceView {
         LiveTooltips.shared.bind(undoRedo, segment: 1, command: .redo, context: .editMode)
         undoRedo.target = self
         undoRedo.action = #selector(undoRedoPicked)
+
+        toolPicker.onPick = { [weak self] tool in self?.onAction?(.selectTool(tool)) }
 
         let stack = NSStackView(views: [label, cancelButton, toolPicker, undoRedo, resetButton, doneButton])
         stack.orientation = .horizontal
@@ -331,24 +599,26 @@ final class EditCapsuleView: HUDSurfaceView {
         ])
     }
 
+    /// Every view under the capsule (tests).
+    var allSubviewsForTesting: [NSView] {
+        var out: [NSView] = []
+        func walk(_ v: NSView) { for s in v.subviews { out.append(s); walk(s) } }
+        walk(self)
+        return out
+    }
+
     func apply(_ newState: EditChromeState) {
         chromeState = newState
         label.stringValue = newState.subtitle
         resetButton.isEnabled = newState.hasEdits
         undoRedo.setEnabled(newState.canUndo, forSegment: 0)
         undoRedo.setEnabled(newState.canRedo, forSegment: 1)
-        toolPicker.selectedSegment = newState.tool.flatMap { EditChromeTools.order.firstIndex(of: $0) } ?? -1
+        toolPicker.show(tool: newState.tool)
     }
 
     @objc private func cancelClicked() { onAction?(.cancel) }
     @objc private func resetClicked() { onAction?(.reset) }
     @objc private func doneClicked() { onAction?(.done) }
-
-    @objc private func toolPicked() {
-        let index = toolPicker.selectedSegment
-        guard EditChromeTools.order.indices.contains(index) else { return }
-        onAction?(.selectTool(EditChromeTools.order[index]))
-    }
 
     @objc private func undoRedoPicked() {
         onAction?(undoRedo.selectedSegment == 1 ? .redo : .undo)

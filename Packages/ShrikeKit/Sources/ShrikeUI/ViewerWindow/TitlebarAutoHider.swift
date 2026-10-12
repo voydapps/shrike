@@ -62,18 +62,6 @@ final class TitlebarAutoHider: NSObject {
     }
     private var timer: Task<Void, Never>?
 
-    /// The edit rail fades on this pointer clock, one timer
-    /// per window. It runs whenever the rail is on, even with auto-hide
-    /// off (then only the rail fades).
-    var railUsesClock: () -> Bool = { false }
-    /// The pointer moved: the rail shows.
-    var onRailPointerMoved: (() -> Void)?
-    /// The idle (2 s) or exit (0.5 s) delay ran out: the rail may fade.
-    var onRailIdle: (() -> Void)?
-    /// The running timer was started for the rail alone (window open), so
-    /// it must not hide the titlebar before the pointer ever moved.
-    private var railOnlyTick = false
-
     /// `lookup` is replaced in tests (to simulate a failed lookup).
     init(window: NSWindow, enabled: Bool,
          lookup: @MainActor (NSWindow) -> NSView? = TitlebarAutoHider.findTitlebarContainer) {
@@ -157,26 +145,16 @@ final class TitlebarAutoHider: NSObject {
     /// The pointer moved inside the window.
     func pointerMoved(inTitlebar: Bool) {
         pointerInTitlebar = inTitlebar
-        let rail = railUsesClock()
-        if rail { onRailPointerMoved?() }
-        guard isActive || rail else { return }
-        if isActive { show(animated: true) }
+        guard isActive else { return }
+        show(animated: true)
         restartTimer(Self.idleDelay)
-    }
-
-    /// The window opened with the rail on: start the 2 s
-    /// clock for the rail only (the titlebar waits for the pointer).
-    func startRailClock() {
-        guard railUsesClock(), timer == nil else { return }
-        restartTimer(Self.idleDelay)
-        railOnlyTick = true
     }
 
     /// The pointer left the window (or the canvas, for the titlebar: the
     /// pointer may be on the toolbar now, which the next check reads).
     func pointerExited() {
         pointerInTitlebar = false
-        guard isActive || railUsesClock() else { return }
+        guard isActive else { return }
         restartTimer(Self.exitDelay)
     }
 
@@ -220,10 +198,6 @@ final class TitlebarAutoHider: NSObject {
 
     /// The idle / exit timer fired: hide unless something holds it.
     func hideIfAllowed() {
-        let railOnly = railOnlyTick
-        railOnlyTick = false
-        if railUsesClock() { onRailIdle?() }
-        guard !railOnly else { return }
         guard isActive, isShown else { return }
         let holds = currentHolds()
         if holds.contains(.notKey) { return } // keeps its last state
@@ -233,7 +207,6 @@ final class TitlebarAutoHider: NSObject {
 
     private func restartTimer(_ delay: Duration) {
         timer?.cancel()
-        railOnlyTick = false
         timer = Task { @MainActor [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }

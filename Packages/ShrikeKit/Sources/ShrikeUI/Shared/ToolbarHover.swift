@@ -164,6 +164,8 @@ public final class ToolbarHover: NSObject {
                 return makeTarget(bar.convert(segment, to: overlay))
             }
             guard let c = control(in: viewer), c.isEnabled else { return nil }
+            // The edit tool picker draws its own per-tool hover platter.
+            if c is EditToolPicker { return nil }
             let frame = bar.convert(c.bounds, from: c)
             guard frame.contains(p) else { return nil }
             return makeTarget(bar.convert(frame, to: overlay))

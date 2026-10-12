@@ -95,7 +95,7 @@ final class LaunchOpenSpeedTests: XCTestCase {
 
     /// 1.3: a window never shows the full-screen capsule, so it is not
     /// built before the first frame; full screen builds it in its z-order
-    /// slot (above the filmstrip, below the edit rail).
+    /// slot (above the filmstrip, below the inspector).
     func testCapsuleIsBuiltOnlyForFullScreen() throws {
         let url = try writeJPEG("a.jpg")
         let viewer = ViewerWindow(groups: [ImageGroup(primary: url)], startIndex: 0, services: services)
@@ -112,9 +112,9 @@ final class LaunchOpenSpeedTests: XCTestCase {
         let order = capsule.superview?.subviews ?? []
         let capsuleIndex = try XCTUnwrap(order.firstIndex(of: capsule))
         let stripIndex = try XCTUnwrap(order.firstIndex { $0 is FilmstripView })
-        let railIndex = try XCTUnwrap(order.firstIndex { $0 is EditRail })
+        let inspectorIndex = try XCTUnwrap(order.firstIndex { $0 is InspectorPanel })
         XCTAssertLessThan(stripIndex, capsuleIndex)
-        XCTAssertLessThan(capsuleIndex, railIndex)
+        XCTAssertLessThan(capsuleIndex, inspectorIndex)
         XCTAssertTrue(capsule.isHidden, "built hidden; hover shows it")
     }
 
@@ -192,7 +192,7 @@ final class LaunchOpenSpeedTests: XCTestCase {
     /// 1.3: where the init time goes (prints only).
     func testInitBreakdown() throws {
         _ = ViewerContentView(services: services)
-        _ = FilmstripView(); _ = ViewerToolbar(); _ = EditRail(); _ = InspectorPanel()
+        _ = FilmstripView(); _ = ViewerToolbar(); _ = InspectorPanel()
         _ = HistogramOverlayView(); _ = LoupeView(); _ = NavigationPositionOverlayView()
         _ = ViewerWindowToolbar(host: nil)
         func time(_ name: String, _ body: () -> Void) -> String {
@@ -204,7 +204,6 @@ final class LaunchOpenSpeedTests: XCTestCase {
             time("contentView") { _ = ViewerContentView(services: services) },
             time("filmstrip") { _ = FilmstripView() },
             time("capsule") { _ = ViewerToolbar() },
-            time("editRail") { _ = EditRail() },
             time("inspector") { _ = InspectorPanel() },
             time("histogram") { _ = HistogramOverlayView() },
             time("loupe") { _ = LoupeView() },

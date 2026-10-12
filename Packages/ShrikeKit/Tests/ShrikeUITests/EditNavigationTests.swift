@@ -149,14 +149,16 @@ final class EditNavigationTests: XCTestCase {
             await viewer.waitForEditExit()
             XCTAssertEqual(asked, 0, "\(c.name): nothing to lose, no alert")
             try await waitUntil("\(c.name) moved") { viewer.displayedItem?.listIndex == c.target }
-            XCTAssertFalse(viewer.contentRootForTesting.isEditModeActive)
+            // Spec 25 §3.3: edit mode starts again on the new photo, with no tool.
+            try await waitUntil("\(c.name) editing again") { viewer.contentRootForTesting.isEditModeActive }
+            XCTAssertNil(viewer.contentRootForTesting.editModeController.currentTool, c.name)
             viewer.close()
         }
     }
 
     /// Edit mode hides the filmstrip, so no filmstrip click
     /// can leave the photo. The old "click asks, then goes" path is gone.
-    func testFilmstripIsHiddenInEditMode() async throws {
+    func testWindowFilmstripStaysInEditMode() async throws {
         let stripWas = Prefs.filmstripVisibleInWindowed
         Prefs.filmstripVisibleInWindowed = true
         defer { Prefs.filmstripVisibleInWindowed = stripWas }
@@ -164,7 +166,7 @@ final class EditNavigationTests: XCTestCase {
         defer { viewer.close() }
         viewer.contentView?.layoutSubtreeIfNeeded()
         let strip = viewer.contentRootForTesting.filmstripForTesting
-        XCTAssertTrue(strip.isHidden || strip.frame.height < 1, "no filmstrip in edit mode")
+        XCTAssertFalse(strip.isHidden, "the window keeps its docked strip in edit mode (spec 25 §3.3)")
         XCTAssertEqual(asked, 0)
         XCTAssertEqual(viewer.displayedItem?.listIndex, 2)
     }

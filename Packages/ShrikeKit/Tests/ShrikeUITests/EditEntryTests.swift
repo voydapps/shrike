@@ -2,11 +2,8 @@
 //  EditEntryTests.swift
 //  ShrikeUITests
 //
-//  The edit rail
-//  shows in a window by default with labels and fades on the pointer
-//  clock; E / ⌘E / Edit land on no tool; no filmstrip in edit mode; the
-//  pin sits in the rail; Done is prominent; the panel menu items read
-//  Show / Hide. Offscreen windows only.
+//  E / ⌘E / Edit land on no tool; no filmstrip in edit mode; Done is
+//  prominent; the panel menu items read Show / Hide. Offscreen windows only.
 //
 
 import XCTest
@@ -22,15 +19,11 @@ final class EditEntryTests: XCTestCase {
     private var root: URL!
     private var store: BackupStore!
     private let keys = [
-        "shrike.viewer.editRail.visibleInWindowed",
-        "shrike.viewer.editRail.defaultOnApplied",
-        "shrike.viewer.editRail.pinnedFullscreen",
         "shrike.viewer.filmstrip.pinnedFullscreen",
         "shrike.viewer.filmstrip.visibleInWindowed",
     ]
     private var savedFilmstripPinned = false
     private var savedFilmstripVisible = true
-    private var savedRailPinned = false
 
     override func setUp() async throws {
         root = FileManager.default.temporaryDirectory
@@ -39,17 +32,11 @@ final class EditEntryTests: XCTestCase {
         store = BackupStore(root: root.appendingPathComponent("Backups", isDirectory: true))
         savedFilmstripPinned = Prefs.filmstripPinnedFullscreen
         savedFilmstripVisible = Prefs.filmstripVisibleInWindowed
-        savedRailPinned = Prefs.editRailPinnedFullscreen
-        ShrikeDefaults.store.removeObject(forKey: "shrike.viewer.editRail.visibleInWindowed")
-        ShrikeDefaults.store.removeObject(forKey: "shrike.viewer.editRail.defaultOnApplied")
     }
 
     override func tearDown() async throws {
-        ShrikeDefaults.store.removeObject(forKey: "shrike.viewer.editRail.visibleInWindowed")
-        ShrikeDefaults.store.removeObject(forKey: "shrike.viewer.editRail.defaultOnApplied")
         Prefs.filmstripPinnedFullscreen = savedFilmstripPinned
         Prefs.filmstripVisibleInWindowed = savedFilmstripVisible
-        Prefs.editRailPinnedFullscreen = savedRailPinned
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -66,8 +53,6 @@ final class EditEntryTests: XCTestCase {
         viewer.imageViewForTesting.image = RotateDirectionTests.quadrants()
         let content = viewer.contentRootForTesting
         content.animatesPanelFades = false
-        content.voiceOverOverrideForTesting = false
-        content.simulateFirstFrameForTesting()
         return viewer
     }
 
@@ -82,209 +67,6 @@ final class EditEntryTests: XCTestCase {
         XCTAssertTrue(condition(), "timed out waiting for \(what)")
     }
 
-    private func railFrameInWindow(_ rail: EditRail) -> NSRect {
-        rail.superview?.convert(rail.frame, to: nil) ?? .zero
-    }
-
-    // MARK: Default and the one-time switch
-
-    func testV1FreshStoreShowsTheLabelledRailInAWindow() {
-        XCTAssertTrue(Prefs.editRailVisibleInWindowed, "missing value reads true")
-        let viewer = makeViewer()
-        defer { viewer.close() }
-        let rail = viewer.contentRootForTesting.editRailForTesting
-        XCTAssertFalse(rail.isHidden)
-        XCTAssertEqual(rail.alphaValue, 1)
-        XCTAssertFalse(rail.isCompact)
-        XCTAssertEqual(rail.buttonsForTesting.map(\.labelField.stringValue),
-                       ["Crop", "Rotate", "Resize", "Color", "Levels"])
-        XCTAssertTrue(rail.buttonsForTesting.allSatisfy { !$0.labelField.isHidden })
-        XCTAssertEqual(rail.frame.height, EditRail.labeledHeight, accuracy: 0.5, "282 pt in a window")
-    }
-
-    func testV2toV4TheOneTimeSwitch() {
-        let d = ShrikeDefaults.store
-        let marker = "shrike.viewer.editRail.defaultOnApplied"
-        // 2: stored off, no marker → on, marker set.
-        d.set(false, forKey: "shrike.viewer.editRail.visibleInWindowed")
-        Prefs.applyEditRailDefaultOnce()
-        XCTAssertTrue(Prefs.editRailVisibleInWindowed)
-        XCTAssertEqual(d.object(forKey: marker) as? Bool, true)
-        let viewer = makeViewer()
-        defer { viewer.close() }
-        let content = viewer.contentRootForTesting
-        XCTAssertFalse(content.editRailForTesting.isHidden)
-
-        // 3: ⇧⌘E off, the switch runs again: it stays off.
-        viewer.perform(.toggleEditRail)
-        XCTAssertFalse(Prefs.editRailVisibleInWindowed)
-        Prefs.applyEditRailDefaultOnce()
-        XCTAssertFalse(Prefs.editRailVisibleInWindowed, "the marker keeps the user's choice")
-        content.layoutSubtreeIfNeeded()
-        XCTAssertTrue(content.editRailForTesting.isHidden)
-        XCTAssertEqual(viewer.panelMenuTitle(.toggleEditRail), "Show Edit Rail")
-
-        // 4: stored on, no marker → still on, marker set.
-        d.removeObject(forKey: marker)
-        d.set(true, forKey: "shrike.viewer.editRail.visibleInWindowed")
-        Prefs.applyEditRailDefaultOnce()
-        XCTAssertTrue(Prefs.editRailVisibleInWindowed)
-        XCTAssertEqual(d.object(forKey: marker) as? Bool, true)
-
-        // No value at all: nothing is written but the marker.
-        d.removeObject(forKey: marker)
-        d.removeObject(forKey: "shrike.viewer.editRail.visibleInWindowed")
-        Prefs.applyEditRailDefaultOnce()
-        XCTAssertNil(d.object(forKey: "shrike.viewer.editRail.visibleInWindowed"))
-        XCTAssertTrue(Prefs.editRailVisibleInWindowed)
-    }
-
-    // MARK: Show and fade
-
-    func testV5V6ThePointerClockFadesTheRail() throws {
-        let viewer = makeViewer()
-        defer { viewer.close() }
-        let content = viewer.contentRootForTesting
-        let rail = content.editRailForTesting
-        let hider = try XCTUnwrap(viewer.autoHider)
-        let canvasPoint = content.convert(NSPoint(x: content.bounds.midX + 100, y: content.bounds.midY), to: nil)
-        content.cursorLocationOverrideForTesting = canvasPoint
-        hider.pointerLocation = { canvasPoint }
-        let frameBefore = viewer.imageViewForTesting.frame
-        let drawBefore = viewer.imageViewForTesting.clipSpaceTransform()
-
-        hider.pointerMoved(inTitlebar: false)
-        hider.hideIfAllowed()   // the 2 s clock ran out
-        XCTAssertTrue(rail.isHidden, "5: still pointer over the canvas → the rail fades")
-        XCTAssertEqual(viewer.imageViewForTesting.frame, frameBefore, "the photo never moves")
-        XCTAssertEqual(viewer.imageViewForTesting.clipSpaceTransform(), drawBefore)
-        hider.pointerMoved(inTitlebar: false)
-        XCTAssertFalse(rail.isHidden, "a pointer move shows it")
-        XCTAssertEqual(rail.alphaValue, 1)
-
-        // 6: the pointer on the rail holds it.
-        content.layoutSubtreeIfNeeded()
-        let onRail = railFrameInWindow(rail)
-        content.cursorLocationOverrideForTesting = NSPoint(x: onRail.midX, y: onRail.midY)
-        hider.hideIfAllowed()
-        XCTAssertFalse(rail.isHidden, "pointer on the rail: stays")
-        // VoiceOver holds it.
-        content.cursorLocationOverrideForTesting = canvasPoint
-        content.voiceOverOverrideForTesting = true
-        hider.hideIfAllowed()
-        XCTAssertFalse(rail.isHidden, "VoiceOver on: never fades")
-        content.voiceOverOverrideForTesting = false
-        // Keys never change it.
-        _ = viewer.handleKeySnapshot(key("\u{F703}", 124))
-        XCTAssertFalse(rail.isHidden)
-        // Auto-hide off: the titlebar stays, the rail still fades.
-        hider.isEnabled = false
-        hider.hideIfAllowed()
-        XCTAssertTrue(rail.isHidden, "auto-hide off: only the rail fades")
-        XCTAssertTrue(hider.isShown, "the titlebar stays")
-    }
-
-    // MARK: Place and size
-
-    func testV7TheRailSitsBetweenTheTitlebarAndThePill() {
-        let viewer = makeViewer()
-        defer { viewer.close() }
-        let content = viewer.contentRootForTesting
-        content.layoutSubtreeIfNeeded()
-        let rail = railFrameInWindow(content.editRailForTesting)
-        XCTAssertLessThanOrEqual(rail.maxY, viewer.contentLayoutRect.maxY - 8 + 0.5, "clear of the titlebar")
-        let pill = content.convert(content.pillFrameForTesting, to: nil)
-        XCTAssertFalse(rail.intersects(pill), "clear of the pill")
-        XCTAssertGreaterThanOrEqual(rail.minY, pill.maxY + 8 - 0.5)
-        let canvas = content.convert(viewer.imageViewForTesting.frame, to: nil)
-        XCTAssertEqual(rail.minX - canvas.minX, 16, accuracy: 0.5, "16 pt from the canvas edge")
-    }
-
-    func testV8ShortBandsGoCompactThenHide_NarrowCanvasHides() {
-        var seen: Set<String> = []
-        for height in stride(from: 280, through: 720, by: 20) {
-            let content = ViewerContentView(services: .makeDefault())
-            content.frame = CGRect(x: 0, y: 0, width: 1000, height: CGFloat(height))
-            content.animatesPanelFades = false
-            content.windowMode = .windowed
-            content.simulateFirstFrameForTesting()
-            let rail = content.editRailForTesting
-            let pill = content.pillFrameForTesting
-            let top = CGFloat(height) - ViewerContentView.railBandGap
-            let bottom = (pill.height > 0 ? pill.maxY : 0) + ViewerContentView.railBandGap
-            let band = top - bottom
-            if band < EditRail.compactHeight {
-                XCTAssertTrue(rail.isHidden, "band \(band): hidden")
-                seen.insert("hidden")
-            } else if band < EditRail.labeledHeight {
-                XCTAssertFalse(rail.isHidden, "band \(band)")
-                XCTAssertTrue(rail.isCompact, "band \(band): compact")
-                XCTAssertEqual(rail.frame.height, EditRail.compactHeight, accuracy: 0.5)
-                XCTAssertTrue(rail.buttonsForTesting.allSatisfy { $0.labelField.isHidden })
-                XCTAssertGreaterThanOrEqual(rail.frame.minY, bottom - 0.5)
-                XCTAssertLessThanOrEqual(rail.frame.maxY, top + 0.5)
-                seen.insert("compact")
-            } else {
-                XCTAssertFalse(rail.isHidden, "band \(band)")
-                XCTAssertFalse(rail.isCompact)
-                XCTAssertEqual(rail.frame.height, EditRail.labeledHeight, accuracy: 0.5)
-                XCTAssertGreaterThanOrEqual(rail.frame.minY, bottom - 0.5)
-                XCTAssertLessThanOrEqual(rail.frame.maxY, top + 0.5)
-                seen.insert("labelled")
-            }
-        }
-        XCTAssertEqual(seen, ["hidden", "compact", "labelled"], "the sweep covers every form")
-        XCTAssertEqual(EditRail.compactHeight, 228)
-        XCTAssertEqual(EditRail.labeledHeight, 282)
-
-        // A canvas under 480 pt (the inspector open in a small window).
-        let narrow = ViewerContentView(services: .makeDefault())
-        narrow.frame = CGRect(x: 0, y: 0, width: 420, height: 700)
-        narrow.animatesPanelFades = false
-        narrow.windowMode = .windowed
-        narrow.simulateFirstFrameForTesting()
-        XCTAssertTrue(narrow.editRailForTesting.isHidden, "canvas 420 pt: no rail")
-        XCTAssertTrue(narrow.isEditRailShown, "the setting is kept: the menu reads Hide Edit Rail")
-    }
-
-    /// Round 3: a 480-pt-wide window has no rail only because its band is
-    /// shorter than the compact rail (228 pt) once the titlebar, pill and
-    /// docked strip are counted; the 480 pt width itself is allowed. Taller
-    /// at 480 pt wide, the rail shows. Documented in spec 24.
-    func testTheRailAtTheSmallestWindowWidthDependsOnTheBandHeightOnly() {
-        let small = makeViewer(size: NSSize(width: 480, height: 360))
-        XCTAssertGreaterThanOrEqual(small.imageViewForTesting.frame.width, 480,
-                                    "the width is not what hides it")
-        XCTAssertTrue(small.contentRootForTesting.editRailForTesting.isHidden, "480 x 360: band under 228 pt")
-        XCTAssertTrue(small.contentRootForTesting.isEditRailShown, "the setting is kept")
-
-        let tall = makeViewer(size: NSSize(width: 480, height: 560))
-        let rail = tall.contentRootForTesting.editRailForTesting
-        XCTAssertFalse(rail.isHidden, "480 x 560: the rail shows")
-    }
-
-    // MARK: Labels, tooltips, VoiceOver
-
-    func testV9LabelsAreWholeAndButtonsAreNamed() {
-        let rail = EditRail()
-        rail.frame = NSRect(x: 0, y: 0, width: EditRail.totalWidth, height: 320)
-        rail.layoutSubtreeIfNeeded()
-        let names = ["Crop", "Rotate", "Resize", "Color", "Levels"]
-        XCTAssertEqual(rail.accessibilityLabel(), "Edit Tools")
-        XCTAssertEqual(rail.accessibilityRole(), .group)
-        for (button, name) in zip(rail.buttonsForTesting, names) {
-            let label = button.labelField
-            let whole = label.intrinsicContentSize.width
-            XCTAssertLessThanOrEqual(whole, 48, "\(name) fits the cell")
-            XCTAssertGreaterThanOrEqual(label.frame.width, whole - 0.5, "\(name) is not truncated")
-            XCTAssertEqual(button.accessibilityLabel(), name)
-            XCTAssertEqual(button.frame.size, NSSize(width: 48, height: 50))
-        }
-        XCTAssertTrue(rail.buttonTitlesForTesting().first?.hasPrefix("Crop") == true)
-        rail.setActiveTool(.crop)
-        XCTAssertEqual(rail.buttonsForTesting.first?.accessibilityValue() as? String, "Selected")
-    }
-
     // MARK: No tool on entry
 
     func testV10EveryEntryLandsOnNoTool() async throws {
@@ -297,6 +79,7 @@ final class EditEntryTests: XCTestCase {
             ("⌘E", { _ = viewer.handleKeySnapshot(self.key("e", 14, .command)) }),
             ("Image ▸ Edit Image", { viewer.perform(.editImage) }),
             ("toolbar / capsule Edit", { viewer.dispatch(.openEditMode) }),
+            ("context menu ▸ Edit Image", { viewer.perform(.editImage) }),
         ]
         for (name, enter) in entries {
             enter()
@@ -304,8 +87,10 @@ final class EditEntryTests: XCTestCase {
             XCTAssertNil(controller.currentTool, name)
             XCTAssertTrue(controller.cropOverlay.isHidden, "\(name): no crop frame")
             XCTAssertTrue(controller.parameterPanel._installed is ChooseToolPanel, "\(name): Choose a Tool")
-            XCTAssertEqual(content.editToolbarController.toolGroup?.selectedIndex ?? -1, -1, name)
-            XCTAssertTrue(content.editRailForTesting.activeToolsForTesting().isEmpty, "\(name): no active rail button")
+            XCTAssertEqual(content.editToolbarController.toolPicker.selectedSegment, -1, "\(name): picker lights nothing")
+            XCTAssertEqual(content.editCapsule.toolPicker.selectedSegment, -1, "\(name): capsule picker lights nothing")
+            XCTAssertEqual((controller.parameterPanel._installed as? ChooseToolPanel)?.bodyLabel.stringValue,
+                           "Pick Crop, Rotate, Resize, Color or Levels in the bar at the top.", name)
             content.exitEditMode()
             XCTAssertFalse(content.isEditModeActive)
         }
@@ -348,20 +133,20 @@ final class EditEntryTests: XCTestCase {
 
     // MARK: Full screen, filmstrip, pin, Done, menus
 
-    func testV13TheCapsuleHasEditAndTheRailShowsInEditMode() async throws {
+    func testV13TheCapsuleHasEditAndTheEditBarHoldsTheTools() async throws {
         XCTAssertEqual(ViewerToolbar.symbolNamesForTesting[5...7],
                        ["square.and.arrow.up", "slider.horizontal.3", "trash"])
         XCTAssertEqual(ViewerToolbar.command(for: .openEditMode), .editImage)
-        Prefs.editRailPinnedFullscreen = false
         let viewer = makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         content.windowMode = .fullscreen
-        XCTAssertTrue(content.editRailForTesting.isHidden, "unpinned rail waits for the edge")
         viewer.dispatch(.openEditMode)
         try await waitFor("edit mode") { content.isEditModeActive }
         XCTAssertNil(content.editModeController.currentTool)
-        XCTAssertFalse(content.editRailForTesting.isHidden, "held open in edit mode although not pinned")
+        XCTAssertEqual(content.editCapsule.toolPicker.selectedSegment, -1)
+        XCTAssertEqual((content.editModeController.parameterPanel._installed as? ChooseToolPanel)?.bodyLabel.stringValue,
+                       "Pick Crop, Rotate, Resize, Color or Levels in the bar at the bottom.")
         content.exitEditMode()
         content.windowMode = .windowed
     }
@@ -383,7 +168,7 @@ final class EditEntryTests: XCTestCase {
         content.windowMode = .windowed
     }
 
-    func testV15WindowFilmstripHidesInEditModeAndThePhotoComesBack() async throws {
+    func testV15WindowFilmstripStaysInEditModeAndThePhotoDoesNotMove() async throws {
         Prefs.filmstripVisibleInWindowed = true
         let viewer = makeViewer()
         defer { viewer.close() }
@@ -394,40 +179,13 @@ final class EditEntryTests: XCTestCase {
         viewer.dispatch(.openEditMode)
         try await waitFor("edit mode") { content.isEditModeActive }
         content.layoutSubtreeIfNeeded()
-        XCTAssertTrue(content.filmstripForTesting.isHidden, "the docked strip hides")
-        XCTAssertFalse(viewer.canPerform(.toggleFilmstrip), "⌘K and the menu item are disabled")
-        viewer.perform(.toggleFilmstrip)
-        XCTAssertTrue(Prefs.filmstripVisibleInWindowed, "⌘K does nothing in edit mode")
+        // Spec 25 §3.3: a window keeps its docked strip in edit mode, and ⌘K works.
+        XCTAssertFalse(content.filmstripForTesting.isHidden, "the docked strip stays")
+        XCTAssertTrue(viewer.canPerform(.toggleFilmstrip), "⌘K and the menu item work")
         content.exitEditMode()
         content.layoutSubtreeIfNeeded()
         XCTAssertFalse(content.filmstripForTesting.isHidden)
         XCTAssertEqual(viewer.imageViewForTesting.frame, before, "the photo frame equals the one before entry")
-    }
-
-    func testV16ThePinSitsInsideTheRailInFullScreen() {
-        Prefs.editRailPinnedFullscreen = true
-        let content = ViewerContentView(services: .makeDefault())
-        content.frame = CGRect(x: 0, y: 0, width: 1440, height: 900)
-        content.animatesPanelFades = false
-        content.windowMode = .fullscreen
-        content.layoutSubtreeIfNeeded()
-        let rail = content.editRailForTesting
-        XCTAssertFalse(rail.isHidden)
-        let railFrame = rail.superview.map { content.convert(rail.frame, from: $0) } ?? rail.frame
-        let pin = rail.pinOverlayForTesting
-        let pinFrame = content.convert(pin.frame, from: pin.superview)
-        XCTAssertTrue(railFrame.contains(pinFrame), "pin \(pinFrame) inside the rail \(railFrame)")
-        XCTAssertEqual(pinFrame.midY, railFrame.maxY - 16, accuracy: 0.5, "16 pt below the top")
-        XCTAssertEqual(pinFrame.midX, railFrame.midX, accuracy: 0.5, "on the centre line")
-        // The pin row (24 pt) ends 6 pt above the Crop cell; the 28 pt
-        // hit square overhangs the row by 2 pt and still clears the cell.
-        let crop = rail.buttonFramesForTesting()[0]
-        let cropTop = railFrame.minY + crop.maxY
-        let row = pin.superview.map { content.convert($0.bounds, from: $0) } ?? .zero
-        XCTAssertGreaterThanOrEqual(row.minY - cropTop, 6 - 0.5, "the pin row is ≥ 6 pt above Crop")
-        XCTAssertGreaterThan(pinFrame.minY, cropTop, "the pin never overlaps Crop")
-        XCTAssertEqual(railFrame.height, EditRail.labeledHeight + EditRail.pinRowExtra, accuracy: 0.5, "308 pt")
-        XCTAssertEqual(EditRail.labeledHeight + EditRail.pinRowExtra, 308)
     }
 
     func testV17DoneIsTheProminentDefaultButton() {
@@ -459,20 +217,14 @@ final class EditEntryTests: XCTestCase {
             _ = viewer.validateMenuItem(item)
             return item
         }
-        let panels: [ShrikeCommand] = [.toggleEditRail, .toggleFilmstrip, .toggleHistogram, .toggleInspector]
+        let panels: [ShrikeCommand] = [.toggleFilmstrip, .toggleHistogram, .toggleInspector]
         for command in panels {
             XCTAssertEqual(validated(command).state, .off, "\(command): no check mark")
         }
-        XCTAssertEqual(validated(.toggleEditRail).title, "Hide Edit Rail")
         content.windowMode = .fullscreen
-        if content.isPinnedForTesting(.editRail) { content.togglePanel(.editRail) }
-        XCTAssertEqual(validated(.toggleEditRail).title, "Show Edit Rail", "full screen, unpinned")
-        content.togglePanel(.editRail)
-        XCTAssertEqual(validated(.toggleEditRail).title, "Hide Edit Rail", "full screen, pinned")
         for command in panels {
             XCTAssertEqual(validated(command).state, .off, "\(command): no check mark in full screen")
         }
-        content.togglePanel(.editRail)
         content.windowMode = .windowed
     }
 }

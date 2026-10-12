@@ -234,6 +234,35 @@ public final class BrowserWindowController: NSWindowController {
         reloadCurrentFolder()
     }
 
+    /// These files changed on disk: drops the sizes and header reads kept
+    /// for them (list Dimensions column, Dimensions sort, inspector, status
+    /// bar), then lists the folder again. Every size shown follows the file.
+    ///
+    /// Any member of a RAW+JPEG group counts for the whole group: the
+    /// caches are keyed by the primary, so a write that lands on the RAW
+    /// companion must drop the primary's entries too.
+    func fileContentsChanged(_ urls: [URL]) {
+        let urls = withGroupMembers(of: urls)
+        photoInfoCache.invalidate(urls)
+        contentController.forgetFileSizes(for: urls)
+        reloadCurrentFolder()
+    }
+
+    /// `urls` plus every file of each listed group one of them belongs to
+    /// (primary and companions). Unlisted URLs stay as they are.
+    func withGroupMembers(of urls: [URL]) -> [URL] {
+        guard !urls.isEmpty else { return urls }
+        let wanted = Set(urls.map { GroupList.canonical($0) })
+        var result = urls
+        for item in contentController.allItems {
+            let members = item.group.allURLs
+            if members.contains(where: { wanted.contains(GroupList.canonical($0)) }) {
+                result.append(contentsOf: members)
+            }
+        }
+        return result
+    }
+
     /// Lists the current folder again, keeping the selection.
     func reloadCurrentFolder() {
         guard let folder = currentFolder else { return }
@@ -420,6 +449,7 @@ public final class BrowserWindowController: NSWindowController {
     private func wireUpDelegates() {
         treeController.delegate = self
         contentController.delegate = self
+        contentController.destinationSlotsProvider = { [weak self] in self?.transfers.slots }
         contentController.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
         contentController.onSortProgress = { [weak self] text in self?.sortProgressText = text }
         contentController.onClearFilter = { [weak self] in self?.clearFilterAndSearch() }
@@ -1055,7 +1085,7 @@ public final class BrowserWindowController: NSWindowController {
             MainActor.assumeIsolated { target.undoTrash(receipt) }
         }
         undo.setActionName("Move to Trash")
-        toast(FileActionCopy.movedToTrash(receipt.trashedGroups), actionTitle: "Undo") { [weak self] in
+        toast(.trashed(FileActionCopy.movedToTrash(receipt.trashedGroups))) { [weak self] in
             self?.window?.undoManager?.undo()
         }
     }
@@ -1234,6 +1264,12 @@ public final class BrowserWindowController: NSWindowController {
         toastHost.show(content, action: action)
     }
 
+    /// Shows a ready-made toast content.
+    public func toast(_ content: ToastContent, action: (@MainActor () -> Void)? = nil) {
+        if toastHost.superview == nil { toastHost.install(in: contentController.view) }
+        toastHost.show(content, action: action)
+    }
+
     /// Selects `url` and scrolls it into view (return from the viewer).
     public func select(url: URL) {
         if !contentController.select(url: url) { pendingSelection = url }
@@ -1277,7 +1313,11 @@ public final class BrowserWindowController: NSWindowController {
             clearChord()
             resolved = BrowserKeyMap.action(for: snap, preset: ShortcutTable.livePreset, chordPrefix: nil)
         }
-        guard let action = resolved else { return false }
+        guard let action = resolved else {
+            // Mac preset: a plain ⌫ / ⌦ trashes nothing; one hint per run.
+            return TrashKeyHint.handle(snap, preset: ShortcutTable.livePreset, responder: window?.firstResponder,
+                                       toast: { [weak self] in self?.toast($0) })
+        }
         if chordPrefix != nil { clearChord() }
         dispatch(action)
         return true

@@ -124,6 +124,8 @@ final class FilmstripView: HUDSurfaceView {
     /// one. The enclosing controller wires this to `navigate(to:)`.
     /// No new `ViewerAction` case is needed.
     var onSelectGlobal: ((Int) -> Void)?
+    /// The viewer's context menu for a right-click on a cell (spec 25 §12.2).
+    var contextMenuProvider: (() -> NSMenu?)?
 
     /// Rating + flag for a global index; nil draws none.
     var marksProvider: ((Int) -> (rating: Int, flagged: Bool))?
@@ -461,6 +463,7 @@ final class FilmstripView: HUDSurfaceView {
                     self?.dragItem(for: globalIndex)
                 }
                 cell.onDragBegan = { [weak self] in self?.clearHover() }
+                cell.onContextMenu = { [weak self] in self?.contextMenuProvider?() }
                 // Fix #3 — if this index was previously in the neighbor
                 // window and had its aspect resolved, seed the cell's
                 // width constraint from the cached value right now so
@@ -773,6 +776,10 @@ final class FilmstripView: HUDSurfaceView {
         return cell.convert(NSPoint(x: cell.bounds.midX, y: cell.bounds.midY), to: nil)
     }
     internal func hoverFadeForTesting(_ cell: NSView) -> CAAnimation? { (cell as? ThumbCell)?.hoverFadeForTesting }
+    /// A right-click on a cell without the pop-up: selects the cell, returns the menu.
+    internal func rightClickMenuForTesting(_ globalIndex: Int) -> NSMenu? {
+        cellsByIndex[globalIndex]?.menuAfterSelectingCell()
+    }
     internal func cellToolTipForTesting(_ cell: NSView) -> String? { cell.toolTip }
     /// Scrolls the strip sideways by `dx` points (clip-view bounds change).
     internal func scrollForTesting(by dx: CGFloat) {
@@ -959,6 +966,9 @@ private final class ThumbCell: NSView, NSDraggingSource {
     private var mouseDownPoint: NSPoint?
 
     private let imageView = NSImageView()
+    /// Shown when the file can't be previewed (spec 25 §2.2).
+    private let brokenView = NSImageView()
+    private(set) var isUnreadable = false
     private let highlight = NSView()
     /// The running thumbnail request; cancelled when the cell leaves the
     /// strip, so a queued decode for a photo nobody sees any more is dropped.
@@ -1114,6 +1124,14 @@ private final class ThumbCell: NSView, NSDraggingSource {
         imageView.translatesAutoresizingMaskIntoConstraints = false
         imageView.imageScaling = .scaleProportionallyUpOrDown
         addSubview(imageView)
+        brokenView.translatesAutoresizingMaskIntoConstraints = false
+        brokenView.contentTintColor = Badges.brokenFileTint
+        brokenView.isHidden = true
+        addSubview(brokenView)
+        NSLayoutConstraint.activate([
+            brokenView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            brokenView.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
 
         // Hover veil: above the photo, below the stars and the flag.
         hoverOverlay.wantsLayer = true
@@ -1197,6 +1215,23 @@ private final class ThumbCell: NSView, NSDraggingSource {
         mouseDownPoint = convert(event.locationInWindow, from: nil)
         onClick?(globalIndex)
     }
+
+    /// Right-click: the cell becomes the displayed photo first (the menu acts
+    /// on the displayed photo), then the viewer menu opens (spec 25 §12.2).
+    override func rightMouseDown(with event: NSEvent) {
+        if let menu = menuAfterSelectingCell() {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+        }
+    }
+
+    /// Makes this cell the displayed photo, then gives the menu to open.
+    func menuAfterSelectingCell() -> NSMenu? {
+        onClick?(globalIndex)
+        return onContextMenu?()
+    }
+
+    /// The viewer's context menu; set by the strip's owner.
+    var onContextMenu: (() -> NSMenu?)?
 
     /// A drag of 4 pt or more starts a drag out.
     override func mouseDragged(with event: NSEvent) {
@@ -1348,9 +1383,34 @@ private final class ThumbCell: NSView, NSDraggingSource {
                     self?.applyAspectFromThumb(width: w, height: h)
                     self?.imageView.image = NSImage(cgImage: thumb, size: .zero)
                 }
+            } else if !Task.isCancelled {
+                await MainActor.run { self?.showUnreadable() }
             }
         }
     }
+
+    /// The thumbnail can't be made: the same glyph as the Browser cell
+    /// (no text; the strip cell is small) and a tooltip that says so.
+    func showUnreadable() {
+        isUnreadable = true
+        brokenView.image = Badges.brokenFileGlyph(pointSize: min(20, heightPt * 0.3))
+        brokenView.isHidden = false
+        let name = (source as? FileImageSource)?.url.lastPathComponent
+        if let name { toolTip = "\(name) — can't preview" }
+    }
+
+    /// VoiceOver: name, stars, flag, can't preview (spec 25 §7.2), like the grid cell.
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .image }
+    /// One element per cell: the picture and glyph inside are not read on their own.
+    override func accessibilityChildren() -> [Any]? { [] }
+    override func accessibilityLabel() -> String? {
+        let name = (source as? FileImageSource)?.url.lastPathComponent ?? ""
+        return CellAccessibility.label(name: name, rating: shownMarks.rating, flagged: shownMarks.flagged,
+                                       isPair: false, failed: isUnreadable)
+    }
+
+    var brokenGlyphShownForTesting: Bool { !brokenView.isHidden }
 
     nonisolated static func ioThumbnail(url: URL, maxPixelSize: Int) -> CGImage? {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }

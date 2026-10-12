@@ -5,7 +5,7 @@
 //  The viewer's right-click menu:
 //
 //    Open With ▸ · Open in External Editor ▸ · Reveal in Finder · Show in Browser · Share ▸ · —
-//    Rotate Left · Rotate Right · — · Rating ▸ · Flag · Tags… · —
+//    Rotate Left · Rotate Right · Edit Image · — · Rating ▸ · Flag · Tags… · —
 //    Copy to Folder ▸ · Move to Folder ▸ · Rename… · Revert to Original…
 //    (when edited) · — · Copy · Copy Path · — · Move to Trash
 //
@@ -52,6 +52,7 @@ final class ViewerContextMenu: NSObject, NSMenuDelegate {
             revertItem?.isHidden = !window.isDisplayedEdited
             share.refreshParent()
             ShrikeMainMenu.tidySeparators(in: menu)
+            MenuKeyHints.apply(to: menu, context: .viewer)
         case copyToMenu:
             ShrikeMainMenu.fillDestinations(copyToMenu, command: .copyToFolder,
                                            slots: window.transfers.slots, target: window)
@@ -89,6 +90,7 @@ final class ViewerContextMenu: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         add(.rotateLeft, target: window)
         add(.rotateRight, target: window)
+        add(.editImage, target: window)
         menu.addItem(.separator())
         let rating = NSMenu(title: "Rating")
         for command in [ShrikeCommand.rate0, .rate1, .rate2, .rate3, .rate4, .rate5] {
@@ -100,7 +102,7 @@ final class ViewerContextMenu: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         addSubmenu(copyToMenu, title: copyToMenu.title, command: .copyToFolder)
         addSubmenu(moveToMenu, title: moveToMenu.title, command: .moveToFolder)
-        add(.rename, target: window)
+        MenuKeyHints.applyFunctionKey(to: add(.rename, target: window), command: .rename)
         revertItem = add(.revertToOriginal, target: window)
         menu.addItem(.separator())
         // "Copy" is the ⌘C action, file + image.

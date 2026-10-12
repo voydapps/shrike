@@ -20,7 +20,6 @@ final class MotionTests: XCTestCase {
 
     private let pinKeys = [
         "shrike.viewer.filmstrip.pinnedFullscreen",
-        "shrike.viewer.editRail.pinnedFullscreen",
         "shrike.viewer.exifPanel.pinnedFullscreen",
         "shrike.viewer.histogramVisible",
     ]

@@ -100,7 +100,7 @@ extension BrowserWindowController {
         let cache = services.thumbnailCache
         Task { @MainActor [weak self] in
             for url in urls { await cache.evict(url: url) }
-            self?.reloadCurrentFolder()
+            self?.fileContentsChanged(urls)
         }
         for url in urls { pairedViewer?.didChangeFileOnDisk(url, fit: false) }
     }

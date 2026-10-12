@@ -283,7 +283,67 @@ final class TrashFlowTests: XCTestCase {
         let forward = KeyEventSnapshot(key: SpecialKey.forwardDelete)
         XCTAssertEqual(ViewerKeyMap.action(for: back, context: .viewer, preset: .fastStoneCompat, chordPrefix: nil), .prevImage)
         XCTAssertEqual(ViewerKeyMap.action(for: forward, context: .viewer, preset: .fastStoneCompat, chordPrefix: nil), .deleteToTrash)
-        XCTAssertEqual(ViewerKeyMap.action(for: back, context: .viewer, preset: .macNative, chordPrefix: nil), .deleteToTrash)
+        // Mac preset: only ⌘⌫ trashes; plain ⌫ shows a one-time hint (spec 25 §5.2).
+        XCTAssertNil(ViewerKeyMap.action(for: back, context: .viewer, preset: .macNative, chordPrefix: nil))
+        XCTAssertNil(ViewerKeyMap.action(for: forward, context: .viewer, preset: .macNative, chordPrefix: nil))
+        let command = KeyEventSnapshot(key: SpecialKey.backspace, modifiers: .command)
+        XCTAssertEqual(ViewerKeyMap.action(for: command, context: .viewer, preset: .macNative, chordPrefix: nil), .deleteToTrash)
+    }
+
+    // Viewer: plain ⌫ keeps the file and shows the hint once; ⌘⌫ trashes with an Undo toast of 6 s.
+    func testViewerPlainBackspaceHintsOnceAndCommandBackspaceTrashes() async throws {
+        TrashKeyHint.resetForTesting()
+        defer { TrashKeyHint.resetForTesting() }
+        let saved = Prefs.shortcutPreset
+        Prefs.shortcutPreset = .macNative
+        defer { Prefs.shortcutPreset = saved }
+        let urls = try makeFiles(["a.jpg", "b.jpg", "c.jpg"])
+        let viewer = viewer(urls, start: 1, ops: fakeOps())
+        defer { viewer.close() }
+        let host = viewer.contentRootForTesting.toastHost
+        XCTAssertTrue(viewer.handleKeySnapshot(KeyEventSnapshot(key: SpecialKey.backspace)))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: urls[1].path))
+        XCTAssertEqual(host.content?.message, "Press ⌘⌫ to move to the Trash.")
+        host.dismiss(animated: false)
+        XCTAssertTrue(viewer.handleKeySnapshot(KeyEventSnapshot(key: SpecialKey.backspace)))
+        XCTAssertNil(host.content, "second press is silent")
+
+        XCTAssertTrue(viewer.handleKeySnapshot(KeyEventSnapshot(key: SpecialKey.backspace, modifiers: .command)))
+        await viewer.waitForPendingTrash()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: urls[1].path))
+        XCTAssertEqual(host.actionTitleForTesting, "Undo")
+        XCTAssertEqual(host.content?.duration, 6.0)
+        XCTAssertEqual(host.content?.actionTooltip, "Undo  ·  ⌘Z")
+    }
+
+    // FastStone: ⌫ is Previous, no hint.
+    func testFastStoneBackspaceShowsNoHint() throws {
+        TrashKeyHint.resetForTesting()
+        defer { TrashKeyHint.resetForTesting() }
+        let saved = Prefs.shortcutPreset
+        Prefs.shortcutPreset = .fastStoneCompat
+        defer { Prefs.shortcutPreset = saved }
+        let urls = try makeFiles(["a.jpg", "b.jpg"])
+        let viewer = viewer(urls, start: 1, ops: fakeOps())
+        defer { viewer.close() }
+        _ = viewer.handleKeySnapshot(KeyEventSnapshot(key: SpecialKey.backspace))
+        XCTAssertNotEqual(viewer.contentRootForTesting.toastHost.content?.message, TrashKeyHint.message)
+        XCTAssertFalse(TrashKeyHint.wasShown)
+    }
+
+    // Browser: trashing shows the Undo toast.
+    func testBrowserTrashShowsUndoToast() async throws {
+        _ = try makeFiles(["a.jpg", "b.jpg"])
+        let browser = BrowserWindowController(services: services(), initialFolder: dir)
+        defer { browser.close() }
+        browser.fileOps = fakeOps()
+        let content = browser.contentController
+        let listed = await waitUntil { content.visibleItems.count == 2 }
+        XCTAssertTrue(listed)
+        browser.trash([content.visibleItems[0]])
+        await browser.waitForPendingTrash()
+        XCTAssertEqual(browser.toastHost.actionTitleForTesting, "Undo")
+        XCTAssertEqual(browser.toastHost.content?.duration, 6.0)
     }
 
     // Browser: the selection moves to the item after the last removed one.

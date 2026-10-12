@@ -63,8 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Self.appKitStartState = nil
         }
         willFinishSignpost = ShrikeSignposts.launch.begin("willFinishLaunching")
-        // Before the first viewer is built (two defaults reads).
-        Prefs.applyEditRailDefaultOnce()
+        // Before the first viewer is built (three cheap defaults removals).
+        Prefs.removeRetiredEditRailKeys()
         defer {
             if let willFinishSignpost {
                 ShrikeSignposts.launch.end("willFinishLaunching", willFinishSignpost)

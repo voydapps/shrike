@@ -43,7 +43,6 @@ final class FilmstripViewControllerTests: XCTestCase {
             "shrike.viewer.filmstrip.visibleInWindowed",
             "shrike.viewer.filmstrip.heightPt",
             "shrike.viewer.filmstrip.pinnedFullscreen",
-            "shrike.viewer.editRail.pinnedFullscreen",
             "shrike.viewer.exifPanel.pinnedFullscreen",
             "shrike.viewer.chromeFadeOutDelayMs",
         ] {

@@ -20,6 +20,8 @@ struct ContactSheetScope: Equatable {
     let selectedCount: Int
 
     var offersSelection: Bool { selectedCount > 0 }
+    /// 2 or more selected: the set was chosen on purpose, so it is the default.
+    var defaultsToSelection: Bool { selectedCount >= 2 }
     /// "All 180 in “Italy 2026”" ("All 180 images" with no folder).
     var allTitle: String {
         folderName.isEmpty ? "All \(allCount) images" : "All \(allCount) in “\(folderName)”"
@@ -132,8 +134,8 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
     private func build() -> NSPanel {
         allRadio.title = scope.allTitle
         selectedRadio.title = scope.selectedTitle
-        allRadio.state = .on
-        selectedRadio.state = .off
+        allRadio.state = scope.defaultsToSelection ? .off : .on
+        selectedRadio.state = scope.defaultsToSelection ? .on : .off
         for radio in [allRadio, selectedRadio] {
             radio.target = self
             radio.action = #selector(radioChanged(_:))

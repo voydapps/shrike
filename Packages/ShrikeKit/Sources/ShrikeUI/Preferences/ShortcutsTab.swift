@@ -28,6 +28,9 @@ struct ShortcutsTab: View {
                 Text("Choose a preset. The list shows every key it uses.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                Text("Search all keys with Help ▸ Keyboard Shortcuts (⌘/).")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
             ForEach(ShortcutsTab.sections(for: selectedPreset), id: \.title) { section in
                 Section(section.title) {
@@ -59,7 +62,7 @@ struct ShortcutsTab: View {
     /// table order.
     static func sections(for preset: ShortcutPreset) -> [SectionModel] {
         let contexts: [(ShortcutContext, String)] = [
-            (.viewer, "Viewer"), (.browser, "Browser"), (.editMode, "Edit Mode"),
+            (.viewer, "Viewer"), (.browser, "Browser"), (.editMode, "Edit Mode"), (.compare, "Compare"),
         ]
         return contexts.map { context, title in
             var seen = Set<ShrikeCommand>()
@@ -86,7 +89,7 @@ extension ShrikeCommand {
         case .sortByName, .sortByDateCaptured, .sortByDateModified, .sortBySize,
              .sortByRating, .sortByKind, .sortByDimensions: return "Sort by \(title)"
         case .toggleSidebar, .toggleToolbar, .toggleInspector, .toggleFilmstrip,
-             .toggleHistogram, .toggleEditRail:
+             .toggleHistogram:
             return title.replacingOccurrences(of: "Show ", with: "Show/Hide ")
         case .toggleFullScreen: return "Full Screen"
         default: return title.replacingOccurrences(of: "…", with: "")

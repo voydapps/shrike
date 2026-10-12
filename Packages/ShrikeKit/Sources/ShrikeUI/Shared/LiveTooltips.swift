@@ -2,7 +2,7 @@
 //  LiveTooltips.swift
 //  ShrikeUI
 //
-//  Toolbar and rail tooltips that name the live preset's key:
+//  Toolbar and edit-bar tooltips that name the live preset's key:
 //  "Previous Image  ·  ←". They are rebuilt when
 //  the shortcut preset changes.
 //
@@ -25,6 +25,8 @@ public final class LiveTooltips {
     private var entries: [Entry] = []
     private var segmentEntries: [(control: WeakSegmented, segment: Int, command: ShrikeCommand, context: ShortcutContext, title: String?)] = []
     private var itemEntries: [(item: WeakItem, command: ShrikeCommand, context: ShortcutContext, title: String?)] = []
+    /// A second tooltip line per view or toolbar item (why a control is off).
+    private let extraLines = NSMapTable<AnyObject, NSString>(keyOptions: .weakMemory, valueOptions: .strongMemory)
     private var lastPreset: ShortcutPreset?
     private var observer: (any NSObjectProtocol)?
 
@@ -35,14 +37,14 @@ public final class LiveTooltips {
     /// Exit Edit Mode).
     public func bind(_ view: NSView, command: ShrikeCommand, context: ShortcutContext, title: String? = nil) {
         startObserving()
-        view.toolTip = Self.text(command, context: context, preset: Prefs.shortcutPreset, title: title)
+        view.toolTip = composed(Self.text(command, context: context, preset: Prefs.shortcutPreset, title: title), for: view)
         entries.append(Entry(view: view, command: command, context: context, title: title))
     }
 
     /// Same for a toolbar item without a view (image items, group parts).
     public func bind(_ item: NSToolbarItem, command: ShrikeCommand, context: ShortcutContext, title: String? = nil) {
         startObserving()
-        item.toolTip = Self.text(command, context: context, preset: Prefs.shortcutPreset, title: title)
+        item.toolTip = composed(Self.text(command, context: context, preset: Prefs.shortcutPreset, title: title), for: item)
         itemEntries.append((WeakItem(item), command, context, title))
     }
 
@@ -53,6 +55,33 @@ public final class LiveTooltips {
         control.setToolTip(Self.text(command, context: context, preset: Prefs.shortcutPreset, title: title),
                            forSegment: segment)
         segmentEntries.append((WeakSegmented(control), segment, command, context, title))
+    }
+
+    /// The tooltip is `base + "\n" + line` while a line is set, and just `base`
+    /// otherwise. A preset change rewrites the base; the line stays.
+    public func setExtraLine(_ line: String?, on view: NSView) {
+        setExtra(line, key: view)
+        guard let entry = entries.first(where: { $0.view === view }) else { return }
+        view.toolTip = composed(Self.text(entry.command, context: entry.context, preset: Prefs.shortcutPreset,
+                                          title: entry.title), for: view)
+    }
+
+    /// Same for a toolbar item.
+    public func setExtraLine(_ line: String?, on item: NSToolbarItem) {
+        setExtra(line, key: item)
+        guard let entry = itemEntries.first(where: { $0.item.value === item }) else { return }
+        item.toolTip = composed(Self.text(entry.command, context: entry.context, preset: Prefs.shortcutPreset,
+                                          title: entry.title), for: item)
+    }
+
+    private func setExtra(_ line: String?, key: AnyObject) {
+        if let line, !line.isEmpty { extraLines.setObject(line as NSString, forKey: key) }
+        else { extraLines.removeObject(forKey: key) }
+    }
+
+    private func composed(_ base: String, for key: AnyObject) -> String {
+        guard let line = extraLines.object(forKey: key) else { return base }
+        return base + "\n" + (line as String)
     }
 
     /// "Title  ·  key" for `preset`, or the title alone when unbound.
@@ -81,11 +110,13 @@ public final class LiveTooltips {
         lastPreset = preset
         entries.removeAll { $0.view == nil }
         for entry in entries {
-            entry.view?.toolTip = Self.text(entry.command, context: entry.context, preset: preset, title: entry.title)
+            guard let view = entry.view else { continue }
+            view.toolTip = composed(Self.text(entry.command, context: entry.context, preset: preset, title: entry.title), for: view)
         }
         itemEntries.removeAll { $0.item.value == nil }
         for entry in itemEntries {
-            entry.item.value?.toolTip = Self.text(entry.command, context: entry.context, preset: preset, title: entry.title)
+            guard let item = entry.item.value else { continue }
+            item.toolTip = composed(Self.text(entry.command, context: entry.context, preset: preset, title: entry.title), for: item)
         }
         segmentEntries.removeAll { $0.control.value == nil }
         for entry in segmentEntries {

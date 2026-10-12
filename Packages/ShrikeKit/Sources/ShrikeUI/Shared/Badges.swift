@@ -53,6 +53,16 @@ public enum Badges {
     public static let ratingColor = NSColor(srgbRed: 0xF5 / 255, green: 0xC5 / 255, blue: 0x18 / 255, alpha: 1)
     public static let flagColor = NSColor(srgbRed: 1, green: 0x95 / 255, blue: 0, alpha: 1)
 
+    /// The glyph of a file that can't be previewed (spec 25 §2.2): one
+    /// symbol for the Browser cell, the viewer strip, the Browser inspector
+    /// and the list thumbnail column. Tint it with `brokenFileTint`.
+    public static func brokenFileGlyph(pointSize: CGFloat) -> NSImage? {
+        let image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
+        return image?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular))
+    }
+
+    public static var brokenFileTint: NSColor { .tertiaryLabelColor }
+
     /// Dots for a tag list: one per distinct colour in tag order, then one
     /// grey dot if any tag has no colour; at most 3. `.none` in the
     /// result stands for that grey "name-only" dot.

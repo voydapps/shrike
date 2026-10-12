@@ -2,7 +2,7 @@
 //  ColorAdjustPanel.swift
 //  ShrikeUI
 //
-//  Right-rail Color Adjust tool panel. Spec
+//  Right-side Color Adjust tool panel. Spec
 //  Three sliders (Brightness / Contrast / Saturation) covering
 //  -1.0 … +1.0 with 0 = identity. Continuous events drive the live-preview
 //  path (draft quality); drag-end / 16 ms idle flushes to full.
@@ -47,7 +47,6 @@ final class ColorAdjustPanel: NSView {
 
     /// Fired when Apply is clicked. Controller finalises the op and
     /// collapses the panel.
-    var onApply: (() -> Void)?
 
     // MARK: - State
 
@@ -74,7 +73,6 @@ final class ColorAdjustPanel: NSView {
     var slidersForTesting: [NSSlider] { [brightnessSlider, contrastSlider, saturationSlider, hueSlider] }
 
     private let resetAllButton = NSButton(title: "Reset all", target: nil, action: nil)
-    private let applyButton    = NSButton(title: "Apply",     target: nil, action: nil)
 
     init() {
         super.init(frame: .zero)
@@ -132,13 +130,6 @@ final class ColorAdjustPanel: NSView {
         resetAllButton.target = self
         resetAllButton.action = #selector(handleResetAll(_:))
 
-        applyButton.translatesAutoresizingMaskIntoConstraints = false
-        applyButton.bezelStyle = .rounded
-        applyButton.keyEquivalent = "\r"
-        applyButton.useAccentFill()   // one accent
-        applyButton.target = self
-        applyButton.action = #selector(handleApply(_:))
-
         let brightnessGroup = makeGroup(
             title: "Brightness", slider: brightnessSlider, label: brightnessValueLabel
         )
@@ -158,7 +149,6 @@ final class ColorAdjustPanel: NSView {
             saturationGroup,
             hueGroup,
             resetAllButton,
-            applyButton,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -176,7 +166,6 @@ final class ColorAdjustPanel: NSView {
             saturationGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             hueGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             resetAllButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            applyButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
 
@@ -285,12 +274,6 @@ final class ColorAdjustPanel: NSView {
         onEditEnded?(params)
     }
 
-    @objc private func handleApply(_ sender: NSButton) {
-        idleCommitTask?.cancel()
-        onParamsCommitted?(params)
-        onEditEnded?(params)
-        onApply?()
-    }
 
     /// A change that is not a drag (label double-click): one undo step.
     private func fireDiscreteChange() {
@@ -362,7 +345,6 @@ final class ColorAdjustPanel: NSView {
     internal var _hueSlider:        NSSlider { hueSlider }
     internal var _hueValueLabel:    NSTextField { hueValueLabel }
     internal var _resetAllButton:   NSButton { resetAllButton }
-    internal var _applyButton:      NSButton { applyButton }
     internal var _brightnessValueLabel: NSTextField { brightnessValueLabel }
     internal var _contrastValueLabel:   NSTextField { contrastValueLabel }
     internal var _saturationValueLabel: NSTextField { saturationValueLabel }

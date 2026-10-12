@@ -103,6 +103,9 @@ public final class BrowserContentViewController: NSViewController {
 
     /// Test seam: the list view.
     var tableViewForTesting: NSTableView { tableView }
+    /// Which primaries still hold a kept size (list column) or sort value.
+    func keepsListDimensionsForTesting(_ url: URL) -> Bool { listDimensions[url] != nil }
+    func keepsSortValueForTesting(_ url: URL) -> Bool { readValues[url] != nil }
     /// Test seam: the grid / filmstrip view.
     var collectionViewForTesting: BrowserCollectionView { collectionView }
     /// Test seam: sees what `cancelPrefetchingForItemsAt` withdraws.
@@ -116,6 +119,8 @@ public final class BrowserContentViewController: NSViewController {
     /// Keyed by file, with the modification date read at.
     private var listDimensions: [URL: (modified: Date, width: Int?, height: Int?)] = [:]
     private var listDimensionsTask: Task<Void, Never>?
+    /// Files that changed on disk since the listing: their listing size may be old.
+    private var listingSizeDistrusted: Set<URL> = []
     /// Header reads per batch (each batch updates the rows it filled).
     static let listDimensionsBatch = 64
     /// The sort the grid shows now (lags `sort` while values are read).
@@ -934,9 +939,14 @@ public final class BrowserContentViewController: NSViewController {
     /// "6000 × 4000" for the Dimensions column: the listing's size, else
     /// the header size found for the file at its listed date.
     func listDimensionsText(_ item: BrowserItem) -> String {
-        if let w = item.pixelWidth, let h = item.pixelHeight { return "\(w) × \(h)" }
+        // The freshest value first: a header read at this very date. The listing's
+        // size can be old when a file changed without its date moving (a rotate
+        // within the same second), so after a change it is not trusted.
         if let known = listDimensions[item.url], known.modified == item.modificationDate,
            let w = known.width, let h = known.height, w > 0, h > 0 {
+            return "\(w) × \(h)"
+        }
+        if !listingSizeDistrusted.contains(item.url), let w = item.pixelWidth, let h = item.pixelHeight {
             return "\(w) × \(h)"
         }
         return "—"
@@ -952,7 +962,8 @@ public final class BrowserContentViewController: NSViewController {
         listDimensionsTask = nil
         guard mode == .list else { return }
         let needed = visibleItems.filter { item in
-            guard item.pixelWidth == nil || item.pixelHeight == nil else { return false }
+            guard item.pixelWidth == nil || item.pixelHeight == nil
+                    || listingSizeDistrusted.contains(item.url) else { return false }
             return listDimensions[item.url]?.modified != item.modificationDate
         }
         guard !needed.isEmpty else { return }
@@ -1026,6 +1037,19 @@ public final class BrowserContentViewController: NSViewController {
         tableView.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: column))
         if tableView.selectedRowIndexes != selection {
             tableView.selectRowIndexes(selection, byExtendingSelection: false)
+        }
+    }
+
+    /// These files changed on disk (a rotate, a save, an undo, an outside
+    /// edit): forget every size read for them, so the next listing reads
+    /// the size of the file as it is now (Dimensions column and sort).
+    func forgetFileSizes(for urls: [URL]) {
+        for url in urls {
+            for key in [url, url.standardizedFileURL] {
+                listDimensions[key] = nil
+                readValues[key] = nil
+                listingSizeDistrusted.insert(key)
+            }
         }
     }
 
@@ -1240,7 +1264,6 @@ public final class BrowserContentViewController: NSViewController {
         })
         shareSubmenus.append(share)
         menu.addItem(share.makeParentItem())
-        share.ownParentMenu(menu)
         // Batch… goes up the responder chain like the menu bar.
         let batch = NSMenuItem(title: ShrikeCommand.batch.title, action: ShrikeMainMenu.commandAction,
                                keyEquivalent: "")
@@ -1256,6 +1279,7 @@ public final class BrowserContentViewController: NSViewController {
         for i in 0...5 {
             let title = i == 0 ? "No rating" : String(repeating: "★", count: i)
             let item = NSMenuItem(title: title, action: #selector(menuRate(_:)), keyEquivalent: "")
+            item.representedObject = [ShrikeCommand.rate0, .rate1, .rate2, .rate3, .rate4, .rate5][i].rawValue
             item.tag = i
             item.target = self
             rate.addItem(item)
@@ -1264,10 +1288,45 @@ public final class BrowserContentViewController: NSViewController {
         rateItem.submenu = rate
         menu.addItem(rateItem)
 
-        menu.addItem(makeMenuItem("Toggle Flag", #selector(menuFlag(_:))))
+        let flagItem = makeMenuItem("Toggle Flag", #selector(menuFlag(_:)))
+        flagItem.representedObject = ShrikeCommand.toggleFlag.rawValue
+        menu.addItem(flagItem)
+        menu.addItem(.separator())
+        // Copy to Folder ▸ · Move to Folder ▸ · Rename… (spec 25 §12.1). The
+        // rows go up the responder chain to the Browser controller, like the
+        // File menu's.
+        for command in [ShrikeCommand.copyToFolder, .moveToFolder] {
+            let title = command.title
+            let submenu = NSMenu(title: title)
+            submenu.delegate = self
+            let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            parent.representedObject = command.rawValue
+            parent.submenu = submenu
+            menu.addItem(parent)
+        }
+        let rename = NSMenuItem(title: ShrikeCommand.rename.title, action: ShrikeMainMenu.commandAction,
+                                keyEquivalent: "")
+        rename.representedObject = ShrikeCommand.rename.rawValue
+        // One photo only: with several, the menu leaves it to Batch… (F2 and
+        // the File menu still open the batch rename for a selection).
+        rename.identifier = Self.contextRenameIdentifier
+        MenuKeyHints.applyFunctionKey(to: rename, command: .rename)   // F2 as a real key, no ⌘
+        menu.addItem(rename)
+        menu.delegate = self
         menu.addItem(.separator())
         menu.addItem(makeMenuItem("Move to Trash", #selector(menuTrash(_:))))
         return menu
+    }
+
+    /// Marks the right-click menu's Rename… row (disabled for several photos).
+    static let contextRenameIdentifier = NSUserInterfaceItemIdentifier("browser.contextMenu.rename")
+
+    /// The Browser's destination slots, for the Copy / Move submenus.
+    var destinationSlotsProvider: (() -> DestinationSlots?)?
+
+    /// The context menu's titles in order (tests).
+    var contextMenuTitlesForTesting: [String] {
+        makeCollectionContextMenu().items.map { $0.isSeparatorItem ? "—" : $0.title }
     }
 
     /// The right-click menus' editor submenus (kept alive: a menu's
@@ -1687,16 +1746,30 @@ extension BrowserContentViewController: NSTableViewDataSource, NSTableViewDelega
             let cache = services.thumbnailCache
             let source = item.imageSource
             Task { [weak image] in
-                if let cg = try? await cache.thumbnail(for: source, maxPixelSize: 80) {
+                do {
+                    let cg = try await cache.thumbnail(for: source, maxPixelSize: 80)
                     await MainActor.run { [weak image] in
                         image?.image = NSImage(cgImage: cg,
                                                size: NSSize(width: cg.width, height: cg.height))
                     }
+                } catch is CancellationError {
+                } catch {
+                    // Can't preview: the same glyph as the grid cell (spec 25 §2.2).
+                    await MainActor.run { [weak image] in
+                        image?.contentTintColor = Badges.brokenFileTint
+                        image?.image = Badges.brokenFileGlyph(pointSize: 16)
+                    }
                 }
             }
         case "col.name":
-            text.stringValue = item.displayName
-            addCellLabel(cell, text: text)
+            let fitted = FittedNameLabel()
+            fitted.font = Self.listFont
+            fitted.textColor = .labelColor
+            fitted.translatesAutoresizingMaskIntoConstraints = false
+            fitted.fullName = item.displayName
+            fitted.toolTip = item.displayName
+            cell.toolTip = item.displayName
+            addCellLabel(cell, text: fitted)
         case "col.date":
             text.stringValue = Self.dateFormatter.string(from: item.modificationDate)
             addCellLabel(cell, text: text)
@@ -1704,7 +1777,7 @@ extension BrowserContentViewController: NSTableViewDataSource, NSTableViewDelega
             text.stringValue = listDimensionsText(item)
             addCellLabel(cell, text: text)
         case "col.size":
-            text.stringValue = Self.byteFormatter.string(fromByteCount: item.fileSize)
+            text.stringValue = FileSizeText.string(item.fileSize)
             addCellLabel(cell, text: text)
         case "col.rating":
             text.stringValue = Badges.stars(item.rating)
@@ -1784,12 +1857,6 @@ extension BrowserContentViewController: NSTableViewDataSource, NSTableViewDelega
         return f
     }()
 
-    private static let byteFormatter: ByteCountFormatter = {
-        let b = ByteCountFormatter()
-        b.allowedUnits = [.useKB, .useMB, .useGB]
-        b.countStyle = .file
-        return b
-    }()
 }
 
 // MARK: - Empty state placeholder
@@ -1878,4 +1945,27 @@ final class FilmstripPreviewView: NSImageView {
 
     /// Never grows the layout with the picture's pixel size.
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+}
+
+
+// MARK: - Context menu destinations
+
+extension BrowserContentViewController: NSMenuDelegate {
+
+    public func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu.delegate === self, menu.supermenu == nil, !menu.items.isEmpty {
+            // The right-click menu itself: draw the bare-key hints.
+            MenuKeyHints.apply(to: menu, context: .browser)
+            // This controller is the menu's delegate, so it refreshes Share ▸ (it was greyed:
+            // the row was built once, with the empty selection of the build).
+            for share in shareSubmenus { share.refreshParent() }
+            return
+        }
+        guard let slots = destinationSlotsProvider?() else { return }
+        if menu.title == ShrikeCommand.copyToFolder.title {
+            ShrikeMainMenu.fillDestinations(menu, command: .copyToFolder, slots: slots, target: nil)
+        } else if menu.title == ShrikeCommand.moveToFolder.title {
+            ShrikeMainMenu.fillDestinations(menu, command: .moveToFolder, slots: slots, target: nil)
+        }
+    }
 }

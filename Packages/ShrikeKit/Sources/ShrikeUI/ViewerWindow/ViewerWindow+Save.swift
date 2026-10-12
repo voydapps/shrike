@@ -360,6 +360,9 @@ extension ViewerWindow {
         let cache = services.thumbnailCache
         Task { await cache.evict(url: url) }
         let key = list.index(of: url).flatMap { list[$0]?.primary } ?? url
+        headerPixelSizes[url] = nil
+        headerPixelSizes[key] = nil
+        if displayedItem?.group.primary == key { contentRoot.reloadInspectorFile() }
         if let displayed = displayedItem?.group.primary,
            GroupList.canonical(displayed) == GroupList.canonical(url) {
             redrawDisplayedKeepingView(fit: fit)
@@ -367,7 +370,7 @@ extension ViewerWindow {
             evictFromDecodeCache(url)
         }
         refreshBackupState(key)
-        pairedBrowser?.reloadCurrentFolder()
+        pairedBrowser?.fileContentsChanged([url, key])
     }
 
     /// Pencil mark and the Revert row follow `BackupStore.state(for:)`.
