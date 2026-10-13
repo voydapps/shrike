@@ -101,8 +101,13 @@ final class EditToolPicker: NSControl {
 
     static let segmentWidth: CGFloat = 32
     static let height: CGFloat = 28
-    /// The active tool's platter: a selection tint, not a button fill.
-    static let platterAlpha: CGFloat = 0.30
+    /// The active tool's platter. 0.2.10 audit item 4: at 0.30 the fill was
+    /// 1.7:1 against the dark bar and read grey (WCAG 1.4.11 asks 3:1 for the
+    /// state of a control). 0.62 is about 3.1:1 on (17,17,17); the ring is
+    /// the guarantee when a user's accent colour is darker.
+    static let platterAlpha: CGFloat = 0.62
+    /// The ring around the chosen platter: the accent mark at full strength.
+    static let ringWidth: CGFloat = 1
 
     /// Fires with the tool the user clicked.
     var onPick: ((EditTool) -> Void)?
@@ -267,6 +272,12 @@ final class EditToolPicker: NSControl {
             if isChosen {
                 ShrikeAccent.mark.withAlphaComponent(EditToolPicker.platterAlpha).setFill()
                 path.fill()
+                let w = EditToolPicker.ringWidth
+                let inner = r.insetBy(dx: w / 2, dy: w / 2)
+                let ring = NSBezierPath(roundedRect: inner, xRadius: inner.height / 2, yRadius: inner.height / 2)
+                ring.lineWidth = w
+                ShrikeAccent.mark.setStroke()
+                ring.stroke()
             }
             if hovered || pressed {
                 let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

@@ -18,8 +18,8 @@ final class ViewerInputRulesTests: XCTestCase {
                     isDirectionInverted: inverted, swapsAction: swap, timestamp: t)
     }
 
-    // One notch down at Fit → next; 8 fast notches → ≤ 4 changes.
-    func testVector1_notchDownAtFitGoesNext_fastSpinAdvancesAtMostTwice() {
+    // One notch down at Fit → next; 8 fast notches (12.5 ms apart) → 8 changes (0.2.10: none dropped).
+    func testVector1_notchDownAtFitGoesNext_fastSpinLosesNoNotch() {
         var r = ScrollInputRouter()
         XCTAssertEqual(r.route(wheel(-1, t: 0), atFit: true, wheelChangesImage: true, swipeEnabled: true),
                        .navigate(forward: true))
@@ -31,8 +31,7 @@ final class ViewerInputRulesTests: XCTestCase {
                                  wheelChangesImage: true, swipeEnabled: true)
             if case .navigate = a { changes += 1 }
         }
-        XCTAssertGreaterThanOrEqual(changes, 1)
-        XCTAssertLessThanOrEqual(changes, 4)
+        XCTAssertEqual(changes, 8)
     }
 
     // A small tick (0.1-0.3, slow turn with acceleration) is still one notch.
@@ -166,17 +165,59 @@ final class ViewerInputRulesTests: XCTestCase {
 
     func testPreciseSwapModifierZooms() {
         var r = ScrollInputRouter()
-        XCTAssertEqual(r.route(precise(10, t: 0, swap: true), atFit: true, wheelChangesImage: true, swipeEnabled: true),
-                       .zoom(factor: 1.25))
+        // 40 pt = two lines = 1.12^2; a flick of 400 pt in one event is capped at 60 pt.
+        XCTAssertEqual(r.route(precise(40, t: 0, swap: true), atFit: true, wheelChangesImage: true, swipeEnabled: true),
+                       .zoom(factor: pow(1.12, 2)))
+        XCTAssertEqual(r.route(precise(400, t: 1, swap: true), atFit: true, wheelChangesImage: true, swipeEnabled: true),
+                       .zoom(factor: pow(1.12, 3)))
     }
 
-    func testEventsInsideDropWindowAreDroppedNotQueued() {
+    /// Audit item 8: six 40-pt events (and six accelerated notches) are not 25 % -> 1600 %.
+    func testZoomIsGentle() {
         var r = ScrollInputRouter()
-        _ = r.route(wheel(-1, t: 1.0), atFit: true, wheelChangesImage: true, swipeEnabled: true)
-        XCTAssertEqual(r.route(wheel(-1, t: 1.02), atFit: true, wheelChangesImage: true, swipeEnabled: true), .none)
-        XCTAssertEqual(r.accumulator, 0, "dropped deltas must not build up")
-        XCTAssertEqual(r.route(wheel(-1, t: 1.03), atFit: true, wheelChangesImage: true, swipeEnabled: true),
-                       .navigate(forward: true))
+        var total = 1.0
+        for i in 0..<6 {
+            if case .zoom(let f) = r.route(precise(40, t: Double(i), swap: true), atFit: true,
+                                           wheelChangesImage: true, swipeEnabled: true) { total *= f }
+        }
+        XCTAssertLessThan(total, 4.5)
+        XCTAssertGreaterThan(total, 3)
+        var n = ScrollInputRouter()
+        var notches = 1.0
+        for i in 0..<6 {   // accelerated wheel: 5 lines per notch
+            if case .zoom(let f) = n.route(wheel(5, t: Double(i), swap: true), atFit: true,
+                                           wheelChangesImage: true, swipeEnabled: true) { notches *= f }
+        }
+        XCTAssertEqual(notches, pow(1.12, 6), accuracy: 1e-9, "the size of a notch does not matter")
+    }
+
+    /// 0.2.10 audit item 6: whole notches 10 / 15 / 25 / 40 ms apart all step.
+    func testWholeNotchesStepAtEverySpacing() {
+        for ms in [10.0, 15, 25, 40] {
+            var r = ScrollInputRouter()
+            let ev = (0..<6).map { wheel(-1, t: 1 + Double($0) * ms / 1000) }
+            XCTAssertEqual(steps(ev, router: &r), Array(repeating: true, count: 6), "\(ms) ms")
+            var up = ScrollInputRouter()
+            let evUp = (0..<6).map { wheel(1, t: 1 + Double($0) * ms / 1000) }
+            XCTAssertEqual(steps(evUp, router: &up), Array(repeating: false, count: 6), "\(ms) ms up")
+        }
+    }
+
+    /// One notch split into small ticks (any spacing under the burst window) is still one step;
+    /// a second notch split the same way is a second step.
+    func testSplitTicksStepOncePerNotch() {
+        for ms in [4.0, 8, 12] {
+            var r = ScrollInputRouter()
+            var ev = (0..<5).map { wheel(-0.2, t: 1 + Double($0) * ms / 1000) }
+            ev += (0..<5).map { wheel(-0.2, t: 1 + Double($0 + 5) * ms / 1000) }
+            XCTAssertEqual(steps(ev, router: &r), [true, true], "\(ms) ms")
+        }
+    }
+
+    /// A change of direction inside the window is its own step, not swallowed.
+    func testReversalInsideTheWindowSteps() {
+        var r = ScrollInputRouter()
+        XCTAssertEqual(steps([wheel(-1, t: 1), wheel(1, t: 1.01)], router: &r), [true, false])
     }
 
     // Zoomed to 200 %, a notch pans 24 pt; ⇧ + notch pans horizontally.
@@ -189,13 +230,13 @@ final class ViewerInputRulesTests: XCTestCase {
                        .pan(dx: -24, dy: 0))
     }
 
-    // ⌘ + wheel up zooms ×1.25 per notch; the anchor stays put.
+    // ⌘ + wheel up zooms ×1.12 per notch; the anchor stays put.
     func testVector3_commandWheelZoomsAtPointer() {
         var r = ScrollInputRouter()
         let a = r.route(wheel(1, t: 0, swap: true), atFit: true, wheelChangesImage: true, swipeEnabled: true)
-        XCTAssertEqual(a, .zoom(factor: 1.25))
+        XCTAssertEqual(a, .zoom(factor: 1.12))
         let a2 = r.route(wheel(-1, t: 1, swap: true), atFit: false, wheelChangesImage: true, swipeEnabled: true)
-        XCTAssertEqual(a2, .zoom(factor: 0.8))
+        XCTAssertEqual(a2, .zoom(factor: 1 / 1.12))
 
         let view = CGSize(width: 800, height: 600)
         let anchor = CGPoint(x: 600, y: 200)
@@ -216,7 +257,7 @@ final class ViewerInputRulesTests: XCTestCase {
     func testVector4_prefZooms_wheelZooms_commandWheelNavigates() {
         var r = ScrollInputRouter()
         XCTAssertEqual(r.route(wheel(1, t: 0), atFit: true, wheelChangesImage: false, swipeEnabled: true),
-                       .zoom(factor: 1.25))
+                       .zoom(factor: 1.12))
         XCTAssertEqual(r.route(wheel(-1, t: 1, swap: true), atFit: false, wheelChangesImage: false, swipeEnabled: true),
                        .navigate(forward: true))
     }

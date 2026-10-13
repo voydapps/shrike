@@ -293,6 +293,11 @@ public final class ViewerWindow: NSWindow {
         contentRoot.onEditModeActiveChanged = { [weak self] active in
             self?.editModeLayoutChanged(active: active)
         }
+        // 0.2.10 audit item 3: a resize that bypasses `contentMinSize` (a programmatic
+        // or Accessibility `setFrame`) must not leave edit mode under 648 pt.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(editWindowDidResize(_:)),
+            name: NSWindow.didResizeNotification, object: self)
         contentRoot.onEditCanvasWidth = { [weak split] width in
             DispatchQueue.main.async { split?.editCanvasWidth(width) }
         }
@@ -1345,6 +1350,7 @@ public final class ViewerWindow: NSWindow {
     @objc private func handleDidEnterFullScreen(_ notification: Notification) {
         // Textures follow the full-screen canvas.
         contentRoot.updateTextureLongEdge()
+        contentRoot.refitAfterFullScreenChange()
         contentRoot.fullScreenDidEnter()
     }
 
@@ -1358,6 +1364,7 @@ public final class ViewerWindow: NSWindow {
         // window is out of full screen.
         restoreToolbarAfterFullScreen()
         contentRoot.updateTextureLongEdge()
+        contentRoot.refitAfterFullScreenChange()
         finishEditWidthReturnAfterFullScreen()
         if returnToBrowserAfterFullScreenExit {
             returnToBrowserAfterFullScreenExit = false

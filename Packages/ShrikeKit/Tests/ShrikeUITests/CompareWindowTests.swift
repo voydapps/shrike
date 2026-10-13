@@ -549,7 +549,10 @@ final class CompareWindowTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(80))   // past the 60 ms wheel pause
 
         // ⌘ + wheel up: zoom in at the pointer; locked, pane 2 follows.
-        try send(window, try wheel(window, over: first, lines: 1, flags: .maskCommand), over: first)
+        // 0.2.10: a notch zooms 12 %, so three notches leave room to pan.
+        for _ in 0..<3 {
+            try send(window, try wheel(window, over: first, lines: 1, flags: .maskCommand), over: first)
+        }
         XCTAssertFalse(first.isAtFit)
         XCTAssertEqual(window.panes[0].index, 1, "⌘ + wheel never changes the photo")
         XCTAssertEqual(window.panes[1].view.imageView.pixelScale, first.pixelScale, accuracy: 0.01)

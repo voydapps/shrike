@@ -82,12 +82,22 @@ public enum ScrollAction: Sendable, Equatable {
 public struct ScrollInputRouter: Sendable {
     /// Points one wheel line pans when zoomed in.
     public static let panPointsPerLine: Double = 24
-    /// Zoom per wheel line.
-    public static let zoomPerLine: Double = 1.25
-    /// Wheel events inside this window after a change are dropped (a driver that splits one notch into ticks sends them under 15 ms apart; a flick sends notches 20-40 ms apart and each should count).
+    /// Zoom per wheel notch (12 %). Audit 2026-10-13: 1.25 per line took
+    /// 25 % to 1600 % in a few turns. The size of a notch does not matter
+    /// (an accelerated wheel sends 3-10); a small tick counts in proportion.
+    public static let zoomPerLine: Double = 1.12
+    /// Events closer together than this belong to one burst. A driver that
+    /// splits one notch into ticks sends them under 15 ms apart (fractions of
+    /// a line); a fast spin sends whole notches 10-40 ms apart. In a burst a
+    /// whole notch always steps; fractional ticks add up and step per line.
     public static let dropInterval: TimeInterval = 0.025
-    /// Trackpad points counted as one "line" for ⌘/⌥ + trackpad zoom.
-    public static let precisePointsPerLine: Double = 10
+    /// Trackpad points counted as one "line" for ⌘/⌥ + trackpad zoom: 40 pt
+    /// is two lines = 1.25x, so a short two-finger move is a clear step but
+    /// six of them are not 1600 %.
+    public static let precisePointsPerLine: Double = 20
+    /// One precise event never zooms more than this many points (momentum
+    /// bursts and fast flicks stay smooth).
+    public static let preciseZoomMaxPoints: Double = 60
     /// Precise (trackpad or smooth-scrolling wheel) points that change the
     /// image at Fit. The filmstrip steps once per `cellSize + spacing`
     /// (72 + 8 = 80 pt by default); the viewer uses the same number so a
@@ -100,7 +110,12 @@ public struct ScrollInputRouter: Sendable {
     /// direction). Notched wheels do not use it: one notch = one image.
     public private(set) var accumulator: Double = 0
     private var lastPreciseTime: TimeInterval = -.infinity
-    public private(set) var dropUntil: TimeInterval = -.infinity
+    /// Time of the last notched-wheel event and its direction, and the
+    /// fractional ticks collected in this burst (minus the notch already
+    /// stepped for the burst's first event).
+    private var lastWheelTime: TimeInterval = -.infinity
+    private var lastWheelForward: Bool?
+    public private(set) var burstPool: Double = 0
 
     public init() {}
 
@@ -120,7 +135,7 @@ public struct ScrollInputRouter: Sendable {
         if !navigates {
             let d = e.physicalDelta
             guard d != 0 else { return .none }
-            return .zoom(factor: pow(Self.zoomPerLine, d))   // wheel up = in
+            return .zoom(factor: pow(Self.zoomPerLine, max(-1, min(1, d))))   // wheel up = in
         }
         // "Changes image" without a modifier pans once zoomed in; the
         // swapped (⌘/⌥) navigation works at any zoom.
@@ -129,22 +144,42 @@ public struct ScrollInputRouter: Sendable {
             let dy = -e.deltaY * Self.panPointsPerLine
             return (dx == 0 && dy == 0) ? .none : .pan(dx: dx, dy: dy)
         }
-        if e.timestamp < dropUntil { return .none }   // dropped, not queued
         // One notch = one image, whatever its size. Many wheels send
         // 0.1-0.3 per tick at a slow turn; waiting for a full line made
         // the photo need 4-10 notches per step.
         let d = e.physicalDelta
         guard d != 0 else { return .none }
         let forward = d < 0                            // wheel down = next
-        dropUntil = e.timestamp + Self.dropInterval
-        return .navigate(forward: forward)
+        let inBurst = lastWheelForward == forward
+            && e.timestamp - lastWheelTime <= Self.dropInterval
+            && e.timestamp >= lastWheelTime
+        lastWheelTime = e.timestamp
+        lastWheelForward = forward
+        let size = abs(d)
+        guard inBurst else {
+            // First event of a burst: a step. A fractional first tick leaves a
+            // debt, so the rest of a split notch does not step again.
+            burstPool = min(size - 1, 0)
+            return .navigate(forward: forward)
+        }
+        // Inside a burst nothing is dropped: a whole notch steps, fractional
+        // ticks add up and step once per line. One step per event, so the
+        // queue is as long as the events, never longer.
+        if size >= 1 { return .navigate(forward: forward) }
+        burstPool += size
+        if burstPool >= 1 {
+            burstPool -= 1
+            return .navigate(forward: forward)
+        }
+        return .none
     }
 
     private mutating func routePrecise(_ e: ScrollInput, atFit: Bool,
                                        wheelChangesImage: Bool,
                                        swipeEnabled: Bool) -> ScrollAction {
         if e.swapsAction && !e.isMomentum {
-            let d = e.physicalDelta / Self.precisePointsPerLine
+            let clamped = max(-Self.preciseZoomMaxPoints, min(Self.preciseZoomMaxPoints, e.physicalDelta))
+            let d = clamped / Self.precisePointsPerLine
             return d == 0 ? .none : .zoom(factor: pow(Self.zoomPerLine, d))
         }
         if atFit {

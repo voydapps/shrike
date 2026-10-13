@@ -162,7 +162,7 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
         case .goToFolder: return "Go to Folder…"
         case .showInBrowser: return "Show in Browser"
         case .openSelection: return "Open in Viewer"
-        case .escape: return "Exit Full Screen or Return to Browser"
+        case .escape: return "Exit Full Screen, Return to Browser, or Close"
         case .exitEditMode: return "Exit Edit Mode"
         case .editDone: return "Done"
         case .editRotateStepLeft: return "Rotate Step Left"

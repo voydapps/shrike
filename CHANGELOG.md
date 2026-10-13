@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.10 to 0.2.11 - 2026-10-13
+### Changed
+- The mouse wheel keeps every notch, also when you spin it fast. Before, a quick spin could skip photos.
+- The wheel with Cmd (or Option) zooms in smaller steps: 12 % for each notch. A short two-finger move with Cmd zooms about 25 %. Before, a few turns took the zoom from 25 % to 1600 %.
+- The chosen tool in the edit bar is easier to see: a stronger blue with a thin ring. This holds in full screen too.
+- In the shortcut list, the Esc line now reads "Exit Full Screen, Return to Browser, or Close". With no Browser open, Esc closes the viewer.
+### Fixed
+- In the shortcut list, searching no longer loses the Cmd sign. "Zoom In" and "Zoom Out" keep their real keys while you type.
+- The search box in the shortcut list takes your typing the moment the window opens, also when you open it again.
+- A window that gets narrower while you edit becomes wide enough again, so the tool panel never covers half of the photo.
+- The photo is always fitted to the window when you start editing and when you stop, also after a trip through full screen. Before, it could stay zoomed in and run under the tool panel until you pressed Cmd 0.
+- A photo that can't be opened no longer shows the photo before it behind the message.
+- In a folder where the first photos can't be opened, the mouse wheel moves to the next photo, like the arrow keys.
+
 ## 0.2.8 to 0.2.9 - 2026-10-13
 ### New
 - The info panel in the Browser and the one in the viewer follow one design. Section titles are easy to read, and the numbers line up on the right edge. In a narrow info panel a long value wraps instead of being cut, and the size and the date get a shorter form.

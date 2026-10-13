@@ -1,5 +1,5 @@
 name: Release
-# Push a tag like v0.2.9 (the number must equal MARKETING_VERSION in project.yml).
+# Push a tag like v0.2.11 (the number must equal MARKETING_VERSION in project.yml).
 # The runner builds the app, signs it ad-hoc (no certificate, so no personal
 # name in the signature), makes the DMG and publishes a GitHub Release.
 # The release is created by github-actions[bot].
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to (re)build, for example v0.2.9'
+        description: 'Existing tag to (re)build, for example v0.2.11'
         required: true
 
 permissions:

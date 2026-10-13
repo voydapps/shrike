@@ -244,14 +244,14 @@ final class EditToolsTopBarTests: XCTestCase {
 
     // MARK: 7. One accent fill
 
-    func testV7_OnlyDoneIsTheAccentButtonAndThePlatterIsAccentAt30() {
+    func testV7_OnlyDoneIsTheAccentButtonAndThePlatterIsAccent() {
         let controller = EditToolbarController()
         XCTAssertEqual(controller.doneButton.keyEquivalent, "\r")
         XCTAssertEqual(controller.cancelButton.keyEquivalent, "")
         XCTAssertEqual(controller.resetButton.keyEquivalent, "")
         for picker in [controller.toolPicker, EditCapsuleView().toolPicker] {
             let color = picker.selectedSegmentBezelColor?.usingColorSpace(.deviceRGB)
-            XCTAssertEqual(color?.alphaComponent ?? 0, 0.30, accuracy: 0.001)
+            XCTAssertEqual(color?.alphaComponent ?? 0, EditToolPicker.platterAlpha, accuracy: 0.001)
         }
     }
 
@@ -401,7 +401,7 @@ final class EditToolsTopBarTests: XCTestCase {
 
     // MARK: Own-drawn picker (macOS 26 toolbar paints system segments grey)
 
-    /// The chosen segment draws the accent at 30 %; the others draw nothing.
+    /// The chosen segment draws the accent at platterAlpha; the others draw nothing.
     func testThePickerDrawsItsOwnAccentPlatter() throws {
         let picker = EditToolPicker()
         picker.frame = NSRect(x: 0, y: 0, width: 160, height: 28)
@@ -417,7 +417,7 @@ final class EditToolsTopBarTests: XCTestCase {
         }
         let segs = picker.segmentViewsForTesting
         XCTAssertEqual(try alpha(segs[0]), 0, accuracy: 0.01, "unchosen: nothing")
-        XCTAssertEqual(try alpha(segs[1]), EditToolPicker.platterAlpha, accuracy: 0.03, "chosen: accent at 30 %")
+        XCTAssertEqual(try alpha(segs[1]), EditToolPicker.platterAlpha, accuracy: 0.03, "chosen: accent at platterAlpha")
         picker.show(tool: nil)
         XCTAssertEqual(try alpha(segs[1]), 0, accuracy: 0.01)
     }

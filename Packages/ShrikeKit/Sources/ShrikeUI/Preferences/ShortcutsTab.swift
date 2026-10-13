@@ -34,7 +34,9 @@ struct ShortcutsTab: View {
             }
             ForEach(ShortcutsTab.sections(for: selectedPreset), id: \.title) { section in
                 Section(section.title) {
-                    ForEach(section.rows, id: \.action) { row in
+                    // The id carries the section: "Zoom In" is in three of them.
+                    ForEach(section.rows.map { (id: "\(section.title)/\($0.action)", row: $0) }, id: \.id) { item in
+                        let row = item.row
                         LabeledContent(row.action) {
                             Text(row.keys)
                                 .font(.system(size: ShortcutsTab.keysFontSize))

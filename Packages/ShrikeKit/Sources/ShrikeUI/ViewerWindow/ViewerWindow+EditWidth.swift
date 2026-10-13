@@ -49,6 +49,29 @@ extension ViewerWindow {
         }
     }
 
+    /// While editing in a window, a frame narrower than the minimum canvas is
+    /// widened at once. `contentMinSize` only stops a drag; `setFrame` from code
+    /// or from Accessibility goes past it, and the 296 pt tool column then
+    /// covered half the photo (audit 2026-10-13, item 3).
+    @objc func editWindowDidResize(_ note: Notification) {
+        guard editLayoutActive, !editWidthResizing, !inFullScreenNow,
+              contentRoot.windowMode == .windowed else { return }
+        let content = contentRect(forFrameRect: frame).width
+        guard content < EditLayout.minCanvasWidth - 0.5 else { return }
+        // The inspector gives its room back first, as on entry.
+        splitController?.editCanvasWidth(editCanvasWidthNow)
+        let now = contentRect(forFrameRect: frame).width
+        guard now < EditLayout.minCanvasWidth - 0.5 else { return }
+        var target = frame
+        target.size.width += EditLayout.minCanvasWidth - now
+        let visible = editScreenVisibleFrameForTesting ?? screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        if let visible, target.maxX > visible.maxX {
+            target.origin.x = max(visible.minX, visible.maxX - target.width)
+        }
+        editWidenRestore = (editWidenRestore?.original ?? frame, target)
+        setEditWidthFrame(target)
+    }
+
     /// Full screen ended after an edit that widened the window ended inside it:
     /// the old window size comes back now (the widened frame is what AppKit restored).
     func finishEditWidthReturnAfterFullScreen() {

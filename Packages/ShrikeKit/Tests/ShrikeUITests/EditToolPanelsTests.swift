@@ -258,7 +258,7 @@ final class EditToolPanelsTests: XCTestCase {
         XCTAssertEqual(bar.resetButton.keyEquivalent, "")
         let platter = bar.toolPicker.selectedSegmentBezelColor?.usingColorSpace(.deviceRGB)
         let accent = ShrikeAccent.mark.withAlphaComponent(EditToolPicker.platterAlpha).usingColorSpace(.deviceRGB)
-        XCTAssertEqual(platter?.alphaComponent ?? 0, 0.30, accuracy: 0.001)
+        XCTAssertEqual(platter?.alphaComponent ?? 0, EditToolPicker.platterAlpha, accuracy: 0.001)
         XCTAssertEqual(platter?.redComponent ?? 0, accent?.redComponent ?? 1, accuracy: 0.01)
         content.editModeController.finalizeExit()
     }

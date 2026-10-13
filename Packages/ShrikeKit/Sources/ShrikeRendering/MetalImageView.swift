@@ -1849,8 +1849,16 @@ public final class MetalImageView: NSView {
     // Rotate gesture: ignored — `rotate(with:)` is not
     // overridden.
 
+    /// The host shows a "Can't open" card and hides the canvas (the old texture
+    /// stays for the next photo): the wheel then behaves as with no photo, so a
+    /// zoomed-in earlier photo cannot turn it into a pan on an invisible image.
+    public var canvasIsEmptyBehindCard = false
+
     public override func scrollWheel(with event: NSEvent) {
-        guard currentTexture != nil else { return }
+        // No photo (a folder whose first photos cannot be opened, 0.2.10 audit
+        // item 7): only changing the image makes sense, so the wheel still does
+        // that. Zoom, pan and swipe need a texture.
+        let hasTexture = currentTexture != nil && !canvasIsEmptyBehindCard
         // Land a running double-click / smart-zoom animation on its end
         // state BEFORE the routing reads `isAtFit` (root cause of the
         // "slide while zoomed does nothing": the half-done
@@ -1884,11 +1892,17 @@ public final class MetalImageView: NSView {
             timestamp: event.timestamp
         )
         let action = scrollRouter.route(
-            input, atFit: isAtFit,
+            input, atFit: hasTexture ? isAtFit : true,
             wheelChangesImage: Prefs.scrollWheelNavigates,
-            swipeEnabled: Self.swipeEnabledOverrideForTesting
-                ?? NSEvent.isSwipeTrackingFromScrollEventsEnabled
+            swipeEnabled: hasTexture && (Self.swipeEnabledOverrideForTesting
+                ?? NSEvent.isSwipeTrackingFromScrollEventsEnabled)
         )
+        if !hasTexture {
+            if case .navigate(let forward) = action {
+                delegate?.metalImageView(self, requestsNavigation: forward)
+            }
+            return
+        }
         switch action {
         case .none:
             break

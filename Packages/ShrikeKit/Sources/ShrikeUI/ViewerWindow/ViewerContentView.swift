@@ -448,6 +448,11 @@ public final class ViewerContentView: NSView {
         }
         isEditModeActive = true
         onEditModeActiveChanged?(true)
+        // The photo always starts fitted to the edit canvas, whatever zoom, pan or
+        // half-finished zoom animation the viewer had (0.2.10 audit item 2): the crop
+        // frame needs the whole photo, clear of the tool column. It stays in fit mode
+        // from here, so window and full-screen size changes refit it.
+        imageView.zoomToFit()
         stopLivePhoto()
         imageView.fileDragEnabled = false   // drags belong to the tool
         // Discard shows this again directly, with no
@@ -882,6 +887,9 @@ public final class ViewerContentView: NSView {
             histogram.imageShown(image, url: histogramURL)
         }
         imageBeforeEdit = nil
+        // Back to the viewer at fit, with no leftover zoom, pan or half-finished
+        // animation from the edit canvas (its fit area had room for the tool column).
+        imageView.zoomToFit()
 
         NSLayoutConstraint.deactivate(editPanelConstraints)
         NSLayoutConstraint.deactivate(editOverlayConstraints)
@@ -1678,18 +1686,36 @@ public final class ViewerContentView: NSView {
     var errorOverlayForTesting: ErrorOverlayView { errorOverlay }
     func clearDecodeErrorForTesting() { hideErrorOverlay() }
 
+    /// The canvas is invisible (alpha 0) behind the error card, so AppKit no
+    /// longer hands it the wheel: pass it on, or the wheel cannot leave a broken
+    /// photo (0.2.10 on-screen check, item 5).
+    public override func scrollWheel(with event: NSEvent) {
+        if isShowingDecodeError {
+            imageView.scrollWheel(with: event)
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+
     /// `nextEnabled` is false on the last photo of a folder that does not wrap.
     public func showDecodeError(nextEnabled: Bool = true) {
         errorOverlay.setNextEnabled(nextEnabled)
         if errorOverlay.isHidden { errorOverlay.announce() }
         errorOverlay.isHidden = false
+        // 0.2.10 audit item 5: the photo before the broken one must not show
+        // behind the card. The canvas goes empty (the texture stays, so the
+        // wheel and the next good photo work as before).
+        imageView.alphaValue = 0
+        imageView.canvasIsEmptyBehindCard = true
+        // Behind the hidden canvas: the canvas colour, as the empty Metal view drew it.
+        layer?.backgroundColor = imageView.canvasColor.resolvedCGColor(for: effectiveAppearance)
         needsLayout = true
         updateHistogramVisibility(animated: false)
         refreshEditEntryReason()
     }
 
-    /// The inspector's "n of N" follows the photo that failed too (the old photo
-    /// stays on the canvas, but the position is the failed file's).
+    /// The inspector's "n of N" follows the photo that failed too (the canvas
+    /// is empty behind the card, and the position is the failed file's).
     public func updateInspectorPosition(index: Int, total: Int) {
         inspector.updateIndexSummary(index: index, total: total)
     }
@@ -1697,6 +1723,9 @@ public final class ViewerContentView: NSView {
     private func hideErrorOverlay() {
         guard !errorOverlay.isHidden else { return }
         errorOverlay.isHidden = true
+        imageView.alphaValue = 1
+        imageView.canvasIsEmptyBehindCard = false
+        layer?.backgroundColor = NSColor.black.cgColor
         updateHistogramVisibility(animated: false)
         refreshEditEntryReason()
     }
@@ -2822,6 +2851,14 @@ public final class ViewerContentView: NSView {
 
     /// The window finished its full-screen animation: the lesson's 2 s
     /// start now, so the user sees the whole 2 s.
+    /// Full screen began or ended: a photo in fit mode is fitted again to the canvas as it
+    /// is now (edit mode included: its fit area has the tool column cut out), clearing any
+    /// leftover pan or zoom drawing state. A zoom the user made is left alone.
+    func refitAfterFullScreenChange() {
+        guard case .bestFit = imageView.contentMode else { return }
+        imageView.zoomToFit()
+    }
+
     func fullScreenDidEnter() {
         guard teachOnceHold else { return }
         scheduleTeachOnceEnd(after: Self.teachOnceDuration)

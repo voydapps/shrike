@@ -115,6 +115,46 @@ final class ViewerEditWidth028Tests: XCTestCase {
         viewer.contentRootForTesting.editModeController.finalizeExit()
     }
 
+    // 0.2.10 audit item 3: a frame set from code or Accessibility goes past contentMinSize;
+    // the window widens again at once, and the old size still comes back on exit.
+    func testShrinkingWhileEditingWidensAgain() {
+        let viewer = makeViewer(width: 900, height: 500)
+        defer { viewer.close() }
+        let original = viewer.frame
+        enterEdit(viewer)
+        XCTAssertEqual(viewer.frame, original, "wide enough: nothing yet")
+        var narrow = viewer.frame
+        narrow.size.width = 480
+        viewer.setFrame(narrow, display: false)
+        XCTAssertEqual(contentWidth(viewer), 648, accuracy: 0.5, "widened again")
+        XCTAssertEqual(viewer.frame.minX, original.minX, accuracy: 0.5)
+        viewer.contentRootForTesting.layoutSubtreeIfNeeded()
+        let content = viewer.contentRootForTesting
+        let insets = content.currentFitInsets()
+        XCTAssertGreaterThanOrEqual(content.imageView.frame.width - insets.left - insets.right, 319.5,
+                                    "the photo keeps at least 320 pt beside the tool column")
+        let strip = content.filmstripForTesting
+        XCTAssertTrue(strip.isHidden || content.bounds.insetBy(dx: -0.5, dy: -0.5).contains(strip.frame),
+                      "the filmstrip is either not shown in edit mode or fully inside the window")
+        viewer.contentRootForTesting.editModeController.finalizeExit()
+        XCTAssertEqual(viewer.frame.width, narrow.width, accuracy: 0.5, "back to the size the window was shrunk to")
+    }
+
+    // The sequence of the audit: edit, leave (the Cancel / Don't Save path), shrink to 480, edit again.
+    func testEditLeaveShrinkEditAgainStillWidens() {
+        let viewer = makeViewer(width: 480, height: 320)
+        defer { viewer.close() }
+        enterEdit(viewer)
+        viewer.contentRootForTesting.editModeController.finalizeExit()
+        XCTAssertNil(viewer.editWidenRestore, "nothing left over from the first edit")
+        var narrow = viewer.frame
+        narrow.size.width = 480
+        viewer.setFrame(narrow, display: false)
+        enterEdit(viewer)
+        XCTAssertEqual(contentWidth(viewer), 648, accuracy: 0.5)
+        viewer.contentRootForTesting.editModeController.finalizeExit()
+    }
+
     // 4. A canvas that is already wide enough changes nothing.
     func testWideWindowIsLeftAlone() {
         let viewer = makeViewer(width: 1000, height: 600)

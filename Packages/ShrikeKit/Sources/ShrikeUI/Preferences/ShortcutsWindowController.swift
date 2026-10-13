@@ -72,6 +72,26 @@ final class ShortcutsWindowController: NSWindowController, NSWindowDelegate {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         model.requestSearchFocus()
+        focusSearchField()
+        // The hosting view may build its text field a tick later.
+        DispatchQueue.main.async { [weak self] in self?.focusSearchField() }
+    }
+
+    /// Audit 2026-10-13 (0.2.9): the SwiftUI `@FocusState` alone left the caret
+    /// drawn but typing went nowhere until a click. Put the real field in the
+    /// responder chain by hand, every time the window opens or becomes key.
+    func focusSearchField() {
+        guard let window, let content = window.contentView else { return }
+        content.layoutSubtreeIfNeeded()
+        guard let field = Self.firstEditableTextField(in: content) else { return }
+        if let editor = window.firstResponder as? NSText, editor.delegate === field { return }
+        window.makeFirstResponder(field)
+    }
+
+    private static func firstEditableTextField(in view: NSView) -> NSTextField? {
+        if let field = view as? NSTextField, field.isEditable { return field }
+        for sub in view.subviews { if let hit = firstEditableTextField(in: sub) { return hit } }
+        return nil
     }
 
     func windowWillClose(_ notification: Notification) { model.query = "" }
@@ -79,7 +99,10 @@ final class ShortcutsWindowController: NSWindowController, NSWindowDelegate {
     /// Spec 27 P3-10 (regression vs spec 25 §13.2): the search field is focused
     /// when the window opens. `onAppear` runs before the hosting view is in a
     /// key window, so focus is asked for again once the window is key.
-    func windowDidBecomeKey(_ notification: Notification) { model.requestSearchFocus() }
+    func windowDidBecomeKey(_ notification: Notification) {
+        model.requestSearchFocus()
+        focusSearchField()
+    }
 
     var modelForTesting: ShortcutsWindowModel { model }
 }
@@ -107,6 +130,23 @@ final class ShortcutsWindowModel: ObservableObject {
     var presetLine: String { preset == .macNative ? "Mac preset" : "FastStone preset" }
     var sections: [ShortcutsTab.SectionModel] {
         ShortcutsFilter.filter(ShortcutsTab.sections(for: preset), query: query)
+    }
+
+    /// One list row. The id carries the section: "Zoom In" exists in Viewer,
+    /// Edit Mode and Compare, and rows keyed by the action alone were mixed up
+    /// by the list when the filter changed (0.2.9 showed Compare's bare "+, =,
+    /// ⇧+" in the Viewer rows).
+    struct ListRow: Identifiable, Equatable {
+        let id: String
+        let action: String
+        let keys: String
+    }
+    var listSections: [(title: String, rows: [ListRow])] {
+        sections.map { section in
+            (section.title, section.rows.map {
+                ListRow(id: "\(section.title)/\($0.action)", action: $0.action, keys: $0.keys)
+            })
+        }
     }
 }
 
@@ -148,9 +188,9 @@ private struct ShortcutsWindowView: View {
                 Spacer()
             } else {
                 List {
-                    ForEach(model.sections, id: \.title) { section in
+                    ForEach(model.listSections, id: \.title) { section in
                         Section {
-                            ForEach(section.rows, id: \.action) { row in
+                            ForEach(section.rows) { row in
                                 HStack {
                                     Text(row.action).font(.system(size: 13))
                                     Spacer()
