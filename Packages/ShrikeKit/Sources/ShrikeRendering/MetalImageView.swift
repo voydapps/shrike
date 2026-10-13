@@ -239,6 +239,16 @@ public final class MetalImageView: NSView {
     internal private(set) var lastZoomAnimationDurationForTesting: TimeInterval?
     /// Test seam: lands a running zoom animation on its end state.
     internal func finishZoomAnimationForTesting() { finishZoomAnimation() }
+    /// Test seam: a swipe stand-in texture caps Fit at this logical size.
+    internal var standInLogicalSizeForTesting: CGSize? {
+        get { standInLogicalSize }
+        set { standInLogicalSize = newValue }
+    }
+    /// Test seam: pretends a resolution swap is in progress.
+    internal var swappingResolutionForTesting: Bool {
+        get { swappingResolution }
+        set { swappingResolution = newValue }
+    }
 
     /// Test seam: the on-screen image size in view points.
     internal var displayedImageSizeForTesting: CGSize { displayedImageSize }
@@ -570,8 +580,18 @@ public final class MetalImageView: NSView {
         needsDisplay = true
     }
 
+    /// Fit from ANY prior state (spec 27 B1): a running zoom animation lands
+    /// first (its finish block writes `contentMode`, and would put the old
+    /// zoom back after this call), then the presentation and pan are cleared
+    /// and the fit zoom is applied whether or not the mode value changed.
     public func zoomToFit() {
+        finishZoomAnimation()
+        dropZoomPresentation()
+        resetRubberBand()
+        panOffset = .zero
         contentMode = .bestFit
+        applyContentMode()
+        needsDisplay = true
     }
 
     /// 100 %: one image pixel per screen pixel (not one texel per point).

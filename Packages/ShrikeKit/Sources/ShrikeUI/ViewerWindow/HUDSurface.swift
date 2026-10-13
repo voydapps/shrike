@@ -123,6 +123,25 @@ public class HUDSurfaceView: NSView {
     /// Called after the look changed (the pill re-stacks its hairline).
     var onLookChanged: (() -> Void)?
 
+    /// A host with its own flat look (the toast pill, spec 27 N6): fill,
+    /// hairline and a tight shadow instead of the panel tokens.
+    struct SurfaceStyle: Equatable {
+        var fill: NSColor
+        var hairline: NSColor
+        var hairlineWidth: CGFloat
+        var shadowOpacity: Float
+        var shadowRadius: CGFloat
+        var shadowOffset: CGSize
+    }
+
+    var surfaceStyle: SurfaceStyle? {
+        didSet {
+            guard surfaceStyle != oldValue, look != .unbuilt else { return }
+            applyContrastBorder()
+            updateShape()
+        }
+    }
+
     /// The child layer that draws the fill and the hairline.
     private var fillLayer: CALayer?
     /// `NSGlassEffectView` on macOS 26, built on the first glass reveal.
@@ -420,6 +439,13 @@ public class HUDSurfaceView: NSView {
         if layer.masksToBounds { layer.masksToBounds = false }
         layer.cornerCurve = .continuous
         layer.shadowColor = NSColor.black.cgColor
+        if let style = surfaceStyle, look != .glass {
+            layer.shadowOpacity = style.shadowOpacity
+            layer.shadowRadius = style.shadowRadius
+            layer.shadowOffset = style.shadowOffset
+            layer.shadowPath = CGPath(roundedRect: bounds, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            return
+        }
         if look == .glass {
             layer.shadowOpacity = HUDGlass.glassShadowOpacity
             layer.shadowRadius = HUDGlass.glassShadowRadius
@@ -459,6 +485,8 @@ public class HUDSurfaceView: NSView {
             borderColor = (isFullScreenHUD
                 ? NSColor.white.withAlphaComponent(HUDGlass.fullScreenBorderAlpha)
                 : NSColor.separatorColor).resolvedCGColor(for: effectiveAppearance)
+        } else if let style = surfaceStyle, look != .glass {
+            borderColor = style.hairline.cgColor
         } else {
             borderColor = NSColor.white.withAlphaComponent(HUDGlass.hairlineAlpha).cgColor
         }
@@ -468,12 +496,13 @@ public class HUDSurfaceView: NSView {
         switch look {
         case .solid, .plain:
             fillLayer?.backgroundColor = (look == .plain || usesOpaqueFill
-                ? HUDGlass.opaqueSurfaceColor : HUDGlass.surfaceColor).cgColor
+                ? HUDGlass.opaqueSurfaceColor : (surfaceStyle?.fill ?? HUDGlass.surfaceColor)).cgColor
             if look == .plain {
                 fillLayer?.borderWidth = 0
                 fillLayer?.borderColor = nil
             } else {
-                fillLayer?.borderWidth = HUDGlass.contrastBorderWidth
+                fillLayer?.borderWidth = ShrikeTokens.increaseContrast
+                    ? HUDGlass.contrastBorderWidth : (surfaceStyle?.hairlineWidth ?? HUDGlass.contrastBorderWidth)
                 fillLayer?.borderColor = borderColor
             }
             layer.borderWidth = 0

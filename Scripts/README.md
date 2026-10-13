@@ -54,7 +54,7 @@ Environment: `SHRIKE_INSTALL_DIR` (default `/Applications`),
 
 ```sh
 Scripts/make-package.sh               # dist/Shrike-<version>.dmg + .sha256
-Scripts/make-package.sh 0.2.7         # same, but first checks the version
+Scripts/make-package.sh 0.2.9         # same, but first checks the version
 Scripts/make-package.sh --zip         # also dist/Shrike-<version>.zip
 Scripts/make-package.sh --force       # overwrite an existing DMG
 Scripts/make-package.sh --adhoc       # sign ad-hoc: the PUBLIC download (no name in the signature)

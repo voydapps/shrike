@@ -91,6 +91,12 @@ public enum Badges {
         String(repeating: "★", count: max(0, min(5, rating)))
     }
 
+    /// The list's compact rating: "★3" when rated, "" otherwise (spec 27 P3-14).
+    public static func compactStars(_ rating: Int) -> String {
+        let n = max(0, min(5, rating))
+        return n == 0 ? "" : "★\(n)"
+    }
+
     /// A row of `diameter` circles, `gap` apart.
     public static func tagDotsImage(_ fills: [NSColor], diameter: CGFloat = 7, gap: CGFloat = 2) -> NSImage? {
         guard !fills.isEmpty else { return nil }
@@ -107,8 +113,44 @@ public enum Badges {
         return image
     }
 
+    /// The chips' backdrop on a photo (spec 27 V5): black at 0.55.
+    public static let chipFill = NSColor.black.withAlphaComponent(0.55)
+    /// The chips' 0.5 pt hairline: white at 0.18.
+    public static let chipHairline = NSColor.white.withAlphaComponent(0.18)
+    public static let editedChipSize = NSSize(width: 20, height: 16)
+    public static let editedChipSymbol = "pencil.line"
+    public static let editedChipSymbolPointSize: CGFloat = 11
+    public static let editedChipSymbolWeight: NSFont.Weight = .semibold
+    /// The mark in the viewer pill: 16 pt semibold, full opacity.
+    public static let editedPillPointSize: CGFloat = 16
+    /// Tooltip of the cell chip and of the pill mark.
+    public static let editedTooltip = "Edited by Shrike. The original is kept."
+
+    /// The "edited" chip on a photo: 20 x 16 rounded rect, the RAW chip's
+    /// backdrop, a hairline, and `pencil.line` in white.
+    public static func editedChipImage() -> NSImage {
+        let size = editedChipSize
+        let glyph = symbol(editedChipSymbol, pointSize: editedChipSymbolPointSize, color: .white,
+                           weight: editedChipSymbolWeight)
+        return NSImage(size: size, flipped: false) { rect in
+            let path = NSBezierPath(roundedRect: rect.insetBy(dx: 0.25, dy: 0.25), xRadius: 4, yRadius: 4)
+            chipFill.setFill()
+            path.fill()
+            path.lineWidth = 0.5
+            chipHairline.setStroke()
+            path.stroke()
+            if let glyph {
+                let g = glyph.size
+                glyph.draw(in: NSRect(x: (rect.width - g.width) / 2, y: (rect.height - g.height) / 2,
+                                      width: g.width, height: g.height))
+            }
+            return true
+        }
+    }
+
     /// "RAW" in a 1 pt outline, corner 3, padding 3/1.
-    public static func rawChipImage(fontSize: CGFloat = 9, height: CGFloat? = nil, color: NSColor) -> NSImage {
+    public static func rawChipImage(fontSize: CGFloat = 9, height: CGFloat? = nil, color: NSColor,
+                                    backdrop: Bool = false) -> NSImage {
         let font = NSFont.systemFont(ofSize: fontSize, weight: .semibold)
         let text = NSAttributedString(string: "RAW", attributes: [.font: font, .foregroundColor: color])
         let textSize = text.size()
@@ -116,6 +158,10 @@ public enum Badges {
         let size = NSSize(width: ceil(textSize.width + 6), height: h)
         return NSImage(size: size, flipped: false) { rect in
             let path = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 3, yRadius: 3)
+            if backdrop {
+                chipFill.setFill()
+                path.fill()
+            }
             path.lineWidth = 1
             color.setStroke()
             path.stroke()

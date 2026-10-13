@@ -18,6 +18,7 @@
 //
 
 import AppKit
+import ShrikeCore
 
 /// What a toast says and how long it stays.
 public struct ToastContent: Equatable, Sendable {
@@ -88,6 +89,48 @@ public enum ToastPlacement: Sendable {
     }
 }
 
+/// The toast's action. Its hit area is the full pill height and at least
+/// `minWidth` wide, from the label's gap to the pill's trailing edge; the
+/// title is drawn right-aligned with a 12 pt trailing inset (spec 27 B2).
+@MainActor
+final class ToastActionButton: NSButton {
+    static let minWidth: CGFloat = 44
+    static let trailingInset: CGFloat = 12
+    /// Called when a real mouse press starts on the button.
+    var onPress: (() -> Void)?
+
+    override var acceptsFirstResponder: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    private var titleAttributes: [NSAttributedString.Key: Any] {
+        [.font: font ?? NSFont.systemFont(ofSize: 13, weight: .semibold),
+         .foregroundColor: contentTintColor ?? ShrikeAccent.mark]
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let text = (title as NSString).size(withAttributes: titleAttributes)
+        return NSSize(width: max(Self.minWidth, ceil(text.width) + Self.trailingInset),
+                      height: NSView.noIntrinsicMetric)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onPress?()
+        super.mouseDown(with: event)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let text = title as NSString
+        var attributes = titleAttributes
+        if isHighlighted, let tint = contentTintColor {
+            attributes[.foregroundColor] = tint.withAlphaComponent(0.6)
+        }
+        let size = text.size(withAttributes: attributes)
+        let origin = NSPoint(x: bounds.maxX - Self.trailingInset - size.width,
+                             y: bounds.midY - size.height / 2)
+        text.draw(at: origin, withAttributes: attributes)
+    }
+}
+
 @MainActor
 public final class ToastHostView: HUDSurfaceView {
 
@@ -97,6 +140,15 @@ public final class ToastHostView: HUDSurfaceView {
     public static let maxWidth: CGFloat = 480
     static let fadeIn: TimeInterval = 0.12
     static let fadeOut: TimeInterval = 0.20
+    /// Spec 27 N6: black 0.82 fill, 0.5 pt white 0.16 hairline, a tight shadow.
+    static let pillStyle = SurfaceStyle(
+        fill: NSColor.black.withAlphaComponent(0.82),
+        hairline: NSColor.white.withAlphaComponent(0.16),
+        hairlineWidth: 0.5,
+        shadowOpacity: 0.25,
+        shadowRadius: 3,
+        shadowOffset: CGSize(width: 0, height: -1)
+    )
 
     public let placement: ToastPlacement
     public private(set) var content: ToastContent?
@@ -116,7 +168,7 @@ public final class ToastHostView: HUDSurfaceView {
     }
 
     private let label = NSTextField(labelWithString: "")
-    private let button = NSButton(title: "", target: nil, action: nil)
+    private let button = ToastActionButton(title: "", target: nil, action: nil)
     private var action: (@MainActor () -> Void)?
     private var topConstraint: NSLayoutConstraint?
     private var buttonGap: NSLayoutConstraint?
@@ -131,12 +183,23 @@ public final class ToastHostView: HUDSurfaceView {
     private var dismissWork: DispatchWorkItem?
     private(set) var isPaused = false
     private var tracking: NSTrackingArea?
+    /// Bumped by every `show`; a press that began on an older toast does not run the new one's action.
+    private var showGeneration = 0
+    private var pressGeneration: Int?
+    /// The zoom HUD (or any view) the toast keeps below while it is visible.
+    private weak var avoided: NSView?
+    private var avoidGap: CGFloat = 12
+    private var avoidConstraint: NSLayoutConstraint?
+    /// Test seam: where the pointer is, in window coordinates.
+    var pointerInWindowForTesting: NSPoint?
 
     public init(placement: ToastPlacement) {
         self.placement = placement
         super.init(frame: .zero)
         wantsLayer = true
         glassShape = .capsule   // full-screen viewer only
+        // Spec 27 N6: a flat pill, no wide soft halo.
+        surfaceStyle = Self.pillStyle
         translatesAutoresizingMaskIntoConstraints = false
 
         label.font = .systemFont(ofSize: 13)
@@ -152,9 +215,12 @@ public final class ToastHostView: HUDSurfaceView {
         button.bezelStyle = .inline
         button.font = .systemFont(ofSize: 13, weight: .semibold)
         // Accent text on the dark pill, lightened for 4.5:1.
-        button.contentTintColor = NSColor.controlAccentColor.blended(withFraction: 0.25, of: .white)
-            ?? .controlAccentColor
+        button.contentTintColor = ShrikeAccent.mark
         button.refusesFirstResponder = true
+        button.onPress = { [weak self] in
+            guard let self else { return }
+            self.pressGeneration = self.showGeneration
+        }
         button.target = self
         button.action = #selector(performToastAction(_:))
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -189,8 +255,9 @@ public final class ToastHostView: HUDSurfaceView {
             progressBar.widthAnchor.constraint(equalToConstant: 160),
             progressBar.heightAnchor.constraint(equalToConstant: 4),
             progressBar.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 6),
-            button.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            button.centerYAnchor.constraint(equalTo: centerYAnchor),
+            button.trailingAnchor.constraint(equalTo: trailingAnchor),
+            button.topAnchor.constraint(equalTo: topAnchor),
+            button.bottomAnchor.constraint(equalTo: bottomAnchor),
             collapsed,
         ])
 
@@ -221,14 +288,39 @@ public final class ToastHostView: HUDSurfaceView {
     /// top centre): its top stays at least `gap` below `other`'s bottom.
     /// Both views must share a superview, and `install(in:)` must have run.
     public func keepBelow(_ other: NSView, gap: CGFloat = 12) {
-        topAnchor.constraint(greaterThanOrEqualTo: other.bottomAnchor, constant: gap).isActive = true
+        avoided = other
+        avoidGap = gap
+        avoidConstraint = topAnchor.constraint(greaterThanOrEqualTo: other.bottomAnchor, constant: gap)
+        avoidConstraint?.isActive = false
+        applyAvoidance()
     }
+
+    /// The rule holds only while the other view is on screen (spec 27 B2):
+    /// a hidden or faded zoom HUD must not move the toast between two shows.
+    /// The other view's show / hide calls this. While a toast is on screen the
+    /// change waits for the toast's end (or the next `show`): a toast that
+    /// slides under a resting pointer is the miss this spec fixes (B2 item 5),
+    /// and that outweighs a HUD pulse (about 1 s) touching the toast.
+    func refreshAvoidance() {
+        if isShowing { return }
+        applyAvoidance()
+    }
+
+    private func applyAvoidance() {
+        guard let other = avoided, let constraint = avoidConstraint else { return }
+        let visible = !other.isHidden && other.alphaValue > 0
+        if constraint.isActive != visible { constraint.isActive = visible }
+    }
+
+    var avoidanceActiveForTesting: Bool { avoidConstraint?.isActive ?? false }
 
     // MARK: - Show / dismiss
 
     /// Shows `content`, replacing whatever toast is on screen.
     public func show(_ content: ToastContent, action: (@MainActor () -> Void)? = nil) {
         cancelTimer()
+        showGeneration &+= 1
+        if !isShowing { applyAvoidance() }
         // A progress update of the same toast is not spoken again.
         let continuing = self.content?.progress != nil && content.progress != nil
         self.content = content
@@ -278,6 +370,16 @@ public final class ToastHostView: HUDSurfaceView {
         remaining = content.duration
         isPaused = false
         if content.progress == nil { startTimer() }
+        // `mouseEntered` is not sent for a pointer that already rests inside
+        // the new toast, so the 6 s clock would run under the Undo button.
+        superview?.layoutSubtreeIfNeeded()
+        if pointerIsInside { pauseTimer() }
+    }
+
+    private var pointerIsInside: Bool {
+        guard let window else { return false }
+        let inWindow = pointerInWindowForTesting ?? window.mouseLocationOutsideOfEventStream
+        return bounds.contains(convert(inWindow, from: nil))
     }
 
     /// Convenience for plain text.
@@ -290,6 +392,7 @@ public final class ToastHostView: HUDSurfaceView {
         content = nil
         action = nil
         setAccessibilityElement(false)
+        applyAvoidance()
         guard animated else {
             alphaValue = 0
             isHidden = true
@@ -308,10 +411,25 @@ public final class ToastHostView: HUDSurfaceView {
 
     /// Runs the toast's action (the Undo button, or ⌘Z's twin) and hides it.
     @objc func performToastAction(_ sender: Any?) {
+        // A press that began on an earlier toast must not run this one's action.
+        if let started = pressGeneration, started != showGeneration {
+            pressGeneration = nil
+            return
+        }
+        pressGeneration = nil
         let run = action
+        // Not user visible: tells "hit but not run" from "not hit" in Instruments.
+        ShrikeSignposts.browser.event("toast.undo", run == nil ? "no action" : "run")
         dismiss()
         run?()
     }
+
+    /// Test seam: the press that began on toast `generation`.
+    func beginPressForTesting() { pressGeneration = showGeneration }
+
+    /// Test seam: the action button.
+    var actionButtonForTesting: NSButton { button }
+    var labelForTesting: NSTextField { label }
 
     /// Test seam: the button's title when visible.
     var actionTitleForTesting: String? { button.isHidden ? nil : button.title }
@@ -353,7 +471,7 @@ public final class ToastHostView: HUDSurfaceView {
         if let tracking { removeTrackingArea(tracking) }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect, .assumeInside],
             owner: self,
             userInfo: nil
         )
@@ -363,6 +481,8 @@ public final class ToastHostView: HUDSurfaceView {
 
     public override func mouseEntered(with event: NSEvent) { pauseTimer() }
     public override func mouseExited(with event: NSEvent) { resumeTimer() }
+
+    public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     // Clicks on the toast body must not fall through to the canvas.
     public override func hitTest(_ point: NSPoint) -> NSView? {

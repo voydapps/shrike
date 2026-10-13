@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.2.8 to 0.2.9 - 2026-10-13
+### New
+- The info panel in the Browser and the one in the viewer follow one design. Section titles are easy to read, and the numbers line up on the right edge. In a narrow info panel a long value wraps instead of being cut, and the size and the date get a shorter form.
+- The right-click menu in the viewer has Slideshow, Batch and Compare, in the same order as in the Browser.
+- The edited mark on a photo is now a small chip with a pencil. It is easy to see on a bright photo. Point at it to read what it means.
+- The Welcome window has one main button: Open Folder. Press Return to use it.
+- External Editors in Settings is a clean list. It shows only the editors you added, and a short message when there are none.
+- In edit mode the right side looks like a panel. With no tool chosen, a tall card fills it and says what to do. The histogram sits in that column under the tool panel, never on your photo. It hides when the column has no room, or while the Levels tool shows its own.
+- Edit mode needs a window at least 648 points wide. If your window is narrower, the info panel steps aside and the window gets wider. When you finish, the window goes back to its old size, unless you changed its size yourself. The edit bar is always shown when you start.
+- In the Browser list, you can hide the Rating, Flag, Tags and Dimensions columns. Right-click the header row. The choice is kept. Rating is narrow and shows a star with a number, such as ★3.
+- On macOS 26, every item in the Shrike, File, Edit, View and Window menus has an icon, so the names line up. Before, some rows had one and some did not.
+- A dark shade appears behind the title and the subtitle when a bright photo runs under them, for example when you zoom in. It goes away at Fit.
+### Changed
+- Show RAW File and Show JPEG File always stay in the menu. They are grey when they do not apply, so you can find them.
+- The name under a photo that has a RAW follows the file you see. Show the RAW and the name ends in the RAW extension.
+- In the viewer, Edit and Rotate turn off the moment you switch to the RAW.
+- The edit panels each end with one Reset button named for the tool: Reset Crop, Reset Rotation, Reset Resize, Reset Color, Reset Levels. The Resize panel has Width, Height and Scale, and says what the new size will be. All sliders show their numbers the same way.
+- Only one histogram shows at a time. When the info panel is open it has the histogram, and the floating one waits.
+- A photo that can't be opened shows a larger card with a bigger warning sign, and no histogram.
+- The Trash message is flatter and has no wide shadow.
+- Esc, Page Up, Page Down, Home and End are written as words in the shortcut list.
+- In menus, the plain keys (such as Q or 3) show as small badges in the shortcut column, in the main menus and in the right-click menus. A row with its own Cmd shortcut shows only that shortcut.
+- The blue that Shrike draws itself (the selection ring in the filmstrip, the drop zones, the button icons that turn on) is one blue. Controls that the system draws keep the system blue.
+- The Reset button is as wide as the panel in Resize and Levels too.
+- In the Browser list, the column titles are easier to read, in light and in dark, and the rows use 13 point text. After you sort or filter, the selected photo stays in view. A photo that is already in view does not make the list scroll.
+- Settings labels have no colon. The Thumbnails page says the real default size.
+- The Mouse and Trackpad note in Settings now tells the whole story about the two-finger scroll.
+- The loupe has a thin ring that you can see on light and dark photos.
+### Fixed
+- The window zoom button is not slowed down any more. The quick resize is only for the edit mode width.
+- A window that was made wider for edit mode, where you finished editing in full screen, goes back to its old size when you leave full screen.
+- Zoom to Fit (Cmd+0 or the View menu) puts the photo back to Fit, also after you zoomed out and also while a zoom is still moving.
+- The Undo button on the Trash message works when you click near it, not only on the exact letters. The message does not move when the zoom label comes or goes.
+- A folder with a thousand photos no longer freezes the app when VoiceOver or another tool reads the Browser.
+- After you rotate a photo, the small picture in the filmstrip turns too. It also follows Undo, and Done in edit mode.
+- The search box in the shortcut list is ready for typing when the window opens.
+- VoiceOver reads "edited" for an edited photo in the Browser.
+
 ## 0.2.7 - 2026-10-12
 ### New
 - Help > Keyboard Shortcuts (Cmd+/) opens a window you can search. Type a name, a key or a section. It stays open next to your photos.
@@ -61,7 +99,7 @@
 - The Recent list skips folders that no longer exist.
 ### Fixed
 - The edit tool buttons act on the tool you picked.
-- In edit mode, Done and Apply now use the same blue as the toolbar.
+- In edit mode, Done and Apply used the same blue as the toolbar. (From 0.2.7, Apply is a plain grey button and Done is the only blue one.)
 - The arrow keys work right after you open a folder. The first photo is selected there, also when the folder is sorted by date taken: it is the first one you see, not the first one by name.
 - After you used Share, its button no longer stays lit.
 - The default button of a sheet or panel (Rename, Go to Folder, Slideshow, Contact Sheet, Apply) has a dark label when your accent colour is a light one, such as Yellow.

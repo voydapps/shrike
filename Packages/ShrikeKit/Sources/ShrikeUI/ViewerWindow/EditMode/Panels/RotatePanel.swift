@@ -62,7 +62,7 @@ final class RotatePanel: NSView {
         target: nil,
         action: nil
     )
-    private let resetButton = NSButton(title: "Reset", target: nil, action: nil)
+    private let resetButton = NSButton(title: "Reset Rotation", target: nil, action: nil)
 
     init() {
         super.init(frame: .zero)
@@ -155,7 +155,7 @@ final class RotatePanel: NSView {
 
     @objc private func handleAngleSlider(_ sender: NSSlider) {
         angle = max(-45, min(45, sender.doubleValue))
-        angleLabel.stringValue = String(format: "%.1f°", angle)
+        angleLabel.stringValue = EditValueText.text(value: angle, step: 0.5, unit: "°")
         angleSlider.setAccessibilityValueDescription(String(format: "%.1f degrees", angle))
         onAngleChanged?(angle)
 
@@ -210,5 +210,6 @@ final class RotatePanel: NSView {
     internal var _quickCW: NSButton { quickCW }
     internal var _quickCCW: NSButton { quickCCW }
     internal var _quickHalf: NSButton { quickHalf }
+    internal var _resetButton: NSButton { resetButton }
     internal var _autoCropCheckbox: NSButton { autoCropCheckbox }
 }

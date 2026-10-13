@@ -217,6 +217,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
 
     public func menuNeedsUpdate(_ menu: NSMenu) {
         apply(surface: MenuSurface.of(NSApp?.mainWindow))
+        applyIcons(opening: menu)   // before the hints: an icon changes the row width
         applyKeyHints(opening: menu)
         switch menu {
         case openRecentMenu: fillOpenRecent()
@@ -322,6 +323,8 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
             if sub.delegate == nil { sub.delegate = self }
             hintMenus.append(sub)
         }
+        // The Window menu draws no hints but carries the Welcome icon (spec 27 P3-9).
+        if windowMenu.delegate == nil { windowMenu.delegate = self }
         presetObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -371,6 +374,80 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         MenuKeyHints.apply(to: opened, context: .viewer, preset: preset,
                            hasOwnKey: { !$0.keyEquivalent.isEmpty || keyed.contains(ObjectIdentifier($0)) })
         hintedMenus.insert(ObjectIdentifier(opened))
+    }
+
+    // MARK: Menu icons (spec 27 P3-9)
+
+    /// Whether the system draws icons on its own standard items. macOS 26 does (Copy,
+    /// Paste, Select All, ...), so our items beside them get one too, or the labels
+    /// of one menu start at two different places. Tests set it to try both.
+    nonisolated(unsafe) static var systemDrawsMenuIcons: Bool = {
+        if #available(macOS 26, *) { return true }
+        return false
+    }()
+
+    /// The icon of each Shrike item in a menu that shows icons (Shrike, File, Edit, View, Window).
+    /// A menu is all icons or none, so View lists every one of its rows.
+    static let menuIconTable: [(command: ShrikeCommand, symbol: String)] = [
+        (.copyPath, "link"), (.deselectAll, "rectangle.dashed"),                   // Edit
+        (.viewAsGrid, "square.grid.2x2"), (.viewAsFilmstrip, "film"),              // View
+        (.viewAsList, "list.bullet"), (.filter, "line.3.horizontal.decrease"),
+        (.largerThumbnails, "arrow.up.left.and.arrow.down.right"),
+        (.smallerThumbnails, "arrow.down.right.and.arrow.up.left"),
+        (.zoomIn, "plus.magnifyingglass"), (.zoomOut, "minus.magnifyingglass"),
+        (.zoomToFit, "arrow.up.left.and.down.right.magnifyingglass"),
+        (.actualSize, "1.magnifyingglass"), (.zoom200, "magnifyingglass"),
+        (.zoom300, "magnifyingglass"), (.fitWidth, "arrow.left.and.right"),
+        (.fitHeight, "arrow.up.and.down"), (.loupe, "magnifyingglass.circle"),
+        (.toggleSidebar, "sidebar.left"), (.toggleToolbar, "menubar.rectangle"),
+        (.toggleInspector, "sidebar.right"),
+        (.toggleFilmstrip, "film.stack"), (.toggleHistogram, "chart.bar"),
+        (.unpinAllPanels, "pin.slash"), (.slideshow, "play.rectangle"),
+        (.compare, "rectangle.split.2x1"), (.toggleFullScreen, "arrow.up.left.and.arrow.down.right.circle"),
+        (.welcome, "macwindow"),                                                   // Window
+        (.settings, "gearshape"),                                                  // Shrike
+        (.newBrowserWindow, "macwindow.badge.plus"), (.open, "doc"),               // File
+        (.openFolder, "folder"), (.save, "square.and.arrow.down"),
+        (.saveAs, "square.and.arrow.down.on.square"), (.revertToOriginal, "arrow.uturn.backward"),
+        (.rename, "pencil"), (.copyToFolder, "doc.on.doc"), (.moveToFolder, "arrowshape.turn.up.right"),
+        (.tags, "tag"), (.addToFavorites, "star"), (.revealInFinder, "arrow.up.forward.app"),
+        (.share, "square.and.arrow.up"), (.openExternalEditor1, "square.and.pencil"),
+        (.moveToTrash, "trash"), (.pageSetup, "doc.plaintext"), (.print, "printer"),
+        (.exportContactSheet, "square.grid.3x3"),
+    ]
+
+    /// Submenu rows that are not commands, by title: they carry an icon like their neighbours.
+    static let menuHolderIconTable: [(title: String, symbol: String)] = [
+        ("Services", "gearshape.2"),            // Shrike
+        ("Open Recent", "clock"),               // File
+        ("Find", "magnifyingglass"),            // Edit
+        ("Sort By", "arrow.up.arrow.down"),     // View
+    ]
+
+    private var iconedMenus: Set<ObjectIdentifier> = []
+
+    /// Sets (or, where a symbol is missing or the system draws none, clears) the icons of
+    /// the table's items in `menu`. One menu is all icons or none, never a mix.
+    private func applyIcons(opening menu: NSMenu) {
+        guard !iconedMenus.contains(ObjectIdentifier(menu)) else { return }
+        iconedMenus.insert(ObjectIdentifier(menu))
+        var rows = Self.menuIconTable.flatMap { entry in
+            (itemsByCommand[entry.command] ?? []).filter { $0.menu === menu }.map { ($0, entry.symbol) }
+        }
+        for holder in Self.menuHolderIconTable {
+            rows += menu.items.filter { $0.submenu != nil && $0.title == holder.title }.map { ($0, holder.symbol) }
+        }
+        guard !rows.isEmpty else { return }
+        let draws = Self.systemDrawsMenuIcons
+        let images = rows.map { draws ? NSImage(systemSymbolName: $0.1, accessibilityDescription: nil) : nil }
+        let complete = draws && !images.contains { $0 == nil }
+        for (n, row) in rows.enumerated() { row.0.image = complete ? images[n] : nil }
+    }
+
+    /// Every menu now (tests).
+    func applyAllIconsForTesting() {
+        iconedMenus.removeAll()
+        for item in menu.items { if let sub = item.submenu { applyIcons(opening: sub) } }
     }
 
     private func submenuItem(_ submenu: NSMenu) -> NSMenuItem {

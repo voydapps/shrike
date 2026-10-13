@@ -397,7 +397,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
     private let autoContrastButton = NSButton(title: "Auto Contrast", target: nil, action: nil)
     private let autoColorButton = NSButton(title: "Auto Color", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
-    private let resetButton = NSButton(title: "Reset", target: nil, action: nil)
+    private let resetButton = NSButton(title: "Reset Levels", target: nil, action: nil)
 
     private var flagsMonitor: Any?
 
@@ -545,6 +545,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
             resetRow.widthAnchor.constraint(equalToConstant: w),
             resetRow.heightAnchor.constraint(equalTo: resetButton.heightAnchor),
             resetButton.topAnchor.constraint(equalTo: resetRow.topAnchor),
+            resetButton.leadingAnchor.constraint(equalTo: resetRow.leadingAnchor),
             resetButton.trailingAnchor.constraint(equalTo: resetRow.trailingAnchor),
         ])
         buildKeyViewLoop()
@@ -609,7 +610,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
 
     /// "Reset Channel" while ⌥ is held.
     func setOptionHeld(_ held: Bool) {
-        let title = held ? "Reset Channel" : "Reset"
+        let title = held ? "Reset Channel" : "Reset Levels"
         guard resetButton.title != title else { return }
         resetButton.title = title
         resetButton.toolTip = held ? "Reset \(channel.title) Channel" : "Reset All Channels"

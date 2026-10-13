@@ -12,6 +12,10 @@ import ShrikeCore
 
 struct GeneralTab: View {
 
+    /// Spec 27 T1: true for both wheel settings and both fit states.
+    static let wheelHelp = "Hold ⌘ for the other action. On a trackpad, a short two-finger scroll moves to the next photo when the photo fits the window and the wheel is set to Changes image. A swipe changes images and a pinch zooms."
+
+
     @EnvironmentObject private var store: PreferencesStore
 
     // Recent-folders options cross-reference table.
@@ -27,7 +31,7 @@ struct GeneralTab: View {
                 Toggle("Hide the toolbar when the pointer is still", isOn: store.viewerToolbarAutoHide)
 
                 // A JPEG+RAW shot is one item by default.
-                Picker("RAW+JPEG pairs:", selection: store.pairRAW) {
+                Picker("RAW+JPEG pairs", selection: store.pairRAW) {
                     Text("Show as one item").tag(true)
                     Text("Show both files").tag(false)
                 }
@@ -54,12 +58,12 @@ struct GeneralTab: View {
 
             // "Mouse and Trackpad" group.
             Section {
-                Picker("Mouse wheel:", selection: store.scrollWheelNavigates) {
+                Picker("Mouse wheel", selection: store.scrollWheelNavigates) {
                     Text("Changes image").tag(true)
                     Text("Zooms").tag(false)
                 }
-                Text("Hold ⌘ for the other action. On a trackpad, swipe to change images and pinch to zoom.")
-                    .font(.system(size: 11))
+                Text(Self.wheelHelp)
+                    .font(.system(size: 12))
                     .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                     .frame(maxWidth: 320, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)

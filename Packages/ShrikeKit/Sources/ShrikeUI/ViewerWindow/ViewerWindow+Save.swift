@@ -358,7 +358,12 @@ extension ViewerWindow {
     /// (at Fit after a save) and reads its pencil state again.
     func didChangeFileOnDisk(_ url: URL, fit: Bool) {
         let cache = services.thumbnailCache
-        Task { await cache.evict(url: url) }
+        // The strip cell asks again once the old thumbnail is gone (spec 27 B4).
+        Task { [weak self] in
+            await cache.evict(url: url)
+            guard let self else { return }
+            await MainActor.run { _ = self.contentRoot.reloadFilmstripThumbnail(for: url, services: self.services) }
+        }
         let key = list.index(of: url).flatMap { list[$0]?.primary } ?? url
         headerPixelSizes[url] = nil
         headerPixelSizes[key] = nil

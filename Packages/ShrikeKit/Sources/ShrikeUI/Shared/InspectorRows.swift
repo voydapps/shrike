@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import SwiftUI
 import ShrikeCore
 
 /// One "Label  value" line.
@@ -113,5 +114,110 @@ public enum InspectorRows {
         f.dateStyle = .medium
         f.timeStyle = .none
         return "Original kept since " + f.string(from: date)
+    }
+}
+
+// MARK: - Narrow panel forms (spec 27 V6)
+
+public extension InspectorRows {
+
+    /// Below this panel width the long forms give way to short ones.
+    static let compactWidth: CGFloat = 300
+
+    static func isCompact(width: CGFloat) -> Bool { width < compactWidth }
+
+    /// The short form of a row at a narrow width: Dimensions drops " (17.9 MP)"
+    /// (the full value goes to the tooltip); Date taken drops the seconds and
+    /// the "at". Other rows are unchanged (they wrap instead).
+    static func compactValue(label: String, value: String) -> String {
+        switch label {
+        case "Dimensions":
+            return value.replacingOccurrences(of: #"\s*\([^)]*MP\)"#, with: "", options: .regularExpression)
+        case "Date taken":
+            var out = value.replacingOccurrences(of: " at ", with: ", ")
+            out = out.replacingOccurrences(of: #"(\d{1,2}:\d{2}):\d{2}"#, with: "$1", options: .regularExpression)
+            return out
+        default:
+            return value
+        }
+    }
+}
+
+// MARK: - Shared SwiftUI pieces (spec 27 V1): the viewer and the Browser inspector use these
+
+/// One set of tokens for both inspectors.
+public enum InspectorLayout {
+    public static let headerFontSize: CGFloat = 13
+    public static let rowFontSize: CGFloat = 12
+    public static let rowGap: CGFloat = 4
+    public static let sectionGap: CGFloat = 16
+    public static let valueLineLimit = 2
+}
+
+/// A section header: 13 pt semibold, primary colour.
+struct InspectorSectionHeader: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+    var body: some View {
+        Text(title)
+            .font(.system(size: InspectorLayout.headerFontSize, weight: .semibold))
+            .foregroundStyle(.primary)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// One "label  value" row: the label 12 pt secondary, the value 12 pt
+/// primary right-aligned to the shared trailing edge; a long value wraps to
+/// two lines and then tail-truncates (never the middle).
+struct InspectorRowView: View {
+    let label: String
+    let value: String
+    var compact = false
+    var isSelectable = true
+    @Environment(\.inspectorCompact) private var envCompact
+
+    var body: some View {
+        let shown = (compact || envCompact) ? InspectorRows.compactValue(label: label, value: value) : value
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if !label.isEmpty {
+                Text(label)
+                    .font(.system(size: InspectorLayout.rowFontSize))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            Text(shown)
+                .font(.system(size: InspectorLayout.rowFontSize))
+                .foregroundStyle(.primary)
+                .lineLimit(InspectorLayout.valueLineLimit)
+                .truncationMode(.tail)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .help(shown == value ? "" : value)
+        }
+    }
+}
+
+private struct InspectorCompactKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    /// True while the panel is narrower than `InspectorRows.compactWidth`.
+    var inspectorCompact: Bool {
+        get { self[InspectorCompactKey.self] }
+        set { self[InspectorCompactKey.self] = newValue }
+    }
+}
+
+private struct InspectorWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 400
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+/// Reports the panel width to `content` as "compact or not".
+struct InspectorCompactReader<Content: View>: View {
+    @State private var width: CGFloat = 400
+    let content: (Bool) -> Content
+    var body: some View {
+        content(InspectorRows.isCompact(width: width))
+            .environment(\.inspectorCompact, InspectorRows.isCompact(width: width))
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
     }
 }

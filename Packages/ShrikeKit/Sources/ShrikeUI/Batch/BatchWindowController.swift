@@ -134,7 +134,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
 
         // One accent, the system's.
         let host = NSHostingView(rootView: BatchRootView(model: model, actions: makeActions(), inserter: inserter)
-            .tint(Color(nsColor: .controlAccentColor)))
+            .tint(Color(nsColor: ShrikeAccent.fill)))
         host.autoresizingMask = [.width, .height]
         host.sizingOptions = []
         window.contentView = host

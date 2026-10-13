@@ -411,6 +411,35 @@ final class FilmstripView: HUDSurfaceView {
     /// window are removed; only new cells get a thumbnail request. This
     /// makes forward/backward navigation O(1) cell churn instead of
     /// O(neighbor-count), eliminating the per-keypress rebuild lag.
+    /// Spec 27 B4: the file behind a cell changed (turned, saved, reverted,
+    /// undone). Its thumbnail was just evicted: ask again and let the cell take the
+    /// new aspect. The cell keeps its old picture until the new one arrives (no
+    /// blank flash); other cells are untouched. Returns how many cells asked.
+    @discardableResult
+    func reloadThumbnail(for url: URL, services: ShrikeServices) -> Int {
+        let target = GroupList.canonical(url)
+        let pixelSize = Int(ceil(cellSize * backingScaleFactorForRequests()))
+        var asked = 0
+        for cell in cellsByIndex.values {
+            guard let file = cell.source as? FileImageSource, GroupList.canonical(file.url) == target else { continue }
+            cell.requestThumbnail(services: services, fallbackFor: cell.source, maxPixelSize: pixelSize)
+            asked += 1
+        }
+        return asked
+    }
+
+    /// Test seam: the aspect and frame of the cell showing `url`.
+    func cellAspectForTesting(url: URL) -> (aspect: CGFloat, frame: CGRect)? {
+        let target = GroupList.canonical(url)
+        for cell in cellsByIndex.values {
+            if let file = cell.source as? FileImageSource, GroupList.canonical(file.url) == target {
+                layoutSubtreeIfNeeded()
+                return (cell.aspectForTesting, cell.frame)
+            }
+        }
+        return nil
+    }
+
     func updateNeighbors(
         _ neighbors: [(idx: Int, source: any ImageSource)],
         current: Int,
@@ -1094,7 +1123,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
         let appearance = effectiveAppearance
         layer?.backgroundColor = ShrikeTokens.surfaceSunken.resolvedCGColor(for: appearance)
         highlight.layer?.borderColor = isSelected
-            ? NSColor.controlAccentColor.resolvedCGColor(for: appearance) : nil
+            ? ShrikeAccent.mark.resolvedCGColor(for: appearance) : nil
         highlight.layer?.borderWidth = isSelected ? Self.selectionRingWidth : 0
         // Hover: ring colour and width resolve here (Increase Contrast,
         // appearance); the veil colour is plain white.
@@ -1329,6 +1358,8 @@ private final class ThumbCell: NSView, NSDraggingSource {
     /// transforms applied by `kCGImageSourceCreateThumbnailWithTransform`)
     /// and settles the cell's aspect ratio. Subsequent header-probe
     /// results are ignored once this has run.
+    var aspectForTesting: CGFloat { aspect }
+
     private func applyAspectFromThumb(width: Int, height: Int) {
         guard width > 0, height > 0 else { return }
         let a = CGFloat(width) / CGFloat(height)

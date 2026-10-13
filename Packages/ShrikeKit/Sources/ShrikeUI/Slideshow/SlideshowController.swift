@@ -644,8 +644,8 @@ final class SlideshowControlBar: HUDSurfaceView {
         transitionPopup.selectItem(withTitle: settings.transition.title)
         randomButton.state = settings.random ? .on : .off
         loopButton.state = settings.loop ? .on : .off
-        randomButton.contentTintColor = settings.random ? .controlAccentColor : .white
-        loopButton.contentTintColor = settings.loop ? .controlAccentColor : .white
+        randomButton.contentTintColor = settings.random ? ShrikeAccent.mark : .white
+        loopButton.contentTintColor = settings.loop ? ShrikeAccent.mark : .white
     }
 
     override func mouseEntered(with event: NSEvent) { isPointerInside = true }

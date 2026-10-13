@@ -204,12 +204,12 @@ final class EditToolPanelsTests: XCTestCase {
     func testColorAdjustPanel_HasResetAllAndNoApply() {
         let panel = ColorAdjustPanel()
         let titles = allButtons(in: panel).map(\.title)
-        XCTAssertEqual(titles, ["Reset all"])
+        XCTAssertEqual(titles, ["Reset Color"])
     }
 
     func testRotatePanelHasResetOnly_CropAndResizeHaveApplyWithoutReturn() {
         XCTAssertEqual(allButtons(in: RotatePanel()).filter { !$0.title.contains("°") }.map(\.title)
-            .filter { $0 == "Reset" || $0.hasPrefix("Apply") }, ["Reset"])
+            .filter { $0 == "Reset Rotation" || $0.hasPrefix("Apply") }, ["Reset Rotation"])
         let crop = CropPanel()
         XCTAssertEqual(crop._applyButton.title, "Apply Crop")
         let cropTitles = allButtons(in: crop).map(\.title).filter { $0.contains("Crop") }
@@ -257,7 +257,7 @@ final class EditToolPanelsTests: XCTestCase {
         XCTAssertEqual(bar.cancelButton.keyEquivalent, "")
         XCTAssertEqual(bar.resetButton.keyEquivalent, "")
         let platter = bar.toolPicker.selectedSegmentBezelColor?.usingColorSpace(.deviceRGB)
-        let accent = NSColor.controlAccentColor.withAlphaComponent(EditToolPicker.platterAlpha).usingColorSpace(.deviceRGB)
+        let accent = ShrikeAccent.mark.withAlphaComponent(EditToolPicker.platterAlpha).usingColorSpace(.deviceRGB)
         XCTAssertEqual(platter?.alphaComponent ?? 0, 0.30, accuracy: 0.001)
         XCTAssertEqual(platter?.redComponent ?? 0, accent?.redComponent ?? 1, accuracy: 0.01)
         content.editModeController.finalizeExit()

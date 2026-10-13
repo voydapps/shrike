@@ -61,6 +61,7 @@ public enum Prefs {
         static let browserSortKey             = "shrike.browser.sortKey"
         static let browserSortAscending       = "shrike.browser.sortAscending"
         static let browserViewMode            = "shrike.browser.viewMode"
+        static let browserListHiddenColumns   = "shrike.browser.list.hiddenColumns"
         static let scrollWheelNavigates       = "shrike.input.scrollWheelNavigates"
         static let externalEditors            = "shrike.editors.slots"
         static let recentFoldersLimit         = "shrike.recent.foldersLimit"
@@ -118,6 +119,7 @@ public enum Prefs {
             browserSortKey,
             browserSortAscending,
             browserViewMode,
+            browserListHiddenColumns,
             scrollWheelNavigates,
             externalEditors,
             recentFoldersLimit,
@@ -189,10 +191,12 @@ public enum Prefs {
 
     /// Thumbnail long-edge in points at 1x. Scaled by `backingScaleFactor`
     /// in the caller. Default 180 matches FastStone's medium grid.
+    public static let defaultThumbnailSizePt = 180
+
     public static var thumbnailSizePt: Int {
         get {
             let raw = defaults.object(forKey: Key.thumbnailSizePt) as? Int
-            return raw ?? 180
+            return raw ?? defaultThumbnailSizePt
         }
         set { defaults.set(newValue, forKey: Key.thumbnailSizePt) }
     }
@@ -218,6 +222,14 @@ public enum Prefs {
     public static var browserViewMode: Int {
         get { defaults.object(forKey: Key.browserViewMode) as? Int ?? 0 }
         set { defaults.set(newValue, forKey: Key.browserViewMode) }
+    }
+
+    /// The list's hidden columns (identifiers such as `col.rating`), set from the
+    /// header's context menu. Kept here, not in `NSTableView`'s own autosave, which
+    /// writes to `UserDefaults.standard` (tests must not touch the user's Library).
+    public static var browserListHiddenColumns: [String] {
+        get { defaults.stringArray(forKey: Key.browserListHiddenColumns) ?? [] }
+        set { defaults.set(newValue, forKey: Key.browserListHiddenColumns) }
     }
 
     // MARK: Input

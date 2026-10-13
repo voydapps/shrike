@@ -80,12 +80,20 @@ final class ErrorOverlayView: NSView {
 
     static let message = "This file appears to be damaged or isn't a supported format."
 
-    /// The wrapped height of the message at 272 pt (at most 3 lines), so the
+    /// Spec 27 P3-3: a 420 pt card, a 36 pt warning glyph, a 15 pt heading,
+    /// a 13 pt body.
+    static let cardWidth: CGFloat = 420
+    static let glyphPointSize: CGFloat = 36
+    static let headingFontSize: CGFloat = 15
+    static let bodyFontSize: CGFloat = 13
+    static let bodyWidth: CGFloat = cardWidth - 48
+
+    /// The wrapped height of the message at the body width (at most 3 lines), so the
     /// card sizes right in one layout pass.
     static let bodyHeight: CGFloat = {
-        let font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        let font = NSFont.systemFont(ofSize: bodyFontSize, weight: .regular)
         let rect = (message as NSString).boundingRect(
-            with: NSSize(width: 272, height: CGFloat.greatestFiniteMagnitude),
+            with: NSSize(width: bodyWidth, height: CGFloat.greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
         return min(ceil(rect.height), ceil(font.boundingRectForFont.height) * 3)
     }()
@@ -95,6 +103,7 @@ final class ErrorOverlayView: NSView {
     let nextButton = NSButton(title: "Next", target: nil, action: nil)
     let revealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
     private let container = NSView()
+    private(set) var glyph: NSImageView?
 
     /// Same action as the → key.
     var onNext: (() -> Void)?
@@ -113,21 +122,23 @@ final class ErrorOverlayView: NSView {
         addSubview(container)
 
         let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: "exclamationmark.triangle",
-                             accessibilityDescription: "Error")
+        icon.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "Error")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: Self.glyphPointSize, weight: .regular))
         icon.contentTintColor = .secondaryLabelColor
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        glyph = icon
         icon.translatesAutoresizingMaskIntoConstraints = false
 
-        title.font = .systemFont(ofSize: 17, weight: .semibold)
+        title.font = .systemFont(ofSize: Self.headingFontSize, weight: .semibold)
         title.textColor = .white
         title.alignment = .center
         title.translatesAutoresizingMaskIntoConstraints = false
 
         // Wraps inside the 320 pt card (272 pt of text), up to 3 lines.
-        body.font = .systemFont(ofSize: 12, weight: .regular)
-        body.textColor = NSColor.white.withAlphaComponent(0.75)
+        body.font = .systemFont(ofSize: Self.bodyFontSize, weight: .regular)
+        body.textColor = .secondaryLabelColor
         body.alignment = .center
-        body.preferredMaxLayoutWidth = 272
+        body.preferredMaxLayoutWidth = Self.bodyWidth
         body.maximumNumberOfLines = 3
         // Word wrap: a truncating mode made AppKit draw ONE line ending in "…".
         body.lineBreakMode = .byWordWrapping
@@ -169,17 +180,17 @@ final class ErrorOverlayView: NSView {
         NSLayoutConstraint.activate([
             container.centerXAnchor.constraint(equalTo: centerXAnchor),
             container.centerYAnchor.constraint(equalTo: centerYAnchor),
-            container.widthAnchor.constraint(equalToConstant: 320),
+            container.widthAnchor.constraint(equalToConstant: Self.cardWidth),
             icon.topAnchor.constraint(equalTo: container.topAnchor, constant: 24),
             icon.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 32),
-            icon.heightAnchor.constraint(equalToConstant: 32),
+            icon.widthAnchor.constraint(equalToConstant: 40),
+            icon.heightAnchor.constraint(equalToConstant: 40),
             title.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 12),
             title.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             body.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
             body.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
             body.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
-            body.widthAnchor.constraint(equalToConstant: 272),
+            body.widthAnchor.constraint(equalToConstant: Self.bodyWidth),
             body.heightAnchor.constraint(equalToConstant: Self.bodyHeight),
             buttons.topAnchor.constraint(equalTo: body.bottomAnchor, constant: 12),
             buttons.centerXAnchor.constraint(equalTo: container.centerXAnchor),
@@ -213,9 +224,9 @@ final class ErrorOverlayView: NSView {
         return Int((body.frame.height / (body.font?.boundingRectForFont.height ?? 14)).rounded())
     }
     var bodyFrameForTesting: NSRect { body.frame }
-    /// Height the text needs at the card's text width (tests): two lines or more.
+    /// Height the text needs at the card's text width (tests).
     var bodyNeededHeightForTesting: CGFloat {
-        body.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: 272, height: 10_000)).height ?? 0
+        body.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: Self.bodyWidth, height: 10_000)).height ?? 0
     }
     var bodyForTesting: NSTextField { body }
 }

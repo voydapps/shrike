@@ -186,6 +186,13 @@ final class InspectorPanel: HUDSurfaceView {
 
     // Called by ViewerContentView when a new image becomes current.
     func updatePlaceholder(index: Int, total: Int, image: CGImage) {
+        updateIndexSummary(index: index, total: total)
+    }
+
+    /// Test seam: the "n of N" line.
+    var indexSummaryForTesting: String { viewModel.indexSummary }
+
+    func updateIndexSummary(index: Int, total: Int) {
         viewModel.indexSummary = "\(index + 1) of \(total)"
     }
 
@@ -330,8 +337,16 @@ struct InspectorContentHeightKey: PreferenceKey {
 
 struct InspectorContent: View {
     @ObservedObject var model: InspectorViewModel
+    @State private var compact = false
 
     var body: some View {
+        InspectorCompactReader { isCompact in
+            content.onAppear { compact = isCompact }
+                .onChange(of: isCompact) { _, new in compact = new }
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 if let url = model.url {
@@ -340,13 +355,13 @@ struct InspectorContent: View {
                         .foregroundStyle(.primary)
                         .textSelection(.enabled)
                         .lineLimit(2)
-                        .truncationMode(.middle)
+                        .truncationMode(.tail)
                     if let also = model.alsoLine {
                         Text(also)
                             .font(.system(size: InspectorStyle.smallFontSize))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            .truncationMode(.tail)
                     }
                 }
                 if !model.indexSummary.isEmpty {
@@ -404,7 +419,7 @@ struct InspectorContent: View {
             model.contentHeight = height
             model.onContentHeight?(height)
         }
-        .tint(Color(nsColor: .controlAccentColor))
+        .tint(ShrikeAccent.markColor)
         .frame(minWidth: ViewerSplitController.inspectorMinimumWidth, idealWidth: 280)
         .background(Color.clear)
     }
@@ -460,42 +475,33 @@ struct InspectorContent: View {
     }
 
     private func header(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: InspectorStyle.smallFontSize, weight: .semibold))
-            .foregroundStyle(.secondary)
+        InspectorSectionHeader(title)
     }
 
     @ViewBuilder private func section(_ title: String, rows: [InspectorRow]) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: InspectorLayout.rowGap) {
             header(title)
             ForEach(rows) { r in
-                HStack(alignment: .firstTextBaseline) {
-                    if !r.label.isEmpty {
+                if r.label == "Folder", let folder = model.url?.deletingLastPathComponent() {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(r.label)
-                            .font(.system(size: InspectorStyle.smallFontSize))
+                            .font(.system(size: InspectorLayout.rowFontSize))
                             .foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
-                    }
-                    if r.label == "Folder", let folder = model.url?.deletingLastPathComponent() {
+                            .fixedSize(horizontal: true, vertical: false)
                         // Click reveals the file in Finder.
                         // Not drawn as a link, `labelColor`.
                         Button(r.value) {
                             NSWorkspace.shared.activateFileViewerSelecting([model.url ?? folder])
                         }
                         .buttonStyle(.plain)
-                        .font(.system(size: InspectorStyle.smallFontSize))
+                        .font(.system(size: InspectorLayout.rowFontSize))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
-                    } else {
-                        Text(r.value)
-                            .font(.system(size: InspectorStyle.smallFontSize))
-                            .foregroundStyle(.primary)
-                            .lineLimit(r.label.isEmpty ? 3 : 1)
-                            .truncationMode(.middle)
-                            .multilineTextAlignment(.trailing)
-                            .textSelection(.enabled)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     }
+                } else {
+                    InspectorRowView(label: r.label, value: r.value, compact: compact)
                 }
             }
         }

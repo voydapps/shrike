@@ -31,7 +31,7 @@ final class BrowserContextMenuTests: XCTestCase {
         defer { browser.close() }
         let titles = browser.contentController.contextMenuTitlesForTesting
         XCTAssertEqual(Array(titles.suffix(8)),
-                       ["Rate", "Toggle Flag", "—", "Copy to Folder", "Move to Folder", "Rename…", "—",
+                       ["Rating", "Flag", "—", "Copy to Folder", "Move to Folder", "Rename…", "—",
                         "Move to Trash"])
         XCTAssertEqual(titles.first, "Open")
     }

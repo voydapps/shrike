@@ -36,8 +36,8 @@ final class MenuHintsAndShortcutsWindowTests: XCTestCase {
         bar.applyKeyHints()   // drawn when a menu opens, not at launch
         let rate3 = try XCTUnwrap(bar.items(for: .rate3).first)
         let flag = try XCTUnwrap(bar.items(for: .toggleFlag).first)
-        XCTAssertTrue(rate3.attributedTitle?.string.hasSuffix("3") ?? false, rate3.attributedTitle?.string ?? "nil")
-        XCTAssertTrue(flag.attributedTitle?.string.hasSuffix("Q") ?? false, flag.attributedTitle?.string ?? "nil")
+        XCTAssertEqual(rate3.badge?.stringValue, "3")
+        XCTAssertEqual(flag.badge?.stringValue, "Q")
         XCTAssertEqual(MenuKeyHints.baseTitle(of: flag), ShrikeCommand.toggleFlag.title)
 
         func bareKeys(_ menu: NSMenu) -> [String] {
@@ -52,9 +52,9 @@ final class MenuHintsAndShortcutsWindowTests: XCTestCase {
 
         // FastStone: the rating keys are ⌃1…⌃5 (modified), so no hint; the hint set follows the preset.
         MenuKeyHints.apply(to: bar.menu, context: .viewer, preset: .fastStoneCompat)
-        XCTAssertFalse(rate3.attributedTitle?.string.contains("\t") ?? false, "no hint for a modified key")
+        XCTAssertNil(rate3.badge, "no hint for a modified key")
         MenuKeyHints.apply(to: bar.menu, context: .viewer, preset: .macNative)
-        XCTAssertTrue(rate3.attributedTitle?.string.hasSuffix("3") ?? false)
+        XCTAssertEqual(rate3.badge?.stringValue, "3")
     }
 
     func testRenameAndSlideshowShowAsRealFunctionKeys() throws {
@@ -71,7 +71,7 @@ final class MenuHintsAndShortcutsWindowTests: XCTestCase {
         defer { viewer.close() }
         viewer.contextMenu.prepareForTesting()
         let commands = viewer.contextMenu.menu.items.compactMap { $0.shrikeCommand }
-        XCTAssertEqual(commands, [.toggleRAWFile, .revealInFinder, .showInBrowser, .share, .rotateLeft, .rotateRight, .editImage,
+        XCTAssertEqual(commands, [.toggleRAWFile, .revealInFinder, .showInBrowser, .share, .slideshow, .batch, .compare, .rotateLeft, .rotateRight, .editImage,
                                   .toggleFlag, .tags, .copyToFolder, .moveToFolder, .rename, .revertToOriginal,
                                   .copy, .copyPath, .moveToTrash])
     }

@@ -62,8 +62,8 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
             case .toggleInspector:
                 menuItem.title = isInspectorCollapsed ? "Show Inspector" : "Hide Inspector"
             case .toggleRAWFile:
-                // Exists only when it can apply (as in the viewer).
-                menuItem.isHidden = contentController.rawSwitchCandidate == nil
+                // Always present, greyed when it cannot apply (spec 27 B5).
+                menuItem.isHidden = false
                 menuItem.title = rawSwitchMenuTitle
             default: break
             }

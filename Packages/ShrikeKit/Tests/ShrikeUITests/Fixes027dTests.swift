@@ -87,11 +87,11 @@ final class Fixes027dTests: XCTestCase {
         let bar = bar()
         let image = try menu(bar, "Image")
         let flag = try XCTUnwrap(bar.items(for: .toggleFlag).first)
-        XCTAssertNil(flag.attributedTitle, "nothing is drawn while the bar is built")
+        XCTAssertNil(flag.badge, "nothing is drawn while the bar is built")
         bar.menuNeedsUpdate(image)
-        XCTAssertTrue(flag.attributedTitle?.string.hasSuffix("Q") ?? false)
+        XCTAssertEqual(flag.badge?.stringValue, "Q")
         let rate3 = try XCTUnwrap(bar.items(for: .rate3).first)
-        XCTAssertTrue(rate3.attributedTitle?.string.hasSuffix("3") ?? false)
+        XCTAssertEqual(rate3.badge?.stringValue, "3")
     }
 
     /// Spec 25 §13.1 (decided 2026-10-12): an item that has a menu key shows only that
@@ -101,7 +101,7 @@ final class Fixes027dTests: XCTestCase {
         bar.applyKeyHints()
         for command in [ShrikeCommand.actualSize, .editImage] {
             for item in bar.items(for: command) {
-                XCTAssertNil(item.attributedTitle, "\(command) has a menu key and no hint")
+                XCTAssertNil(item.badge, "\(command) has a menu key and no hint")
             }
         }
     }
@@ -135,8 +135,9 @@ final class Fixes027dTests: XCTestCase {
         overlay.layoutSubtreeIfNeeded()
         let font = overlay.bodyForTesting.font ?? .systemFont(ofSize: 12)
         let line = ceil(font.boundingRectForFont.height)
-        XCTAssertGreaterThan(overlay.bodyNeededHeightForTesting, line * 1.5, "the text needs more than one line at 272 pt")
-        XCTAssertGreaterThan(overlay.bodyFrameForTesting.height, line * 1.5, "and the label has room for them")
+        // Spec 27 P3-3: the card is 420 pt wide, so the copy may fit on one line; it must never be clipped.
+        XCTAssertGreaterThanOrEqual(overlay.bodyNeededHeightForTesting, line * 0.9, "the text needs at least a line")
+        XCTAssertGreaterThanOrEqual(overlay.bodyFrameForTesting.height, overlay.bodyNeededHeightForTesting, "and the label has room for all of it")
         XCTAssertEqual(overlay.bodyForTesting.lineBreakMode, .byWordWrapping)
         // Drawn: the label alone holds two separate bands of ink rows.
         let label = overlay.bodyForTesting
@@ -150,7 +151,7 @@ final class Fixes027dTests: XCTestCase {
             if ink && !previous { bands += 1 }
             previous = ink
         }
-        XCTAssertGreaterThanOrEqual(bands, 2, "two lines of text are drawn")
+        XCTAssertGreaterThanOrEqual(bands, 1, "the text is drawn")
     }
 
     // MARK: 3. Return from a panel field reaches Done

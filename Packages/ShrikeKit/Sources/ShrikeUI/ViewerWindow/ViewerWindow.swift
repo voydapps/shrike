@@ -270,7 +270,7 @@ public final class ViewerWindow: NSWindow {
         titlebarAppearsTransparent = false
         titleVisibility = .visible
         toolbarStyle = .unified
-        minSize = NSSize(width: 480, height: 320)
+        minSize = EditLayout.windowMinSize
         backgroundColor = .black
 
         // Canvas + system inspector item. The inspector view is built
@@ -290,8 +290,8 @@ public final class ViewerWindow: NSWindow {
             self?.contentRoot.setWindowedInspectorShown(shown)
         }
         // Edit mode on a narrow canvas: the inspector steps aside (spec 26 §5).
-        contentRoot.onEditModeActiveChanged = { [weak split] active in
-            split?.editModeChanged(active: active)
+        contentRoot.onEditModeActiveChanged = { [weak self] active in
+            self?.editModeLayoutChanged(active: active)
         }
         contentRoot.onEditCanvasWidth = { [weak split] width in
             DispatchQueue.main.async { split?.editCanvasWidth(width) }
@@ -482,6 +482,18 @@ public final class ViewerWindow: NSWindow {
     /// The visible hover platter of the toolbar (macOS 26+).
     var toolbarHover: ToolbarHover?
     var autoHider: TitlebarAutoHider?
+    /// Spec 27 V7: the frames before and after the window widened for edit mode.
+    var editWidenRestore: (original: NSRect, widened: NSRect)?
+    /// True while `setEditWidthFrame` runs (scopes the 150 ms resize time).
+    var editWidthResizing = false
+    /// Tests: pretend the window is (not) in full screen for the edit-width logic.
+    var fullScreenOverrideForTesting: Bool?
+    /// Edit ended in full screen: the pre-edit size comes back when full screen ends.
+    var editWidenReturnPending = false
+    /// Edit mode is on (as the layout last heard).
+    var editLayoutActive = false
+    /// Tests: the screen area the widened window must stay inside.
+    var editScreenVisibleFrameForTesting: NSRect?
     var titlebarScrim: TitlebarScrimView?
     /// Step 1 (reveal the hidden titlebar on a strip click).
     /// Tests switch it off to reach the canvas safety net.
@@ -959,6 +971,7 @@ public final class ViewerWindow: NSWindow {
             contentRoot.clearCanvasDim()
             contentRoot.flashPositionOverlayError()
             contentRoot.showDecodeError(nextEnabled: target.index < list.count - 1)
+            contentRoot.updateInspectorPosition(index: target.index, total: list.count)
             markDisplayed(target.index)
             ShrikeSignposts.navigation.event(
                 "navigateFailed",
@@ -1345,6 +1358,7 @@ public final class ViewerWindow: NSWindow {
         // window is out of full screen.
         restoreToolbarAfterFullScreen()
         contentRoot.updateTextureLongEdge()
+        finishEditWidthReturnAfterFullScreen()
         if returnToBrowserAfterFullScreenExit {
             returnToBrowserAfterFullScreenExit = false
             returnToBrowser()

@@ -2064,7 +2064,8 @@ public struct PillMarks: Equatable, Sendable {
             out.append(gap)
             out.append(attachment(Badges.rawChipImage(fontSize: 9, color: secondary), centredOn: capMid))
         }
-        if marks.edited, let image = Badges.symbol("pencil", pointSize: 10, color: secondary) {
+        if marks.edited, let image = Badges.symbol(Badges.editedChipSymbol, pointSize: Badges.editedPillPointSize,
+                                                   color: .labelColor, weight: .semibold) {
             out.append(gap)
             out.append(attachment(image, centredOn: capMid))
         }

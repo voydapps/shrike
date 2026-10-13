@@ -15,6 +15,48 @@ import AppKit
 @MainActor
 final class BrowserCollectionView: NSCollectionView {
 
+    /// Spec 27 B3: VoiceOver gets the items on screen plus this many each side,
+    /// never an item that is not built. (An accessibility query used to build
+    /// every one of 1000 items: the app was deaf for ~2 minutes.)
+    static let accessibilityOverscan = 10
+
+    /// Items to report: the visible ones, widened by `overscan` positions each side.
+    private func accessibleItems(overscan: Int) -> [NSView] {
+        let visible = indexPathsForVisibleItems().map(\.item).sorted()
+        guard let first = visible.first, let last = visible.last else { return [] }
+        let lo = max(0, first - overscan), hi = min(numberOfItems(inSection: 0) - 1, last + overscan)
+        guard lo <= hi else { return [] }
+        return (lo...hi).compactMap { item(at: IndexPath(item: $0, section: 0))?.view }
+    }
+
+    override func accessibilityChildren() -> [Any]? { accessibleItems(overscan: Self.accessibilityOverscan) }
+    override func accessibilityVisibleChildren() -> [Any]? { accessibleItems(overscan: 0) }
+
+    /// The true grid size, from the item count and the columns of the first row.
+    var accessibleColumnCount: Int {
+        let visible = indexPathsForVisibleItems().sorted { $0.item < $1.item }
+        guard let first = visible.first, let frame = layoutAttributesForItem(at: first)?.frame else { return 1 }
+        var columns = 0
+        for path in visible {
+            guard let f = layoutAttributesForItem(at: path)?.frame else { continue }
+            if abs(f.minY - frame.minY) < 1 { columns += 1 }
+        }
+        return max(1, columns)
+    }
+
+    var accessibleRowCount: Int {
+        let count = numberOfItems(inSection: 0)
+        return (count + accessibleColumnCount - 1) / accessibleColumnCount
+    }
+
+    /// VoiceOver moved the cursor to an item that is off screen: scroll to it.
+    func accessibilityScroll(toItem index: Int) {
+        guard index >= 0, index < numberOfItems(inSection: 0) else { return }
+        if let frame = layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame {
+            scrollToVisible(frame)
+        }
+    }
+
     /// Returns true when the Browser key map consumed the event.
     var keyHandler: ((NSEvent) -> Bool)?
     /// Double-click on an item.
@@ -408,6 +450,46 @@ final class BrowserCollectionView: NSCollectionView {
 /// List view.
 @MainActor
 final class BrowserTableView: NSTableView {
+
+    /// Rows VoiceOver gets: the visible ones plus `overscan` each side (spec 27 B3).
+    static let accessibilityOverscan = 10
+
+    /// Row views that exist already; none is created for an accessibility query.
+    private func builtRowViews(overscan: Int) -> [NSView] {
+        let visible = rows(in: visibleRect)
+        guard visible.length > 0 else { return [] }
+        let lo = max(0, visible.location - overscan)
+        let hi = min(numberOfRows, visible.location + visible.length + overscan)
+        return (lo..<hi).compactMap { rowView(atRow: $0, makeIfNecessary: false) }
+    }
+
+    override func accessibilityRows() -> [any NSAccessibilityRow]? {
+        builtRowViews(overscan: Self.accessibilityOverscan).compactMap { $0 as? any NSAccessibilityRow }
+    }
+    override func accessibilityVisibleRows() -> [any NSAccessibilityRow]? {
+        builtRowViews(overscan: 0).compactMap { $0 as? any NSAccessibilityRow }
+    }
+    /// The true row count (the children list is only the rows near the screen).
+    var accessibleRowCount: Int { numberOfRows }
+    override func accessibilitySelectedRows() -> [any NSAccessibilityRow]? {
+        let window = Set(builtRowViews(overscan: Self.accessibilityOverscan).compactMap { view -> Int? in
+            guard let row = view as? NSTableRowView else { return nil }
+            return self.row(for: row)
+        })
+        return selectedRowIndexes.filter(window.contains)
+            .compactMap { rowView(atRow: $0, makeIfNecessary: false) }
+    }
+    override func accessibilityChildren() -> [Any]? {
+        var out: [Any] = builtRowViews(overscan: Self.accessibilityOverscan)
+        if let header = headerView { out.append(header) }
+        return out
+    }
+
+    /// VoiceOver moved to a row that is off screen: scroll to it, then its row view exists.
+    func accessibilityScroll(toRow row: Int) {
+        guard row >= 0, row < numberOfRows else { return }
+        scrollRowToVisible(row)
+    }
 
     /// Returns true when the Browser key map consumed the event.
     var keyHandler: ((NSEvent) -> Bool)?

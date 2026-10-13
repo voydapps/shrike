@@ -292,7 +292,7 @@ public final class BrowserContentViewController: NSViewController {
             ("col.date",  "Modified",    150, 100),
             ("col.dim",   "Dimensions",  110, 75),
             ("col.size",  "Size",         90, 55),
-            ("col.rating","Rating",       90, 64),
+            ("col.rating","Rating",       Self.ratingColumnWidth, 44),
             ("col.flag",  "Flag",         36, 36),
             ("col.tags",  "Tags",         60, 36),
         ]
@@ -304,10 +304,13 @@ public final class BrowserContentViewController: NSViewController {
             if minWidth == width {
                 col.maxWidth = width
                 col.resizingMask = []
+            } else if id == "col.rating" {
+                // Compact: keeps its width; Name and Tags share the rest.
+                col.resizingMask = [.userResizingMask]
             } else {
                 col.resizingMask = [.autoresizingMask, .userResizingMask]
             }
-            col.headerCell.stringValue = title
+            col.headerCell = ListHeaderCell(textCell: title)
             switch id {
             case "col.name":   col.sortDescriptorPrototype = NSSortDescriptor(key: "name", ascending: true)
             case "col.date":   col.sortDescriptorPrototype = NSSortDescriptor(key: "date", ascending: false)
@@ -318,6 +321,8 @@ public final class BrowserContentViewController: NSViewController {
             }
             tableView.addTableColumn(col)
         }
+        applyHiddenListColumns()
+        installHeaderMenu()
         syncTableSortIndicator()
         tableView.setAccessibilityLabel("Image list")
 
@@ -332,6 +337,58 @@ public final class BrowserContentViewController: NSViewController {
         tableView.setDraggingSourceOperationMask(BrowserDropRules.outsideMask, forLocal: false)
         tableView.setDraggingSourceOperationMask(BrowserDropRules.insideMask, forLocal: true)
     }
+
+    // MARK: - List columns (spec 27 P3-14)
+
+    /// Rating shows "★3" or nothing, so it is narrow; Flag is a single glyph.
+    static let ratingColumnWidth: CGFloat = 56
+    /// The columns the header menu can hide: Rating, Flag, Tags, Dimensions.
+    static let hideableListColumns: [(id: String, title: String)] = [
+        ("col.rating", "Rating"), ("col.flag", "Flag"), ("col.tags", "Tags"), ("col.dim", "Dimensions"),
+    ]
+
+    /// Hides the columns the user hid before (restored on every new list).
+    private func applyHiddenListColumns() {
+        let hidden = Set(Prefs.browserListHiddenColumns)
+        for column in tableView.tableColumns {
+            column.isHidden = hidden.contains(column.identifier.rawValue)
+        }
+    }
+
+    private func installHeaderMenu() {
+        let menu = NSMenu(title: "Columns")
+        menu.autoenablesItems = false
+        menu.delegate = self
+        for entry in Self.hideableListColumns {
+            let item = NSMenuItem(title: entry.title, action: #selector(toggleListColumn(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry.id
+            menu.addItem(item)
+        }
+        tableView.headerView?.menu = menu
+    }
+
+    /// Header menu: a tick on the shown columns, read fresh each time it opens.
+    fileprivate func refreshHeaderMenuStates(_ menu: NSMenu) {
+        for item in menu.items {
+            guard let id = item.representedObject as? String,
+                  let column = tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(id)) else { continue }
+            item.state = column.isHidden ? .off : .on
+        }
+    }
+
+    @objc func toggleListColumn(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let column = tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(id)) else { return }
+        column.isHidden.toggle()
+        var hidden = Set(Prefs.browserListHiddenColumns)
+        if column.isHidden { hidden.insert(id) } else { hidden.remove(id) }
+        Prefs.browserListHiddenColumns = tableView.tableColumns.map(\.identifier.rawValue).filter(hidden.contains)
+    }
+
+    /// Test seams.
+    var headerMenuForTesting: NSMenu? { tableView.headerView?.menu }
+    func refreshHeaderMenuForTesting() { if let menu = tableView.headerView?.menu { refreshHeaderMenuStates(menu) } }
 
     private func configureEmptyState() {
         emptyStateView.translatesAutoresizingMaskIntoConstraints = false
@@ -371,7 +428,7 @@ public final class BrowserContentViewController: NSViewController {
     }
 
     /// The list's text font (every text cell).
-    static let listFont = NSFont.systemFont(ofSize: 12)
+    static let listFont = NSFont.systemFont(ofSize: 13)
     private var listColumnFitsApplied = false
 
     /// Dimensions and Modified were cut in the middle
@@ -700,6 +757,22 @@ public final class BrowserContentViewController: NSViewController {
         case .list: tableView.deselectAll(nil)
         }
         if selected.isEmpty || !select(urls: selected) { notifySelection() }
+        keepSelectionInView()
+    }
+
+    /// Spec 27 N7: after a sort or a filter the first selected item stays on
+    /// screen. It scrolls (to the middle) only when it is off screen; an item
+    /// already visible does not move the view.
+    func keepSelectionInView() {
+        switch mode {
+        case .grid, .filmstrip:
+            guard let first = collectionView.selectionIndexPaths.min(),
+                  let frame = collectionView.layoutAttributesForItem(at: first)?.frame else { return }
+            if !collectionView.visibleRect.intersects(frame) { scrollToCenter(first, animated: false) }
+        case .list:
+            guard let row = tableView.selectedRowIndexes.first else { return }
+            if !tableView.visibleRect.intersects(tableView.rect(ofRow: row)) { tableView.scrollRowToVisible(row) }
+        }
     }
 
     /// Re-sorts, keeps the selection and scrolls its first item into view.
@@ -719,14 +792,7 @@ public final class BrowserContentViewController: NSViewController {
             return
         }
         guard !selected.isEmpty, select(urls: selected) else { return }
-        switch mode {
-        case .grid, .filmstrip:
-            if let first = collectionView.selectionIndexPaths.min() {
-                scrollToCenter(first, animated: false)
-            }
-        case .list:
-            if let row = tableView.selectedRowIndexes.first { tableView.scrollRowToVisible(row) }
-        }
+        keepSelectionInView()
     }
 
     /// "Folder gone": the listed folder was deleted, moved or its
@@ -1252,19 +1318,24 @@ public final class BrowserContentViewController: NSViewController {
     private func makeCollectionContextMenu() -> NSMenu {
         let menu = NSMenu()
         menu.addItem(makeMenuItem("Open", #selector(menuOpen(_:))))
-        menu.addItem(makeMenuItem("Reveal in Finder", #selector(menuReveal(_:))))
         // Rows go up the responder chain to the window controller, which
         // opens the whole selection.
         let editors = ExternalEditorsSubmenu(target: nil)
         editorsSubmenus.append(editors)
         menu.addItem(editors.makeParentItem())
+        menu.addItem(makeMenuItem("Reveal in Finder", #selector(menuReveal(_:))))
         // Share ▸ for the selection.
         let share = ShareSubmenu(files: { [weak self] in
             self?.selectedItems.flatMap { ShareSubmenu.files(of: $0.group) } ?? []
         })
         shareSubmenus.append(share)
         menu.addItem(share.makeParentItem())
-        // Batch… goes up the responder chain like the menu bar.
+        // Slideshow…, Batch… and Compare go up the responder chain like the menu
+        // bar; the viewer's menu has the same three in the same order (spec 27 P3-12).
+        let slideshow = NSMenuItem(title: ShrikeCommand.slideshow.title, action: ShrikeMainMenu.commandAction,
+                                   keyEquivalent: "")
+        slideshow.representedObject = ShrikeCommand.slideshow.rawValue
+        menu.addItem(slideshow)
         let batch = NSMenuItem(title: ShrikeCommand.batch.title, action: ShrikeMainMenu.commandAction,
                                keyEquivalent: "")
         batch.representedObject = ShrikeCommand.batch.rawValue
@@ -1275,7 +1346,7 @@ public final class BrowserContentViewController: NSViewController {
         compare.representedObject = ShrikeCommand.compare.rawValue
         menu.addItem(compare)
         menu.addItem(.separator())
-        let rate = NSMenu(title: "Rate")
+        let rate = NSMenu(title: "Rating")
         for i in 0...5 {
             let title = i == 0 ? "No rating" : String(repeating: "★", count: i)
             let item = NSMenuItem(title: title, action: #selector(menuRate(_:)), keyEquivalent: "")
@@ -1284,11 +1355,11 @@ public final class BrowserContentViewController: NSViewController {
             item.target = self
             rate.addItem(item)
         }
-        let rateItem = NSMenuItem(title: "Rate", action: nil, keyEquivalent: "")
+        let rateItem = NSMenuItem(title: "Rating", action: nil, keyEquivalent: "")
         rateItem.submenu = rate
         menu.addItem(rateItem)
 
-        let flagItem = makeMenuItem("Toggle Flag", #selector(menuFlag(_:)))
+        let flagItem = makeMenuItem(ShrikeCommand.toggleFlag.title, #selector(menuFlag(_:)))
         flagItem.representedObject = ShrikeCommand.toggleFlag.rawValue
         menu.addItem(flagItem)
         menu.addItem(.separator())
@@ -1549,6 +1620,15 @@ public final class BrowserContentViewController: NSViewController {
             rawShown = nil
         }
         updateFilmstripPreview()
+        refreshPairCaptions()
+    }
+
+    /// The grid cell of the pair shows the name of the file on screen (spec 27 N5).
+    private func refreshPairCaptions() {
+        for case let cell as ThumbnailItem in collectionView.visibleItems() {
+            guard let url = cell.currentItem?.url else { continue }
+            cell.setShownFileName(rawShown?.primary == url ? rawShown?.item.displayName : nil)
+        }
     }
 
     /// A click on a cell's RAW chip: that photo is the selection, then the
@@ -1630,6 +1710,7 @@ extension BrowserContentViewController: NSCollectionViewDataSource {
         let thumbSize = cellRequestPixelSize
         item.showsNameTooltip = mode == .filmstrip
         item.configure(with: model, pixelSize: thumbSize, cache: services.thumbnailCache)
+        if let shown = rawShown, shown.primary == model.url { item.setShownFileName(shown.item.displayName) }
         item.onRAWChip = { [weak self] in self?.rawChipClicked(model.url) }
         configureCount += 1
         madeCells.add(item)
@@ -1780,7 +1861,7 @@ extension BrowserContentViewController: NSTableViewDataSource, NSTableViewDelega
             text.stringValue = FileSizeText.string(item.fileSize)
             addCellLabel(cell, text: text)
         case "col.rating":
-            text.stringValue = Badges.stars(item.rating)
+            text.stringValue = Badges.compactStars(item.rating)
             text.textColor = Badges.ratingColor
             text.setAccessibilityLabel(item.rating > 0 ? "\(item.rating) stars" : "No rating")
             addCellLabel(cell, text: text)
@@ -1953,6 +2034,10 @@ final class FilmstripPreviewView: NSImageView {
 extension BrowserContentViewController: NSMenuDelegate {
 
     public func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === tableView.headerView?.menu {
+            refreshHeaderMenuStates(menu)
+            return
+        }
         if menu.delegate === self, menu.supermenu == nil, !menu.items.isEmpty {
             // The right-click menu itself: draw the bare-key hints.
             MenuKeyHints.apply(to: menu, context: .browser)
@@ -1968,4 +2053,30 @@ extension BrowserContentViewController: NSMenuDelegate {
             ShrikeMainMenu.fillDestinations(menu, command: .moveToFolder, slots: slots, target: nil)
         }
     }
+}
+
+/// The list's column header text: 12 pt semibold, `text.secondary` token
+/// (spec 27 P3-14; at least 4.5:1 on the header).
+final class ListHeaderCell: NSTableHeaderCell {
+    static let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+
+    override init(textCell string: String) {
+        super.init(textCell: string)
+        font = Self.font
+        textColor = ShrikeTokens.textSecondary
+    }
+
+    // NSTableHeaderCell ignores `font` / `textColor` when it draws its own title;
+    // it draws `attributedStringValue`, so that is where the look lives.
+    override var attributedStringValue: NSAttributedString {
+        get {
+            NSAttributedString(string: stringValue, attributes: [
+                .font: Self.font, .foregroundColor: ShrikeTokens.textSecondary,
+            ])
+        }
+        set { super.attributedStringValue = newValue }
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("programmatic only") }
 }

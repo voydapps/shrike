@@ -42,9 +42,10 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
                 menuItem.title = title
                 menuItem.state = .off
             }
-            // Spec 24: these two exist only when they can apply.
+            // Spec 24 + spec 27 B5: Unpin All exists only in full screen (a mode item);
+            // Show RAW File is always there and greyed when it cannot apply.
             if command == .unpinAllPanels { menuItem.isHidden = contentRoot.windowMode != .fullscreen }
-            if command == .toggleRAWFile { menuItem.isHidden = !hasRAWCompanionShown }
+            if command == .toggleRAWFile { menuItem.isHidden = false }
             return canPerform(command)
         case NSSelectorFromString("undo:"):
             if contentRoot.isEditModeActive {
@@ -102,15 +103,15 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         case .revealInFinder, .copy, .copyPath, .share:
             return item != nil
         case .rotateLeft, .rotateRight, .rotate180:
-            return hasPixels && !(item?.isRAWShown ?? false)
+            return hasPixels && !rawBlocksEditing(item)
         case .flipHorizontal, .flipVertical:
-            return hasPixels && !edit && !(item?.isRAWShown ?? false)
+            return hasPixels && !edit && !rawBlocksEditing(item)
         case .loupe:
             return hasPixels && !edit
         case .editImage:
             // RAW is never written (spec 24 §4.5): edit the JPEG instead.
             // A photo that can't be opened has nothing to edit (spec 26 §2).
-            return hasPixels && !edit && !(item?.isRAWShown ?? false) && !contentRoot.isShowingDecodeError
+            return hasPixels && !edit && !rawBlocksEditing(item) && !contentRoot.isShowingDecodeError
         case .zoomIn:
             return hasPixels && contentRoot.imageView.canZoomIn
         case .zoomOut:
@@ -120,7 +121,7 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         case .editCrop, .editRotate, .editResize, .editColor,
              .levels, .autoContrast, .autoColor:
             // The edit tools never open on a RAW view (spec 24 §4.5), nor on a decode error.
-            return hasPixels && !(item?.isRAWShown ?? false) && !contentRoot.isShowingDecodeError
+            return hasPixels && !rawBlocksEditing(item) && !contentRoot.isShowingDecodeError
         case .resetEdits:
             return edit && contentRoot.editModeController.hasPendingEdits
         case .toggleFilmstrip:

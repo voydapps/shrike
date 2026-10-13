@@ -679,7 +679,7 @@ public final class BrowserWindowController: NSWindowController {
                 : "line.3.horizontal.decrease.circle",
             accessibilityDescription: active ? "Filter (active)" : "Filter"
         )
-        filterButton.contentTintColor = active ? .controlAccentColor : nil
+        filterButton.contentTintColor = active ? ShrikeAccent.mark : nil
         filterToolbarItem?.menuFormRepresentation?.image = filterButton.image
     }
 

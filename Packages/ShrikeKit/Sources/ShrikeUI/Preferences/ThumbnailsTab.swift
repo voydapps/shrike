@@ -30,25 +30,30 @@ struct ThumbnailsTab: View {
         2 * 1024 * 1024 * 1024,
     ]
 
+    /// Spec 27 P3-6: the default comes from `Prefs`, so the hint and the code cannot disagree.
+    static var cellSizeHint: String {
+        "Longest edge of a grid cell, in points. The default is \(Prefs.defaultThumbnailSizePt) pt."
+    }
+
     @State private var currentDiskBytes: Int64 = 0
     @State private var showClearConfirmation = false
 
     var body: some View {
         Form {
             Section {
-                Picker("Grid size", selection: store.thumbnailSizePt) {
+                Picker("Cell size", selection: store.thumbnailSizePt) {
                     ForEach(SettingsChoices.including(store.thumbnailSizePt.wrappedValue, in: Self.sizeOptions),
                             id: \.self) { size in
                         Text(verbatim: "\(size) pt").tag(size)
                     }
                 }
 
-                Text("Grid cell long-edge in points. 180 pt matches FastStone's medium grid and is the default.")
+                Text(Self.cellSizeHint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } header: {
-                Text("Grid size").font(.headline)
+                Text("Grid").font(.headline)
             }
 
             Section {

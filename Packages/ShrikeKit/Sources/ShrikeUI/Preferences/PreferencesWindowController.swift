@@ -62,7 +62,7 @@ public final class PreferencesWindowController: NSWindowController {
             backupStore: backupStore
         )
         // One accent, the system's.
-        let host = NSHostingView(rootView: root.tint(Color(nsColor: .controlAccentColor)))
+        let host = NSHostingView(rootView: root.tint(Color(nsColor: ShrikeAccent.fill)))
         host.autoresizingMask = [.width, .height]
         window.contentView = host
 

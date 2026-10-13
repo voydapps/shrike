@@ -269,10 +269,10 @@ public enum SpecialKey {
         case right: return "→"
         case up: return "↑"
         case down: return "↓"
-        case home: return "↖"
-        case end: return "↘"
-        case pageUp: return "⇞"
-        case pageDown: return "⇟"
+        case home: return "Home"
+        case end: return "End"
+        case pageUp: return "Page Up"
+        case pageDown: return "Page Down"
         case forwardDelete: return "⌦"
         case backspace, "\u{8}": return "⌫"
         case f2: return "F2"
@@ -280,7 +280,7 @@ public enum SpecialKey {
         case returnKey: return "↩"
         case "\t": return "⇥"
         case enter: return "⌤"
-        case escape: return "⎋"
+        case escape: return "Esc"
         case space: return "Space"
         default: return key.uppercased()
         }

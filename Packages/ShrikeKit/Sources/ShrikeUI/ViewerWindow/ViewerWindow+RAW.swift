@@ -26,6 +26,12 @@ extension ViewerWindow {
         return !group.primaryIsRAW && group.rawURL != nil
     }
 
+    /// Rotate / Edit are off while the RAW is shown, from the moment the switch
+    /// starts (spec 27 N11: the toolbar never looks enabled for a turn).
+    func rawBlocksEditing(_ item: DisplayedItem?) -> Bool {
+        (item?.isRAWShown ?? false) || contentRoot.editBlockedByRAW
+    }
+
     var canToggleRAWFile: Bool { hasRAWCompanionShown && !contentRoot.isEditModeActive }
 
     /// "Show RAW File" / "Show JPEG File" (the primary's kind).
@@ -88,11 +94,17 @@ extension ViewerWindow {
         }
         guard let raw = item.group.rawURL else { return }
         rawSwitchTask?.cancel()
+        // Spec 27 N11: Edit and Rotate are off in this very turn, before the
+        // RAW is checked. An unreadable RAW puts them back.
+        contentRoot.editBlockedByRAW = true
+        toolbar?.validateVisibleItems()
         rawSwitchTask = Task { @MainActor [weak self] in
             // macOS has to be able to open this RAW before anything changes.
             let readable = await Task.detached(priority: .userInitiated) { Self.canOpenImage(raw) }.value
             guard !Task.isCancelled, let self, self.displayedItem == item else { return }
             guard readable else {
+                self.contentRoot.editBlockedByRAW = item.isRAWShown
+                self.toolbar?.validateVisibleItems()
                 self.contentRoot.toast(Self.rawCannotOpenCopy)
                 return
             }
@@ -115,6 +127,9 @@ extension ViewerWindow {
     }
 
     private func swapShownSource(at index: Int, to url: URL, group: ImageGroup) {
+        // Edit and Rotate go off (or on) in this very turn, not when the pixels land.
+        contentRoot.editBlockedByRAW = url != group.primary
+        toolbar?.validateVisibleItems()
         let sources = sources(replacing: index, with: url)
         intent.setNavigation(list: sources, currentIndex: index)
         // Pixel positions mean nothing across two files' sizes: Fit again.

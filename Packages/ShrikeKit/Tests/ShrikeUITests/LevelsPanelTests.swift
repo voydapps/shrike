@@ -297,7 +297,7 @@ final class LevelsPanelTests: XCTestCase {
         c.applyLevelsAuto(.color)
         await c.settleForTesting()
         XCTAssertEqual(p.channel, .rgb)
-        XCTAssertEqual(p._resetButton.title, "Reset")
+        XCTAssertEqual(p._resetButton.title, "Reset Levels")
         XCTAssertEqual(p._resetButton.toolTip, "Reset All Channels")
 
         p._resetButton.performClick(nil)
@@ -323,7 +323,7 @@ final class LevelsPanelTests: XCTestCase {
         XCTAssertTrue(c.effectiveLevels.red.isIdentity)
         XCTAssertFalse(c.effectiveLevels.blue.isIdentity, "other channels keep their values")
         p.setOptionHeld(false)
-        XCTAssertEqual(p._resetButton.title, "Reset")
+        XCTAssertEqual(p._resetButton.title, "Reset Levels")
     }
 
     // MARK: ⌘Z after a drag

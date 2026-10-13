@@ -241,7 +241,7 @@ final class FullScreenChromeTests: XCTestCase {
         content.forceIdleFireForTesting()
         XCTAssertFalse(content.filmstripForTesting.isHidden, "stays after the pointer leaves")
         XCTAssertEqual(pin.symbolNameForTesting, "pin.fill")
-        XCTAssertEqual(pin.glyphTintForTesting, .controlAccentColor)
+        XCTAssertEqual(pin.glyphTintForTesting, ShrikeAccent.mark)
         XCTAssertEqual(pin.accessibilityLabel(), "Pin Filmstrip")
         XCTAssertEqual(pin.accessibilityValue() as? String, "Pinned")
         XCTAssertEqual(pin.toolTip, "Unpin Filmstrip")

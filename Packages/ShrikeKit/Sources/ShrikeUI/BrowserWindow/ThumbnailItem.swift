@@ -77,7 +77,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
     private let failureStack = NSStackView()
 
     private var loadTask: Task<Void, Never>?
-    private var currentItem: BrowserItem?
+    private(set) var currentItem: BrowserItem?
     private var colorObserver: LiveColorObserver?
     /// True when the thumbnail could not be read.
     private(set) var isFailed = false
@@ -185,9 +185,10 @@ public final class ThumbnailItem: NSCollectionViewItem {
         // Right to left: RAW chip, livephoto, pencil — so the stack's
         // order (left to right) is pencil, livephoto, RAW.
         let onPhoto = NSColor.white.withAlphaComponent(0.9)
-        rawChipView.image = Badges.rawChipImage(fontSize: 9, height: 14, color: onPhoto)
+        rawChipView.image = Badges.rawChipImage(fontSize: 9, height: 14, color: onPhoto, backdrop: true)
         livePhotoView.image = Badges.symbol("livephoto", pointSize: 12, color: onPhoto)
-        pencilView.image = Badges.symbol("pencil", pointSize: 12, color: onPhoto)
+        pencilView.image = Badges.editedChipImage()
+        pencilView.toolTip = Badges.editedTooltip
         for view in [pencilView, livePhotoView, rawChipView] {
             view.isHidden = true
             badgeRow.addArrangedSubview(view)
@@ -371,6 +372,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
         cache: ThumbnailCache
     ) {
         currentItem = item
+        shownFileName = nil
         nameLabel.fullName = item.displayName
         applyBadges(item.badges)
 
@@ -472,8 +474,8 @@ public final class ThumbnailItem: NSCollectionViewItem {
         view.setAccessibilityChildren([])
         view.setAccessibilitySelected(isSelected)
         view.setAccessibilityLabel(CellAccessibility.label(
-            name: currentItem?.displayName ?? "", rating: accessibilityBadges.rating,
-            flagged: accessibilityBadges.flagged, isPair: accessibilityBadges.hasRAW, failed: isFailed))
+            name: shownFileName ?? currentItem?.displayName ?? "", rating: accessibilityBadges.rating,
+            flagged: accessibilityBadges.flagged, edited: accessibilityBadges.edited, isPair: accessibilityBadges.hasRAW, failed: isFailed))
     }
 
     func applyBadges(_ badges: ItemBadges) {
@@ -501,6 +503,8 @@ public final class ThumbnailItem: NSCollectionViewItem {
 
     /// Test seams: the clickable chip.
     var rawChipButtonForTesting: NSButton { rawChipButton }
+    var editedChipForTesting: NSImageView { pencilView }
+    var rawChipViewForTesting: NSImageView { rawChipView }
 
     /// Test seam: what the cell shows now.
     var badgeStateForTesting: (flag: Bool, stars: String, raw: Bool, live: Bool, pencil: Bool, dots: Bool) {
@@ -535,9 +539,21 @@ public final class ThumbnailItem: NSCollectionViewItem {
             view.toolTip = "Shrike can't read this file."
         } else {
             // The full name always (spec 25 §6.3); the layout changes with the window.
-            view.toolTip = currentItem?.displayName
+            view.toolTip = shownFileName ?? currentItem?.displayName
         }
     }
+
+    /// The name of the file the pair is showing (spec 27 N5): the RAW's
+    /// name while the RAW is shown, nil for the pair's own name.
+    private(set) var shownFileName: String?
+
+    func setShownFileName(_ name: String?) {
+        shownFileName = name
+        nameLabel.fullName = name ?? currentItem?.displayName ?? ""
+        updateToolTip()
+        updateAccessibility()
+    }
+
 
     private func updateFailureLabel() {
         failureLabel.isHidden = !(isFailed && view.bounds.width >= Self.failureTextMinWidth)
@@ -557,7 +573,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
         let border: NSColor? = increaseContrast ? .separatorColor : nil
         guard selected else { return Look(ring: nil, capsule: nil, text: .labelColor, border: border) }
         if windowIsKey {
-            return Look(ring: .controlAccentColor, capsule: .selectedContentBackgroundColor,
+            return Look(ring: ShrikeAccent.mark, capsule: .selectedContentBackgroundColor,
                         text: .alternateSelectedControlTextColor, border: border)
         }
         return Look(ring: .unemphasizedSelectedContentBackgroundColor,

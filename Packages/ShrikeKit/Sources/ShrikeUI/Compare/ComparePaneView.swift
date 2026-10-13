@@ -4,7 +4,7 @@
 //
 //  One Compare pane: the viewer's `MetalImageView` on the
 //  viewer black, a 24 pt footer on overlay material, the 2 pt focus
-//  border in `controlAccentColor`, and the centred error line.
+//  border in `ShrikeAccent.mark`, and the centred error line.
 //
 
 import AppKit
@@ -13,6 +13,9 @@ import ShrikeRendering
 
 @MainActor
 final class ComparePaneView: NSView {
+
+    /// Only the footer text dims in an unfocused pane; the photo never does (spec 27 C1).
+    static let unfocusedFooterAlpha: CGFloat = 0.6
 
     let imageView: MetalImageView
     let footer = HUDSurfaceView()
@@ -23,7 +26,7 @@ final class ComparePaneView: NSView {
     var isFocused = false {
         didSet {
             focusRing.isHidden = !isFocused
-            footerLabel.alphaValue = isFocused ? 1 : 0.6
+            footerLabel.alphaValue = isFocused ? 1 : Self.unfocusedFooterAlpha
             setAccessibilitySelected(isFocused)
         }
     }
@@ -176,7 +179,7 @@ final class CompareFocusRingView: NSView {
     override func updateLayer() {
         layer?.borderWidth = Self.width
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.borderColor = NSColor.controlAccentColor.resolvedCGColor(for: effectiveAppearance)
+            layer?.borderColor = ShrikeAccent.mark.resolvedCGColor(for: effectiveAppearance)
         }
     }
 

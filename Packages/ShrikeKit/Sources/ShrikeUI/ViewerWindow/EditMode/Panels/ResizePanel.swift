@@ -107,7 +107,7 @@ final class ResizePanel: NSView {
         interpPopup.action = #selector(handleInterpChange(_:))
 
         previewLabel.translatesAutoresizingMaskIntoConstraints = false
-        previewLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        previewLabel.font = .systemFont(ofSize: 12)
         previewLabel.textColor = .secondaryLabelColor
 
         applyButton.bezelStyle = .rounded
@@ -120,14 +120,28 @@ final class ResizePanel: NSView {
         applyButton.target = self
         applyButton.action = #selector(handleApply(_:))
 
-        let widthRow = labelled("W", field: widthField)
-        let heightRow = labelled("H", field: heightField)
-        let percentRow = labelled("%", field: percentField)
+        let widthRow = labelled("Width", field: widthField)
+        let heightRow = labelled("Height", field: heightField)
+        let percentRow = labelled("Scale", field: percentField)
+        // The "%" sits inside the field at its trailing edge (spec 27 P3-8b).
+        let suffix = NSTextField(labelWithString: "%")
+        suffix.font = .systemFont(ofSize: 12)
+        suffix.textColor = .secondaryLabelColor
+        suffix.translatesAutoresizingMaskIntoConstraints = false
+        suffix.setAccessibilityElement(false)
+        percentField.addSubview(suffix)
+        NSLayoutConstraint.activate([
+            suffix.trailingAnchor.constraint(equalTo: percentField.trailingAnchor, constant: -6),
+            suffix.centerYAnchor.constraint(equalTo: percentField.centerYAnchor),
+        ])
+        resetButton.bezelStyle = .rounded
+        resetButton.translatesAutoresizingMaskIntoConstraints = false
+        resetButton.target = self
+        resetButton.action = #selector(handleReset(_:))
 
         let stack = NSStackView(views: [
             sectionLabel("New size"),
             widthRow, heightRow,
-            sectionLabel("Or"),
             percentRow,
             maintainCheckbox,
             preventUpscaleCheckbox,
@@ -136,6 +150,7 @@ final class ResizePanel: NSView {
             sectionLabel("Preview"),
             previewLabel,
             applyButton,
+            resetButton,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -153,6 +168,7 @@ final class ResizePanel: NSView {
             percentField.widthAnchor.constraint(equalToConstant: 60),
             interpPopup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             applyButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            resetButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
 
@@ -162,6 +178,8 @@ final class ResizePanel: NSView {
         l.translatesAutoresizingMaskIntoConstraints = false
         return l
     }
+
+    private let resetButton = NSButton(title: "Reset Resize", target: nil, action: nil)
 
     private func labelled(_ text: String, field: NSTextField) -> NSStackView {
         let label = NSTextField(labelWithString: text)
@@ -266,6 +284,21 @@ final class ResizePanel: NSView {
         return spec
     }
 
+    /// "New size: 5184 × 3456 px", or "Same size as the original." (spec 27 P3-8c).
+    static func previewText(source: CGSize, width: Int, height: Int) -> String {
+        guard width > 0, height > 0 else { return "Same size as the original." }
+        if width == Int(source.width), height == Int(source.height) { return "Same size as the original." }
+        return "New size: \(width) × \(height) px"
+    }
+
+    @objc private func handleReset(_ sender: NSButton) {
+        setDimensionsFromSource()
+        updatePreviewLabel()
+        emitSpec()
+    }
+
+    var _resetButton: NSButton { resetButton }
+
     private func updatePreviewLabel() {
         applyButton.isEnabled = pendingSpec != nil
         let sw = Int(sourcePixelSize.width)
@@ -276,11 +309,7 @@ final class ResizePanel: NSView {
             previewLabel.stringValue = "—"
             return
         }
-        if tw > 0, th > 0 {
-            previewLabel.stringValue = "\(sw)×\(sh) → \(tw)×\(th)"
-        } else {
-            previewLabel.stringValue = "\(sw)×\(sh)"
-        }
+        previewLabel.stringValue = Self.previewText(source: CGSize(width: sw, height: sh), width: tw, height: th)
     }
 
     private func emitSpec() {

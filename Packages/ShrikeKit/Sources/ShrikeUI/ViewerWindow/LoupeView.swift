@@ -14,7 +14,11 @@ import CoreGraphics
 final class LoupeView: NSView {
 
     private static let diameter: CGFloat = 220
-    private static let borderWidth: CGFloat = 2.0
+    /// Spec 27 N10: a two-line ring that reads on light and dark photos:
+    /// white 0.85 outside, black 0.35 inside, 1 pt each.
+    private static let borderWidth: CGFloat = 1.0
+    static let outerRingAlpha: CGFloat = 0.85
+    static let innerRingAlpha: CGFloat = 0.35
 
     /// CGImage being magnified.
     var sourceImage: CGImage?
@@ -47,13 +51,27 @@ final class LoupeView: NSView {
         wantsLayer = true
         layer?.cornerRadius = Self.diameter / 2
         layer?.masksToBounds = true
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.4).cgColor
+        layer?.borderColor = NSColor.white.withAlphaComponent(Self.outerRingAlpha).cgColor
         layer?.borderWidth = Self.borderWidth
         layer?.backgroundColor = NSColor.black.cgColor
 
         imageLayer.frame = bounds
         imageLayer.contentsGravity = .resizeAspectFill
         layer?.addSublayer(imageLayer)
+
+        let inset = Self.borderWidth
+        borderLayer.frame = bounds
+        borderLayer.fillColor = nil
+        borderLayer.strokeColor = NSColor.black.withAlphaComponent(Self.innerRingAlpha).cgColor
+        borderLayer.lineWidth = Self.borderWidth
+        borderLayer.path = CGPath(ellipseIn: bounds.insetBy(dx: inset + 0.5, dy: inset + 0.5), transform: nil)
+        layer?.addSublayer(borderLayer)
+    }
+
+    var ringLayersForTesting: (outerAlpha: CGFloat, innerAlpha: CGFloat) {
+        let outer = layer?.borderColor.flatMap { NSColor(cgColor: $0)?.alphaComponent } ?? 0
+        let inner = borderLayer.strokeColor.flatMap { NSColor(cgColor: $0)?.alphaComponent } ?? 0
+        return (outer, inner)
     }
 
     required init?(coder: NSCoder) { fatalError() }

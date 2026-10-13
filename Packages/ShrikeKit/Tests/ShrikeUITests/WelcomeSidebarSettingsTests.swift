@@ -21,7 +21,6 @@ final class WelcomeSidebarSettingsTests: XCTestCase {
         let content = try XCTUnwrap(welcome.window?.contentView)
         XCTAssertFalse(content is NSVisualEffectView, "no material behind the window (V9)")
         XCTAssertEqual(welcome.openButton.bezelStyle, .push)
-        XCTAssertEqual(welcome.openFolderButton.bezelStyle, .push)
         // White text on the accent colour measured 3.8:1 (needs 4.5:1), so
         // Open… is a plain push button: no accent fill, not the default button.
         XCTAssertNil(welcome.openButton.bezelColor)

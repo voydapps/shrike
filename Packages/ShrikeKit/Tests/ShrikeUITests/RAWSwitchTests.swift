@@ -106,6 +106,25 @@ final class RAWSwitchTests: XCTestCase {
         XCTAssertEqual(window.title, "P1.JPG")
     }
 
+    /// Spec 27 N11: Edit and Rotate are off the moment the switch to RAW starts.
+    func testEditAndRotateGoOffAtTheSwitchAndComeBack() async throws {
+        let (window, _, _) = try await makeViewer()
+        defer { window.close() }
+        XCTAssertTrue(window.canPerform(.editImage))
+        window.perform(.toggleRAWFile)
+        // No waiting: the same turn.
+        XCTAssertTrue(window.contentRootForTesting.editBlockedByRAW)
+        XCTAssertFalse(window.canPerform(.editImage))
+        XCTAssertFalse(window.canPerform(.rotateLeft))
+        XCTAssertFalse(window.canPerform(.rotateRight))
+        let landed = await waitUntil { window.displayedItem?.isRAWShown == true }
+        XCTAssertTrue(landed)
+        window.perform(.toggleRAWFile)
+        let back = await waitUntil { window.displayedItem?.isRAWShown == false }
+        XCTAssertTrue(back)
+        XCTAssertTrue(window.canPerform(.editImage))
+    }
+
     func testEditsAndRotatesAreOffOnTheRAW() async throws {
         let (window, pair, _) = try await makeViewer()
         defer { window.close() }
@@ -189,6 +208,12 @@ final class RAWSwitchTests: XCTestCase {
         let shown = await waitUntil { window.displayedItem != nil }
         XCTAssertTrue(shown)
         XCTAssertFalse(window.canPerform(.toggleRAWFile), "a RAW-only photo has no switch")
+        // Spec 27 B5: the line stays in the menu, greyed.
+        let line = NSMenuItem(title: "Show RAW File", action: ShrikeMainMenu.commandAction, keyEquivalent: "")
+        line.representedObject = ShrikeCommand.toggleRAWFile.rawValue
+        XCTAssertFalse(window.validateMenuItem(line))
+        XCTAssertFalse(line.isHidden)
+        XCTAssertEqual(line.title, "Show RAW File")
         XCTAssertNil(window.contentRootForTesting.positionPillMarksForTesting.pairKind, "and no chip")
         XCTAssertFalse(window.contentRootForTesting.navigationPositionOverlayForTesting.chipButton.isHidden == false
                        && window.contentRootForTesting.navigationPositionOverlayForTesting.chipButtonFrameForTesting != nil)

@@ -18,7 +18,7 @@ struct ShortcutsTab: View {
     var body: some View {
         Form {
             Section {
-                Picker("Preset:", selection: $selectedPreset) {
+                Picker("Preset", selection: $selectedPreset) {
                     Text("Mac").tag(ShortcutPreset.macNative)
                     Text("FastStone").tag(ShortcutPreset.fastStoneCompat)
                 }

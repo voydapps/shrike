@@ -498,7 +498,7 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
     /// Spec 24 §3.1: the Histogram button's glyph is accent-coloured while
     /// the histogram is on, and its tooltip names the next action.
     private func applyHistogramLook(_ item: NSToolbarItem, button: ToolbarToggleButton, on: Bool) {
-        let tint: NSColor? = on ? .controlAccentColor : nil
+        let tint: NSColor? = on ? ShrikeAccent.mark : nil
         if button.contentTintColor != tint { button.contentTintColor = tint }
         let key = Self.keyText(for: .toggleHistogram) ?? ""
         let tip = "\(on ? "Hide" : "Show") Histogram  ·  \(key)"

@@ -187,7 +187,7 @@ public final class InspectorPaneController: NSViewController {
             onRemoveTag: { [weak self] in self?.onRemoveTag?($0) },
             onAddTag: { [weak self] in self?.addTagTapped() },
             registerTagsAnchor: { [weak self] in self?.tagsRowAnchor = $0 }
-        ).tint(Color(nsColor: .controlAccentColor)))
+        ).tint(ShrikeAccent.markColor))
         host.translatesAutoresizingMaskIntoConstraints = false
         // A hosting view turns its SwiftUI ideal/min size into
         // constraints by default, and those pushed through the split view
@@ -280,8 +280,14 @@ private struct InspectorRoot: View {
     let registerTagsAnchor: (NSView) -> Void
 
     var body: some View {
+        InspectorCompactReader { compact in
+            content(compact: compact)
+        }
+    }
+
+    private func content(compact: Bool) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: InspectorLayout.sectionGap) {
                 if state.state.count == 0, state.state.folderSummary != nil {
                     FolderHeaderSection(state: state.state)
                 } else {
@@ -291,11 +297,11 @@ private struct InspectorRoot: View {
                 // star click can never rate a photo that is not selected.
                 if state.state.count > 0 {
                     Divider()
-                    FileInfoSection(state: state.state)
+                    FileInfoSection(state: state.state, compact: compact)
                     Divider()
                     // The EXIF rows are for one item only.
                     if state.state.count == 1, !state.state.capture.isEmpty || state.state.location != nil {
-                        CaptureSection(state: state.state)
+                        CaptureSection(state: state.state, compact: compact)
                         Divider()
                     }
                     RatingSection(state: state.state, onRate: onRate, onFlag: onFlag)
@@ -331,16 +337,14 @@ private struct FolderHeaderSection: View {
                         .truncationMode(.middle)
                     if let summary = state.folderSummary {
                         Text(summary)
-                            .font(.system(size: 11))
+                            .font(.system(size: InspectorLayout.rowFontSize))
                             .foregroundStyle(.secondary)
                     }
                 }
                 Spacer(minLength: 0)
             }
             .frame(height: 64)
-            Text("Folder")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
+            InspectorSectionHeader("Folder")
             if let path = state.folderPath {
                 row("Path", path, selectable: true)
             }
@@ -351,25 +355,9 @@ private struct FolderHeaderSection: View {
     }
 
     @ViewBuilder private func row(_ label: String, _ value: String, selectable: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            if selectable {
-                Text(value)
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-            } else {
-                Text(value)
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
+        InspectorRowView(label: label, value: value)
     }
+
 }
 
 struct PreviewSection: View {
@@ -400,7 +388,7 @@ struct PreviewSection: View {
                     .truncationMode(.middle)
                     .multilineTextAlignment(.center)
                 Text(summary)
-                    .font(.caption)
+                    .font(.system(size: InspectorLayout.rowFontSize))
                     .foregroundStyle(.secondary)
             } else if state.count == 0 {
                 Text("No selection")
@@ -419,7 +407,7 @@ struct PreviewSection: View {
                     .multilineTextAlignment(.center)
                 // "Also: DSC_0042.ORF (24.1 MB)".
                 Text(state.alsoLine ?? " ")
-                    .font(.caption)
+                    .font(.system(size: InspectorLayout.rowFontSize))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -654,49 +642,29 @@ final class InspectorPreviewImageView: NSImageView {
 
 private struct FileInfoSection: View {
     let state: InspectorState
+    var compact = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("File")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 4) {
-                GridRow {
-                    Text("Type")
-                        .foregroundStyle(.secondary)
-                    Text(Self.typeLabel(state.commonType))
-                }
-                GridRow {
-                    Text("Dimensions")
-                        .foregroundStyle(.secondary)
-                    if let w = state.commonWidth, let h = state.commonHeight {
-                        Text(verbatim: "\(w) × \(h)")
-                    } else {
-                        Text("—").foregroundStyle(.secondary)
-                    }
-                }
-                GridRow {
-                    Text(state.totalFileSize == nil ? "Size" : "Total size")
-                        .foregroundStyle(.secondary)
-                    if let total = state.totalFileSize {
-                        // The status bar's number and form.
-                        Text(BrowserBottomBar.bytes(total))
-                    } else if let size = state.commonFileSize {
-                        Text(FileSizeText.string(size))
-                    } else {
-                        Text("—").foregroundStyle(.secondary)
-                    }
-                }
-                GridRow {
-                    Text("Modified")
-                        .foregroundStyle(.secondary)
-                    if let d = state.commonDate {
-                        Text(Self.dateFormatter.string(from: d))
-                    } else {
-                        Text("—").foregroundStyle(.secondary)
-                    }
-                }
+        VStack(alignment: .leading, spacing: InspectorLayout.rowGap) {
+            InspectorSectionHeader("File")
+            InspectorRowView(label: "Type", value: Self.typeLabel(state.commonType), compact: compact)
+            if let w = state.commonWidth, let h = state.commonHeight {
+                InspectorRowView(label: "Dimensions", value: "\(w) × \(h)", compact: compact)
+            } else {
+                InspectorRowView(label: "Dimensions", value: "—")
             }
-            .font(.callout)
+            if let total = state.totalFileSize {
+                // The status bar's number and form.
+                InspectorRowView(label: "Total size", value: BrowserBottomBar.bytes(total))
+            } else if let size = state.commonFileSize {
+                InspectorRowView(label: "Size", value: FileSizeText.string(size))
+            } else {
+                InspectorRowView(label: "Size", value: "—")
+            }
+            if let d = state.commonDate {
+                InspectorRowView(label: "Modified", value: Self.dateFormatter.string(from: d), compact: compact)
+            } else {
+                InspectorRowView(label: "Modified", value: "—")
+            }
         }
     }
     private static func typeLabel(_ t: UTType?) -> String {
@@ -714,29 +682,19 @@ private struct FileInfoSection: View {
 /// Capture and Location; rows with no value are absent.
 private struct CaptureSection: View {
     let state: InspectorState
+    var compact = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: InspectorLayout.rowGap) {
             if !state.capture.isEmpty {
-                Text("Capture")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 4) {
-                    ForEach(state.capture) { row in
-                        GridRow {
-                            Text(row.label).foregroundStyle(.secondary)
-                            Text(row.value).textSelection(.enabled)
-                        }
-                    }
+                InspectorSectionHeader("Capture")
+                ForEach(state.capture) { row in
+                    InspectorRowView(label: row.label, value: row.value, compact: compact)
                 }
-                .font(.callout)
             }
             if let location = state.location {
-                Text("Location")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                Text(location)
-                    .font(.callout)
-                    .textSelection(.enabled)
+                InspectorSectionHeader("Location")
+                    .padding(.top, state.capture.isEmpty ? 0 : InspectorLayout.rowGap * 2)
+                InspectorRowView(label: "", value: location)
                 if let coordinate = state.coordinate, let url = state.previewURL {
                     Button(ShowInMaps.linkTitle) { ShowInMaps.open(coordinate, file: url) }
                         .buttonStyle(.link)
@@ -753,9 +711,7 @@ private struct RatingSection: View {
     let onFlag: (Bool) -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Rating & Flag")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
+            InspectorSectionHeader("Rating & Flag")
 
             HStack(spacing: 4) {
                 ForEach(1...5, id: \.self) { i in
@@ -774,16 +730,16 @@ private struct RatingSection: View {
                     onRate(0)
                 } label: {
                     Text("Clear")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: InspectorLayout.rowFontSize))
+                        .foregroundStyle(ShrikeAccent.markColor)
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, 8)
             }
             if state.count > 1 && state.commonRating == nil {
                 Text("— Mixed")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: InspectorLayout.rowFontSize))
+                    .foregroundStyle(.secondary)
             }
 
             Toggle(isOn: Binding(
@@ -799,8 +755,8 @@ private struct RatingSection: View {
             .toggleStyle(.checkbox)
             if state.count > 1 && state.commonFlag == nil {
                 Text("— Mixed")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: InspectorLayout.rowFontSize))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -813,9 +769,7 @@ private struct TagsSection: View {
     let registerAnchor: (NSView) -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Tags")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
+            InspectorSectionHeader("Tags")
 
             // Chips are editable — ⓧ removes the tag, "+"
             // opens the Tags popover on this row.
@@ -831,7 +785,7 @@ private struct TagsSection: View {
                 if state.count > 0 {
                     Button(action: onAddTag) {
                         Image(systemName: "plus")
-                            .font(.caption.weight(.semibold))
+                            .font(.system(size: InspectorLayout.rowFontSize, weight: .semibold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(
@@ -869,10 +823,10 @@ private struct TagChip: View {
     var body: some View {
         HStack(spacing: 4) {
             Text(label)
-                .font(.caption)
+                .font(.system(size: InspectorLayout.rowFontSize))
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.caption)
+                    .font(.system(size: InspectorLayout.rowFontSize))
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)

@@ -72,7 +72,7 @@ final class ColorAdjustPanel: NSView {
     /// Test seam: Brightness, Contrast, Saturation, Hue.
     var slidersForTesting: [NSSlider] { [brightnessSlider, contrastSlider, saturationSlider, hueSlider] }
 
-    private let resetAllButton = NSButton(title: "Reset all", target: nil, action: nil)
+    private let resetAllButton = NSButton(title: "Reset Color", target: nil, action: nil)
 
     init() {
         super.init(frame: .zero)
@@ -232,7 +232,7 @@ final class ColorAdjustPanel: NSView {
     }
 
     private func refreshHueLabel(_ degrees: Double) {
-        hueValueLabel.stringValue = degrees == 0 ? "0°" : String(format: "%+.0f°", degrees)
+        hueValueLabel.stringValue = EditValueText.text(value: degrees, step: 1, signed: true, unit: "°")
     }
 
     @objc private func resetBrightness() {
@@ -289,7 +289,7 @@ final class ColorAdjustPanel: NSView {
     }
 
     private func refreshLabel(_ label: NSTextField, value: Double) {
-        label.stringValue = String(format: "%+.2f", value)
+        label.stringValue = EditValueText.text(value: value, step: 0.01, signed: true)
     }
 
     /// Fire `onParamsChanged` for draft preview, then arm the 16 ms idle
@@ -388,7 +388,7 @@ final class CentredFillSliderCell: NSSliderCell {
         guard span.upperBound - span.lowerBound > 0.5 else { return }
         let fill = NSRect(x: span.lowerBound, y: bar.minY,
                           width: span.upperBound - span.lowerBound, height: thickness)
-        (isEnabled ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor).setFill()
+        (isEnabled ? ShrikeAccent.mark : NSColor.tertiaryLabelColor).setFill()
         NSBezierPath(roundedRect: fill, xRadius: thickness / 2, yRadius: thickness / 2).fill()
     }
 }

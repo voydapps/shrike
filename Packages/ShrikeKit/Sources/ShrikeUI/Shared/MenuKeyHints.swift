@@ -4,8 +4,9 @@
 //
 //  Bare keys shown in menus (spec 25 §13.1). A bare key must never be a
 //  menu `keyEquivalent` (the menu would take "q" before a search field
-//  sees it), so the hint is drawn inside the title, right-aligned with a
-//  tab stop. Display only: the key keeps working through the window keymaps.
+//  sees it), so the hint is an `NSMenuItemBadge` in the key column (the user
+//  chose badges over a tab-stop column, 2026-10-13). Display only: the key
+//  keeps working through the window keymaps.
 //
 
 import AppKit
@@ -13,9 +14,6 @@ import ShrikeCore
 
 @MainActor
 enum MenuKeyHints {
-
-    /// Separates the title from the hint in an attributed title.
-    private static let tab = "\t"
 
     /// The bare key for `command` in the live preset: the first binding
     /// with no modifier at all, from `context` (then the other window context).
@@ -37,46 +35,28 @@ enum MenuKeyHints {
         item.keyEquivalentModifierMask = binding.modifiers
     }
 
-    /// The title without its hint.
-    static func baseTitle(of item: NSMenuItem) -> String {
-        let title = item.attributedTitle?.string ?? item.title
-        return title.components(separatedBy: tab).first ?? title
-    }
+    /// The title of the item (nothing is drawn into it any more).
+    static func baseTitle(of item: NSMenuItem) -> String { item.title }
 
-    /// Draws the hints of `menu` and its submenus. Items with a real
-    /// `keyEquivalent` keep it and get no hint; a stale hint is removed.
+    /// The hint badge text of an item, if it has one.
+    static func badgeText(of item: NSMenuItem) -> String? { item.badge?.stringValue }
+
+    /// Gives the items of `menu` and its submenus their hint badge. Items with a
+    /// real `keyEquivalent` keep it and get no badge; a stale badge is removed.
     static func apply(to menu: NSMenu, context: ShortcutContext,
                       preset: ShortcutPreset = ShortcutTable.livePreset,
                       hasOwnKey: (NSMenuItem) -> Bool = { !$0.keyEquivalent.isEmpty }) {
-        let font = NSFont.menuFont(ofSize: 0)
-        var hinted: [(NSMenuItem, String, String)] = []
         for item in menu.items {
             if let submenu = item.submenu { apply(to: submenu, context: context, preset: preset, hasOwnKey: hasOwnKey) }
-            let base = baseTitle(of: item)
             // The rows of Copy / Move to Folder ▸ are not the command's key (C / M start the chord).
             let isDestinationRow = item.submenu == nil
                 && [ShrikeCommand.copyToFolder.title, ShrikeCommand.moveToFolder.title].contains(menu.title)
             if let command = item.shrikeCommand, !hasOwnKey(item), !item.isSeparatorItem, !isDestinationRow,
                let text = hint(for: command, context: context, preset: preset) {
-                hinted.append((item, base, text))
-            } else if item.attributedTitle != nil, item.attributedTitle?.string.contains(tab) == true {
-                item.attributedTitle = nil
-                item.title = base
+                if item.badge?.stringValue != text { item.badge = NSMenuItemBadge(string: text) }
+            } else if item.badge != nil {
+                item.badge = nil
             }
-        }
-        guard !hinted.isEmpty else { return }
-        func width(_ s: String) -> CGFloat { (s as NSString).size(withAttributes: [.font: font]).width }
-        let titleWidth = menu.items.map { width(baseTitle(of: $0)) }.max() ?? 0
-        let stop = ceil(titleWidth) + 24 + ceil(hinted.map { width($0.2) }.max() ?? 0)
-        let style = NSMutableParagraphStyle()
-        style.tabStops = [NSTextTab(textAlignment: .right, location: stop)]
-        for (item, base, text) in hinted {
-            let out = NSMutableAttributedString(
-                string: base + tab, attributes: [.font: font, .paragraphStyle: style])
-            out.append(NSAttributedString(string: text, attributes: [
-                .font: font, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style,
-            ]))
-            item.attributedTitle = out
         }
     }
 }

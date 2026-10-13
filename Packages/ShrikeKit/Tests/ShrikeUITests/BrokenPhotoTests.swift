@@ -36,11 +36,13 @@ final class BrokenPhotoTests: XCTestCase {
         let overlay = ErrorOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         overlay.layoutSubtreeIfNeeded()
         let card = overlay.cardFrameForTesting
-        XCTAssertEqual(card.width, 320)
+        XCTAssertEqual(card.width, 420, "spec 27 P3-3")
+        XCTAssertEqual(ErrorOverlayView.glyphPointSize, 36)
+        XCTAssertNotNil(overlay.glyph?.image)
         let body = overlay.bodyFrameForTesting
         XCTAssertGreaterThanOrEqual(body.minX, 24 - 4)
-        XCTAssertLessThanOrEqual(body.maxX, 320 - 24 + 4, "text stays inside the card")
-        XCTAssertGreaterThan(body.height, 20, "the text wraps onto two lines")
+        XCTAssertLessThanOrEqual(body.maxX, 420 - 24 + 4, "text stays inside the card")
+        XCTAssertGreaterThanOrEqual(body.height, overlay.bodyNeededHeightForTesting, "the whole text has room")
         XCTAssertEqual(overlay.nextButton.title, "Next")
         XCTAssertEqual(overlay.revealButton.title, "Reveal in Finder")
         XCTAssertEqual(overlay.nextButton.keyEquivalent, "", "a stray Return must not skip")

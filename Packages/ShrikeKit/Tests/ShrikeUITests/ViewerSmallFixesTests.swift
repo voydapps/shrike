@@ -123,7 +123,9 @@ final class ViewerSmallFixesTests: XCTestCase {
         XCTAssertFalse(content.histogramOverlayVisibleForTesting, "hides again when it shrinks")
     }
 
-    func testHistogramStaysClearOfTheEditPanel() throws {
+    /// Spec 27 V3: in edit mode the histogram docks in the tool column (below the
+    /// panel, 280 wide, 16 pt from the edge), so it never sits over the photo.
+    func testHistogramDocksInTheEditColumn() throws {
         Prefs.viewerHistogramVisible = true
         let viewer = try viewer(size: NSSize(width: 1000, height: 700))
         defer { viewer.close() }
@@ -133,7 +135,11 @@ final class ViewerSmallFixesTests: XCTestCase {
         let panel = content.editModeController.parameterPanel.frame
         let histogram = content.histogramOverlayFrameForTesting()
         XCTAssertFalse(panel.isEmpty)
-        XCTAssertLessThanOrEqual(histogram.maxX, panel.minX - 12 + 0.5, "left of the panel")
+        XCTAssertEqual(histogram.maxX, content.bounds.maxX - 16, accuracy: 0.5, "16 pt from the right edge")
+        XCTAssertEqual(histogram.width, EditParameterPanel.panelWidth, accuracy: 0.5, "the panel's width")
+        XCTAssertFalse(histogram.intersects(panel), "below the panel")
+        XCTAssertGreaterThanOrEqual(histogram.minX, content.imageView.drawnImageRect.maxX, "never over the photo")
+        XCTAssertTrue(content.histogramOverlayVisibleForTesting, "the Color panel leaves room")
         content.editModeController.finalizeExit()
         content.layoutSubtreeIfNeeded()
         XCTAssertEqual(content.histogramOverlayFrameForTesting().maxX, content.bounds.maxX - 16, accuracy: 0.5,
@@ -278,8 +284,8 @@ final class ViewerSmallFixesTests: XCTestCase {
                 }
             }
         }
-        XCTAssertEqual(KeyBinding(SpecialKey.pageUp).displayString, "⇞")
-        XCTAssertEqual(KeyBinding(SpecialKey.pageDown).displayString, "⇟")
+        XCTAssertEqual(KeyBinding(SpecialKey.pageUp).displayString, "Page Up")
+        XCTAssertEqual(KeyBinding(SpecialKey.pageDown).displayString, "Page Down")
         XCTAssertEqual(KeyBinding("\t").displayString, "⇥")
     }
 }

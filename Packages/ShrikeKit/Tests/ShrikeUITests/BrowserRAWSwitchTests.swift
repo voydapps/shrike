@@ -92,6 +92,47 @@ final class BrowserRAWSwitchTests: XCTestCase {
         XCTAssertFalse(browser.canPerform(.toggleRAWFile))
     }
 
+    /// Spec 27 B5: the line is always there and greyed when it cannot apply.
+    func testShowRAWLineIsPresentAndGreyedNotHidden() async throws {
+        let browser = try await open(.grid)
+        defer { browser.close() }
+        let item = NSMenuItem(title: "Show RAW File", action: ShrikeMainMenu.commandAction, keyEquivalent: "")
+        item.representedObject = ShrikeCommand.toggleRAWFile.rawValue
+        func validate() -> Bool { browser.validateMenuItem(item) }
+
+        XCTAssertTrue(validate(), "one pair selected: enabled")
+        XCTAssertFalse(item.isHidden)
+        XCTAssertEqual(item.title, "Show RAW File")
+
+        XCTAssertTrue(browser.contentController.select(url: dir.appendingPathComponent("P2.JPG")))
+        XCTAssertFalse(validate(), "a single photo: greyed")
+        XCTAssertFalse(item.isHidden, "not hidden")
+        XCTAssertEqual(item.title, "Show RAW File")
+
+        browser.contentController.selectAll()
+        XCTAssertFalse(validate(), "two selected: greyed")
+        XCTAssertFalse(item.isHidden)
+    }
+
+    /// Spec 27 N5: the pair's caption names the file on screen.
+    func testPairCaptionFollowsTheShownFile() async throws {
+        let browser = try await open(.grid)
+        defer { browser.close() }
+        let content = browser.contentController
+        let cell = try XCTUnwrap(content.collectionViewForTesting.item(at: IndexPath(item: 0, section: 0)) as? ThumbnailItem)
+        XCTAssertNil(cell.shownFileName)
+        browser.perform(.toggleRAWFile)
+        let raw = await waitUntil { content.isShowingRAW && cell.shownFileName == "P1.ORF" }
+        XCTAssertTrue(raw)
+        XCTAssertEqual(cell.view.toolTip, "P1.ORF")
+        XCTAssertTrue(cell.captionForTesting.hasSuffix(".ORF"), cell.captionForTesting)
+        XCTAssertEqual(cell.view.accessibilityLabel()?.hasPrefix("P1.ORF"), true)
+        browser.perform(.toggleRAWFile)
+        let back = await waitUntil { !content.isShowingRAW && cell.shownFileName == nil }
+        XCTAssertTrue(back)
+        XCTAssertTrue(cell.captionForTesting.hasSuffix(".JPG"), cell.captionForTesting)
+    }
+
     func testFilmstripPreviewAndInfoPanelShowTheRAWThenTheJPEG() async throws {
         let browser = try await open(.filmstrip)
         defer { browser.close() }

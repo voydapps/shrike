@@ -109,7 +109,7 @@ final class EditToolPicker: NSControl {
 
     /// The platter of the chosen segment (accent at `platterAlpha`).
     var selectedSegmentBezelColor: NSColor? {
-        NSColor.controlAccentColor.withAlphaComponent(Self.platterAlpha)
+        ShrikeAccent.mark.withAlphaComponent(Self.platterAlpha)
     }
 
     var selectedSegment = -1 {
@@ -265,7 +265,7 @@ final class EditToolPicker: NSControl {
             let r = platterRect
             let path = NSBezierPath(roundedRect: r, xRadius: min(r.width, r.height) / 2, yRadius: min(r.width, r.height) / 2)
             if isChosen {
-                NSColor.controlAccentColor.withAlphaComponent(EditToolPicker.platterAlpha).setFill()
+                ShrikeAccent.mark.withAlphaComponent(EditToolPicker.platterAlpha).setFill()
                 path.fill()
             }
             if hovered || pressed {

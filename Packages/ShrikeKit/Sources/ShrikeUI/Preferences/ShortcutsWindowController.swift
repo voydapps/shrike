@@ -71,9 +71,15 @@ final class ShortcutsWindowController: NSWindowController, NSWindowDelegate {
         }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+        model.requestSearchFocus()
     }
 
     func windowWillClose(_ notification: Notification) { model.query = "" }
+
+    /// Spec 27 P3-10 (regression vs spec 25 §13.2): the search field is focused
+    /// when the window opens. `onAppear` runs before the hosting view is in a
+    /// key window, so focus is asked for again once the window is key.
+    func windowDidBecomeKey(_ notification: Notification) { model.requestSearchFocus() }
 
     var modelForTesting: ShortcutsWindowModel { model }
 }
@@ -81,6 +87,9 @@ final class ShortcutsWindowController: NSWindowController, NSWindowDelegate {
 @MainActor
 final class ShortcutsWindowModel: ObservableObject {
     @Published var query = ""
+    /// Bumped to ask the view to focus its search field.
+    @Published private(set) var focusTick = 0
+    func requestSearchFocus() { focusTick &+= 1 }
     @Published var preset: ShortcutPreset = Prefs.shortcutPreset
     private var observer: (any NSObjectProtocol)?
 
@@ -159,8 +168,9 @@ private struct ShortcutsWindowView: View {
             }
         }
         .onAppear { searchFocused = true }
+        .onChange(of: model.focusTick) { _, _ in searchFocused = true }
         .onExitCommand { if model.query.isEmpty { onClose() } else { model.query = "" } }
-        .background(Button("") { searchFocused = true }.keyboardShortcut("f").opacity(0))
+        .background(Button("") { searchFocused = true; model.requestSearchFocus() }.keyboardShortcut("f").opacity(0))
         .background(Button("") { onClose() }.keyboardShortcut("w").opacity(0))
     }
 }

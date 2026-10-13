@@ -14,6 +14,15 @@ struct AdvancedTab: View {
 
     @State private var showResetAllConfirmation = false
 
+    /// Spec 27 P3-7: every row is label-left, control-right.
+    static let configurationLabel = "Settings"
+    static let configurationDetail = "Shrike will return to its default settings. Restart to apply."
+    static let versionLabel = "Version"
+    /// (leading label, has a trailing control) per row of the last two sections.
+    static let rowLabelsForTesting: [(label: String, hasControl: Bool)] = [
+        (configurationLabel, true), (versionLabel, false),
+    ]
+
     private var versionString: String {
         let info = Bundle.main.infoDictionary ?? [:]
         let short = info["CFBundleShortVersionString"] as? String ?? "—"
@@ -40,12 +49,19 @@ struct AdvancedTab: View {
             }
 
             Section {
-                HStack {
-                    Spacer()
+                // Spec 27 P3-7: label left, control right; no empty left half.
+                LabeledContent {
                     Button(role: .destructive) {
                         showResetAllConfirmation = true
                     } label: {
                         Label("Reset All Preferences…", systemImage: "xmark.circle.fill")
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(Self.configurationLabel)
+                        Text(Self.configurationDetail)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
                     }
                 }
             } header: {
@@ -53,7 +69,9 @@ struct AdvancedTab: View {
             }
 
             Section {
-                LabeledContent("Version", value: versionString)
+                LabeledContent(Self.versionLabel) {
+                    Text(versionString).textSelection(.enabled)
+                }
             } header: {
                 Text("About").font(.headline)
             }
@@ -71,7 +89,7 @@ struct AdvancedTab: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Shrike will return to its default settings. Restart to apply.")
+            Text(Self.configurationDetail)
         }
     }
 }

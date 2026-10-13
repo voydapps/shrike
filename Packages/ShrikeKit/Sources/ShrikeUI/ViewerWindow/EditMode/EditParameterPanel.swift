@@ -48,7 +48,9 @@ final class EditParameterPanel: HUDSurfaceView {
 
     /// Replace the installed panel with `view`. Pass `nil` to clear.
     func install(_ view: NSView?) {
-        let previousHeight = heightConstraint?.constant
+        // The empty card's constraint is only a large wish (see below): the animation
+        // to a picked tool's height starts from the band it was filling.
+        let previousHeight = wasFillingBand ? bandHeightProvider?() : heightConstraint?.constant
         installed?.removeFromSuperview()
         scrollWrapper?.removeFromSuperview()
         scrollWrapper = nil
@@ -58,11 +60,15 @@ final class EditParameterPanel: HUDSurfaceView {
         guard let view else { return }
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalToConstant: Self.panelWidth).isActive = true
-        let height = ceil(view.fittingSize.height)
-        contentHeight = height
-
+        let content = ceil(view.fittingSize.height)
+        contentHeight = content
         let band = bandHeightProvider?() ?? 0
-        if band > 0, height > band {
+        // Spec 27 V3: with no tool chosen the card spans the whole band, so the
+        // right column reads as a panel, not a hole. A picked tool eases to its content.
+        let fillsBand = view is ChooseToolPanel
+        wasFillingBand = fillsBand
+        let height = fillsBand ? Self.bandWish : content
+        if !fillsBand, band > 0, content > band {
             let scroll = NSScrollView()
             scroll.translatesAutoresizingMaskIntoConstraints = false
             scroll.drawsBackground = false
@@ -94,7 +100,12 @@ final class EditParameterPanel: HUDSurfaceView {
         }
 
         let constraint = heightAnchor.constraint(equalToConstant: height)
-        constraint.priority = .defaultHigh
+        // A tool panel is as tall as its content (priority below the owner's required
+        // "stay inside the band" limits). The empty card wishes for far more and
+        // lets those limits cut it to the band, so it fills the band whatever the
+        // window does, with no height measured here. That wish stays under the window's
+        // stay-put priority (500) so it can never grow the window.
+        constraint.priority = fillsBand ? NSLayoutConstraint.Priority(490) : .defaultHigh
         constraint.isActive = true
         heightConstraint = constraint
         // A tool change eases the height over 120 ms; Reduce Motion: at once.
@@ -109,6 +120,12 @@ final class EditParameterPanel: HUDSurfaceView {
         }
     }
 
+    /// True while the empty card spans the whole band.
+    var fillsBand: Bool { installed is ChooseToolPanel }
+    private var wasFillingBand = false
+    /// The empty card's height wish; the owner's limits cut it to the band.
+    static let bandWish: CGFloat = 4000
+
     // MARK: - Test seam
 
     internal var _installed: NSView? { installed }
@@ -119,6 +136,8 @@ final class EditParameterPanel: HUDSurfaceView {
 final class ChooseToolPanel: NSView {
 
     static let title = "Choose a Tool"
+    /// The text is at most this wide (spec 27 V3).
+    static let textWidth: CGFloat = 232
 
     /// Spec 26 §1.6: the picker is icon-only, so this text names the tools and says where they are.
     static func body(inFullScreen: Bool) -> String {
@@ -140,20 +159,29 @@ final class ChooseToolPanel: NSView {
         // The tool-title style (the Levels panel header).
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = .labelColor
+        titleLabel.alignment = .center
         bodyLabel.font = .systemFont(ofSize: 13)
         bodyLabel.textColor = .secondaryLabelColor
         bodyLabel.isSelectable = false
+        bodyLabel.alignment = .center
         let stack = NSStackView(views: [titleLabel, bodyLabel])
         stack.orientation = .vertical
-        stack.alignment = .leading
+        stack.alignment = .centerX
         stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
+        // Title and body sit in the middle of the card, text at most 232 pt wide.
+        let width = stack.widthAnchor.constraint(equalToConstant: Self.textWidth)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 16),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            width,
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 16),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -16),
+            // The wrapping body takes the stack's width (no explicit max layout width:
+            // setting it by hand makes the label re-measure itself in a constraint loop).
+            titleLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            bodyLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
 

@@ -296,7 +296,8 @@ final class ViewerToolbarAccessibilityTests: XCTestCase {
         window.dispatch(.toggleInspector)
         await waitForInspectorSlide(window, bar)
         XCTAssertTrue(window.splitController?.isInspectorShown ?? false)
-        XCTAssertTrue(content.histogramOverlayVisibleForTesting, "a window shows both while on")
+        XCTAssertFalse(content.histogramOverlayVisibleForTesting, "one histogram at a time: the open inspector has it (spec 27 P3-13)")
+        XCTAssertTrue(content.inspectorPanel.histogramSectionShownForTesting)
 
         window.dispatch(.toggleHistogram)
         refresh(window, bar)

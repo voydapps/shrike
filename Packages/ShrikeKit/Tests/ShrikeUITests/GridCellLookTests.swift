@@ -96,7 +96,7 @@ final class GridCellLookTests: XCTestCase {
         redraw(item)
         drawn = item.drawnForTesting
         XCTAssertEqual(drawn.ringWidth, 3)
-        XCTAssertEqual(drawn.ring, resolved(.controlAccentColor, item))
+        XCTAssertEqual(drawn.ring, resolved(ShrikeAccent.mark, item))
         XCTAssertTrue(drawn.capsuleShown)
         XCTAssertEqual(drawn.capsule, resolved(.selectedContentBackgroundColor, item))
         XCTAssertEqual(drawn.text, .alternateSelectedControlTextColor)
@@ -163,7 +163,7 @@ final class GridCellLookTests: XCTestCase {
         item.view.displayIfNeeded()
         XCTAssertEqual(item.colorPassesForTesting, passes + 1, "accent change redraws without reselecting")
         // The look names the dynamic system colour; it resolves at draw time.
-        XCTAssertEqual(item.currentLook.ring, .controlAccentColor)
+        XCTAssertEqual(item.currentLook.ring, ShrikeAccent.mark)
     }
 
     // MARK: Light / Dark

@@ -114,6 +114,9 @@ final class ViewerPanInputTests: XCTestCase {
                              at pointInWindow: NSPoint? = nil) -> NSEvent? {
         guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
                                wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return nil }
+        // A CGEvent starts with the machine's live modifier state (a held
+        // or stuck Command turns every scroll into a zoom), so clear it.
+        cg.flags = []
         cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
         cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
         cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
@@ -229,9 +232,8 @@ final class ViewerPanInputTests: XCTestCase {
         send(window, scrollEvent(window, dx: -40, dy: 0, phase: 1))
         send(window, scrollEvent(window, dx: -40, dy: 0, phase: 2))
         XCTAssertEqual(view.pan, .zero, "never pans at Fit")
-        if NSEvent.isSwipeTrackingFromScrollEventsEnabled {
-            XCTAssertEqual(began, 1)
-        }
+        // The swipe setting is forced on in setUp, not read from the machine.
+        XCTAssertEqual(began, 1)
     }
 
     // MARK: Pan edge

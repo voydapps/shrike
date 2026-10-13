@@ -181,7 +181,12 @@ extension ViewerWindow {
         // The view already shows the turn: evict so the next visit
         // decodes the new orientation; no redraw now.
         let cache = services.thumbnailCache
-        Task { await cache.evict(url: url) }
+        // The strip cell asks again once the old thumbnail is gone (spec 27 B4).
+        Task { [weak self] in
+            await cache.evict(url: url)
+            guard let self else { return }
+            await MainActor.run { _ = self.contentRoot.reloadFilmstripThumbnail(for: url, services: self.services) }
+        }
         evictFromDecodeCache(url)
         let key = list.index(of: url).flatMap { list[$0]?.primary } ?? url
         refreshBackupState(key)

@@ -87,6 +87,10 @@ final class ViewerContextMenu: NSObject, NSMenuDelegate {
         add(.revealInFinder, target: window)
         add(.showInBrowser, target: window)
         menu.addItem(share.makeParentItem())
+        // Same three, same order as the Browser's menu (spec 27 P3-12).
+        add(.slideshow, target: window)
+        add(.batch, target: window)
+        add(.compare, target: window)
         menu.addItem(.separator())
         add(.rotateLeft, target: window)
         add(.rotateRight, target: window)

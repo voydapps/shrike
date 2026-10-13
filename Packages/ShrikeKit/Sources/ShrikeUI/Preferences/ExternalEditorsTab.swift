@@ -4,11 +4,9 @@
 //
 //  Settings ▸ External Editors:
 //
-//    # │ Editor                  │ Keys  │ Send RAW      rows 28 pt, max 9
-//    1 │ [icon] Pixelmator Pro   │ ⌥⌘1   │    ☐
-//    2 │ Choose App…             │ ⌥⌘2   │
-//    [+] [−]                               Drag rows to reorder.
-//    Shrike doesn't keep originals for changes made in other apps.
+//  A grouped Form (spec 27 V4): one row per configured editor (icon, name,
+//  key hint, Send RAW toggle, remove), then "Add Editor…". No placeholder
+//  rows; an empty state when nothing is configured.
 //
 //  It reads and writes `ExternalEditorRegistry` only (the old 3-slot
 //  `Prefs.externalEditors` list is imported once by the registry). The
@@ -130,114 +128,124 @@ struct ExternalEditorsTab: View {
 
     @StateObject private var model = ExternalEditorsModel()
 
+    // MARK: Layout facts (spec 27 V4; pure, so tests can pin them)
+
+    /// What the tab shows for `count` configured editors.
+    struct Layout: Equatable {
+        /// One row per configured editor, no placeholder slots.
+        var editorRows: Int
+        var showsEmptyState: Bool
+        var addEnabled: Bool
+    }
+
+    static func layout(editorCount count: Int) -> Layout {
+        Layout(editorRows: count, showsEmptyState: count == 0,
+               addEnabled: count < ExternalEditorsModel.slotCount)
+    }
+
+    static let rowHeight: CGFloat = 36
+    static let iconSize: CGFloat = 20
+    static let addTitle = "Add Editor…"
+    static let addDisabledHelp = "Up to 9 editors."
+    static let footer = "Keys open the displayed photo in that editor. Send RAW files opens the RAW instead of the JPEG for a pair."
+
+    /// "No editors yet. Add an app to open photos in it with ⌥⌘1." The key is slot 1's live key.
+    static func emptyStateText(firstKey: String) -> String {
+        "No editors yet. Add an app to open photos in it with \(firstKey)."
+    }
+
+    static func sendRAWLabel(_ name: String) -> String { "Send RAW to \(name)" }
+    static func removeLabel(_ name: String) -> String { "Remove \(name)" }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            header
-            List(selection: $model.selection) {
-                ForEach(Array(model.editors.enumerated()), id: \.element.id) { slot, editor in
-                    editorRow(slot: slot, editor: editor).tag(editor.id)
+        let layout = Self.layout(editorCount: model.editors.count)
+        Form {
+            Section {
+                if layout.showsEmptyState {
+                    VStack(spacing: 10) {
+                        Text(Self.emptyStateText(firstKey: model.keys(forSlot: 0)))
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                        addButton(enabled: layout.addEnabled)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: Self.rowHeight)
+                } else {
+                    ForEach(Array(model.editors.enumerated()), id: \.element.id) { slot, editor in
+                        editorRow(slot: slot, editor: editor)
+                    }
+                    .onMove { model.move(from: $0, to: $1) }
+                    HStack {
+                        addButton(enabled: layout.addEnabled)
+                        Spacer()
+                    }
+                    .frame(minHeight: Self.rowHeight)
                 }
-                .onMove { model.move(from: $0, to: $1) }
-                ForEach(model.editors.count..<ExternalEditorsModel.slotCount, id: \.self) { slot in
-                    emptyRow(slot: slot)
+            } header: {
+                Text("External editors").font(.headline)
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(Self.footer)
+                    Text("Shrike doesn't keep originals for changes made in other apps.")
                 }
-            }
-            .listStyle(.bordered(alternatesRowBackgrounds: true))
-            .environment(\.defaultMinListRowHeight, 28)
-            .frame(minHeight: 28 * 9 + 8)
-            HStack(spacing: 4) {
-                Button { chooseApp() } label: { Image(systemName: "plus") }
-                    .disabled(model.editors.count >= ExternalEditorsModel.slotCount)
-                    .help("Add an app")
-                    .accessibilityLabel("Add an app")
-                Button { model.removeSelected() } label: { Image(systemName: "minus") }
-                    .disabled(model.selection == nil)
-                    .help("Remove the selected app")
-                    .accessibilityLabel("Remove the selected app")
-                Spacer()
-                Text("Drag rows to reorder.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.bordered)
-            Text("Shrike doesn't keep originals for changes made in other apps.")
-                .font(.callout)
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(20)
+        .formStyle(.grouped)
         .onAppear { model.reload() }
     }
 
     // MARK: Rows
 
-    private var header: some View {
-        HStack(spacing: 8) {
-            Text("#").frame(width: 20, alignment: .trailing)
-            Text("Editor").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Keys").frame(width: 90, alignment: .leading)
-            Text("Send RAW").frame(width: 70, alignment: .center)
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 10)
+    private func addButton(enabled: Bool) -> some View {
+        Button(Self.addTitle) { chooseApp() }
+            .disabled(!enabled)
+            .help(enabled ? "" : Self.addDisabledHelp)
+            .accessibilityLabel(Self.addTitle)
     }
 
     private func editorRow(slot: Int, editor: ExternalEditor) -> some View {
         HStack(spacing: 8) {
-            Text(verbatim: "\(slot + 1)")
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .frame(width: 20, alignment: .trailing)
-            HStack(spacing: 6) {
+            Group {
                 if let icon = model.icons[editor.id] {
-                    Image(nsImage: icon).resizable().frame(width: 18, height: 18)
+                    Image(nsImage: icon).resizable()
                 } else {
-                    Image(systemName: "app").frame(width: 18, height: 18).foregroundStyle(.secondary)
+                    Image(systemName: "app").foregroundStyle(.secondary)
                 }
-                Text(editor.displayName).lineLimit(1).truncationMode(.tail)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: Self.iconSize, height: Self.iconSize)
+            Text(editor.displayName)
+                .font(.system(size: 13))
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 8)
             Text(model.keys(forSlot: slot))
-                .font(.system(size: 12, design: .monospaced))
-                .frame(width: 90, alignment: .leading)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
             Toggle("", isOn: Binding(
                 get: { editor.sendRAW },
                 set: { model.setSendRAW($0, slot: slot) }
             ))
             .labelsHidden()
             .help("When the photo has a RAW, open the RAW instead of the JPEG.")
-            .accessibilityLabel("Send RAW to \(editor.displayName)")
-            .frame(width: 70)
+            .accessibilityLabel(Self.sendRAWLabel(editor.displayName))
+            Button { model.remove(slot: slot) } label: { Image(systemName: "minus.circle") }
+                .buttonStyle(.borderless)
+                .help(Self.removeLabel(editor.displayName))
+                .accessibilityLabel(Self.removeLabel(editor.displayName))
         }
-        .frame(height: 28)
+        .frame(minHeight: Self.rowHeight)
         .contextMenu {
             Button("Remove") { model.remove(slot: slot) }
         }
         .accessibilityElement(children: .contain)
     }
 
-    private func emptyRow(slot: Int) -> some View {
-        HStack(spacing: 8) {
-            Text(verbatim: "\(slot + 1)")
-                .monospacedDigit()
-                .foregroundStyle(.tertiary)
-                .frame(width: 20, alignment: .trailing)
-            Button("Choose App…") { chooseApp() }
-                .buttonStyle(.link)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text(model.keys(forSlot: slot))
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.tertiary)
-                .frame(width: 90, alignment: .leading)
-            Color.clear.frame(width: 70)
-        }
-        .frame(height: 28)
-    }
-
     // MARK: Open panel
 
-    /// "+" and "Choose App…": an Open panel in /Applications. The app goes
+    /// "Add Editor…": an Open panel in /Applications. The app goes
     /// into the first free slot (the list has no gaps).
     private func chooseApp() {
         let panel = NSOpenPanel()

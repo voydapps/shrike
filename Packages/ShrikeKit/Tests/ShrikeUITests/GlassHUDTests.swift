@@ -295,8 +295,10 @@ final class GlassHUDTests: XCTestCase {
         revealEverything(content)
         for (name, surface) in surfaces(content) {
             let layer = borderLayer(surface)
-            XCTAssertEqual(layer?.borderWidth ?? 0, 1, name)
-            XCTAssertEqual(srgb(layer?.borderColor)?.alphaComponent ?? 0, 0.12, accuracy: 0.01, name)
+            // The toast pill has its own flatter look (spec 27 N6): 0.5 pt, white at 16 %.
+            let isToast = name == "toast" && surface.look != .glass
+            XCTAssertEqual(layer?.borderWidth ?? 0, isToast ? 0.5 : 1, name)
+            XCTAssertEqual(srgb(layer?.borderColor)?.alphaComponent ?? 0, isToast ? 0.16 : 0.12, accuracy: 0.01, name)
         }
         content.togglePanel(.filmstrip)
         content.togglePanel(.inspector)
@@ -347,7 +349,7 @@ final class GlassHUDTests: XCTestCase {
         defer { welcome.close() }
         // Plain push buttons; Open… is not the accent default button.
         XCTAssertEqual(welcome.openButton.bezelStyle, .push)
-        XCTAssertEqual(welcome.openFolderButton.bezelStyle, .push)
+        XCTAssertEqual(welcome.openFolderButton.keyEquivalent, "\r", "Open Folder… is the primary (spec 27 P3-11)")
         XCTAssertNil(welcome.openButton.bezelColor)
         XCTAssertEqual(welcome.openButton.keyEquivalent, "")
 

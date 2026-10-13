@@ -218,7 +218,7 @@ final class DropHighlightView: NSView {
     override func updateLayer() {
         layer?.borderWidth = 2
         layer?.cornerRadius = 6
-        layer?.borderColor = NSColor.controlAccentColor.resolvedCGColor(for: effectiveAppearance)
+        layer?.borderColor = ShrikeAccent.mark.resolvedCGColor(for: effectiveAppearance)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }

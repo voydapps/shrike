@@ -31,6 +31,10 @@ enum ShrikeTokens {
     /// `surface.sunken`: #0F0F11 dark / #E8E8EB light. Behind thumbnails.
     static let surfaceSunken = dynamic("shrike.surface.sunken", dark: 0x0F0F11, light: 0xE8E8EB)
 
+    /// `text.secondary` (design system 01): small text on a window or header surface, at least 4.5:1 in
+    /// both appearances (the system's secondary label is about 3.9:1 in light).
+    static let textSecondary = dynamic("shrike.text.secondary", dark: 0xB4B4B8, light: 0x56565A)
+
     /// Increase Contrast. Tests set the override.
     @MainActor static var increaseContrastOverride: Bool?
     @MainActor static var increaseContrast: Bool {

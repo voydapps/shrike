@@ -256,17 +256,17 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
         dropZone.onDrop = { [weak self] urls in self?.onOpenURLs?(urls) }
         openButton.target = self
         openButton.action = #selector(openFilesClicked(_:))
-        // Not the default (accent) button: white text on the accent colour
-        // measured 3.8:1, below the 4.5:1 minimum. A plain system push button
-        // draws its label in the label colour on a neutral bezel (well above
-        // 4.5:1). ⌘O opens files from the menu.
+        // "Open…" is the plain bordered button; "Open Folder…" is the primary
+        // (spec 27 P3-11). ⌘O opens files from the menu.
         openButton.controlSize = .large
         openFolderButton.target = self
         openFolderButton.action = #selector(openFolderClicked(_:))
         openFolderButton.controlSize = .large
-        // Plain push buttons (the glass bezel gave a cyan label at 2.5:1).
+        // Spec 27 P3-11: "Open Folder…" is the primary (accent default button,
+        // Return); "Open…" stays the plain bordered button.
         openButton.bezelStyle = .push
-        openFolderButton.bezelStyle = .push
+        openFolderButton.useAccentFill()
+        openFolderButton.keyEquivalent = "\r"
         let buttons = NSStackView(views: [openButton, openFolderButton])
         buttons.orientation = .horizontal
         buttons.spacing = 12
@@ -360,6 +360,9 @@ final class WelcomeDropZone: NSView {
     }
     private let border = CAShapeLayer()
 
+    /// The dashed border at rest: at least 3:1 against the window (WCAG 1.4.11).
+    static let idleBorderColor = NSColor.secondaryLabelColor
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -398,12 +401,12 @@ final class WelcomeDropZone: NSView {
         // AppKit sets the view's appearance as current here, so the
         // dynamic colours resolve for light and dark.
         if isHighlighted {
-            border.strokeColor = NSColor.controlAccentColor.resolvedCGColor(for: effectiveAppearance)
+            border.strokeColor = ShrikeAccent.mark.resolvedCGColor(for: effectiveAppearance)
             border.lineWidth = 2
             border.lineDashPattern = nil
-            layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.08).resolvedCGColor(for: effectiveAppearance)
+            layer?.backgroundColor = ShrikeAccent.mark.withAlphaComponent(0.08).resolvedCGColor(for: effectiveAppearance)
         } else {
-            border.strokeColor = NSColor.separatorColor.cgColor
+            border.strokeColor = Self.idleBorderColor.resolvedCGColor(for: effectiveAppearance)
             border.lineWidth = 1.5
             border.lineDashPattern = [6, 4]
             layer?.backgroundColor = nil

@@ -466,7 +466,11 @@ public final class ViewerContentView: NSView {
         // inside the band (taller content scrolls).
         ePanel.bandHeightProvider = { [weak self] in
             guard let self else { return 0 }
-            return self.imageView.frame.maxY - self.safeAreaInsets.top - 8 - 8
+            // From 8 pt under the safe area down to the panel's bottom limits (8 pt above the
+            // canvas bottom, and 32 pt above the view's bottom): what the panel can really use.
+            let top = self.imageView.frame.maxY - self.safeAreaInsets.top - 8
+            let bottom = max(self.imageView.frame.minY + 8, 32)
+            return max(0, top - bottom)
         }
         editPanelConstraints = [
             ePanel.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 8),
@@ -477,10 +481,10 @@ public final class ViewerContentView: NSView {
                 equalToConstant: EditParameterPanel.panelWidth
             ),
         ]
-        // The histogram stays clear of the panel; one
+        // The histogram docks inside the panel column; one
         // built later in edit mode adds this itself.
         if let overlay = histogramStorage {
-            editPanelConstraints.append(histogramClearOfEditPanel(overlay))
+            editPanelConstraints.append(histogramDockedInEditColumn(overlay))
         }
         NSLayoutConstraint.activate(editPanelConstraints)
 
@@ -517,6 +521,7 @@ public final class ViewerContentView: NSView {
 
         editModeController.hostWindow = window
         editModeController.enter(image: image, url: url, landOn: tool)
+        positionHistogram(animated: false)
         updateHistogramVisibility(animated: true)
         installEditChrome()
         // The frame sits on the image as drawn after the re-fit
@@ -721,6 +726,8 @@ public final class ViewerContentView: NSView {
         if isEditModeActive {
             syncCropOverlayFrame()
             onEditCanvasWidth?(bounds.width)
+            // The empty card follows the band; the histogram follows the free column.
+            if editHistogramRoom != lastEditHistogramRoom { updateHistogramVisibility(animated: false) }
         }
         livePhotoPlayback?.updateFrame()
         layoutLiveBadge()
@@ -738,7 +745,7 @@ public final class ViewerContentView: NSView {
 
     /// Room kept around the photo in edit mode so every crop handle
     /// (10 pt square + 6 pt hit slop) is on screen and clickable.
-    static let editHandleMargin: CGFloat = 16
+    static let editHandleMargin: CGFloat = EditLayout.handleMargin
     /// Gap between the titlebar / toolbar and the LIVE badge.
     static let liveBadgeChromeGap: CGFloat = 12
     /// The LIVE badge's inset from the photo's top-left corner.
@@ -751,6 +758,7 @@ public final class ViewerContentView: NSView {
     /// Runs on layout (resize, full screen), zoom, pan, a
     /// view turn and a new photo; nothing while the badge is hidden.
     func layoutLiveBadge() {
+        updateTitleScrim()   // the same moments: layout, zoom, pan, a turn, a new photo
         guard !livePhotoBadge.isHidden,
               let leading = liveBadgeLeading, let top = liveBadgeTopPreferred else { return }
         let canvas = imageView.frame
@@ -765,6 +773,64 @@ public final class ViewerContentView: NSView {
         if abs(leading.constant - x) > 0.25 { leading.constant = x }
         if abs(top.constant - y) > 0.25 { top.constant = y }
     }
+
+    // MARK: Title scrim (spec 27 P3-2)
+
+    /// A dark top gradient that keeps the white title and subtitle readable when a bright
+    /// photo runs under the titlebar (zoomed in, or filling the window). Absent at Fit
+    /// when the photo sits below the titlebar, in full screen and in edit mode.
+    static let titleScrimTopAlpha: CGFloat = 0.5
+    static let titleScrimTail: CGFloat = 24
+    static let titleScrimFade: TimeInterval = 0.12
+    private var titleScrimStorage: TitleScrimView?
+    private var titleScrimHeight: NSLayoutConstraint?
+    private var titleScrimShown = false
+
+    /// The photo as drawn reaches above the titlebar's bottom edge.
+    var imageOverlapsTitlebar: Bool {
+        guard windowMode == .windowed, !isEditModeActive, safeAreaInsets.top > 0 else { return false }
+        let drawn = imageView.drawnImageRect
+        guard drawn.width > 0, drawn.height > 0 else { return false }
+        let inSelf = convert(drawn, from: imageView)
+        return inSelf.maxY > bounds.maxY - safeAreaInsets.top + 0.5
+    }
+
+    func updateTitleScrim() {
+        let want = imageOverlapsTitlebar
+        if want {
+            if titleScrimStorage == nil {
+                let scrim = TitleScrimView(topAlpha: Self.titleScrimTopAlpha)
+                scrim.translatesAutoresizingMaskIntoConstraints = false
+                scrim.alphaValue = 0
+                addSubview(scrim, positioned: .above, relativeTo: imageView)
+                let height = scrim.heightAnchor.constraint(equalToConstant: 0)
+                titleScrimHeight = height
+                NSLayoutConstraint.activate([
+                    scrim.topAnchor.constraint(equalTo: topAnchor),
+                    scrim.leadingAnchor.constraint(equalTo: leadingAnchor),
+                    scrim.trailingAnchor.constraint(equalTo: trailingAnchor),
+                    height,
+                ])
+                titleScrimStorage = scrim
+            }
+            let height = safeAreaInsets.top + Self.titleScrimTail
+            if let constraint = titleScrimHeight, abs(constraint.constant - height) > 0.5 { constraint.constant = height }
+        }
+        guard want != titleScrimShown, let scrim = titleScrimStorage else { return }
+        titleScrimShown = want
+        if reducesMotion || window == nil {
+            scrim.alphaValue = want ? 1 : 0
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.titleScrimFade
+            scrim.animator().alphaValue = want ? 1 : 0
+        }
+    }
+
+    /// Test seams.
+    var titleScrimForTesting: TitleScrimView? { titleScrimStorage }
+    var titleScrimIsShownForTesting: Bool { titleScrimShown }
 
     /// The part of the canvas the photo fits in.
     /// Edit mode: clear of the side panel and the
@@ -831,6 +897,7 @@ public final class ViewerContentView: NSView {
         // photo frame equals the one before entry.
         applyWindowedFilmstripDock()
         if windowMode == .fullscreen { updatePanelVisibility() }
+        positionHistogram(animated: false)   // back to its old place (spec 27 V3)
         updateHistogramVisibility(animated: true)
     }
 
@@ -1609,6 +1676,7 @@ public final class ViewerContentView: NSView {
         set { errorOverlay.onReveal = newValue }
     }
     var errorOverlayForTesting: ErrorOverlayView { errorOverlay }
+    func clearDecodeErrorForTesting() { hideErrorOverlay() }
 
     /// `nextEnabled` is false on the last photo of a folder that does not wrap.
     public func showDecodeError(nextEnabled: Bool = true) {
@@ -1616,13 +1684,20 @@ public final class ViewerContentView: NSView {
         if errorOverlay.isHidden { errorOverlay.announce() }
         errorOverlay.isHidden = false
         needsLayout = true
-        histogram.showNoData()
+        updateHistogramVisibility(animated: false)
         refreshEditEntryReason()
+    }
+
+    /// The inspector's "n of N" follows the photo that failed too (the old photo
+    /// stays on the canvas, but the position is the failed file's).
+    public func updateInspectorPosition(index: Int, total: Int) {
+        inspector.updateIndexSummary(index: index, total: total)
     }
 
     private func hideErrorOverlay() {
         guard !errorOverlay.isHidden else { return }
         errorOverlay.isHidden = true
+        updateHistogramVisibility(animated: false)
         refreshEditEntryReason()
     }
 
@@ -1738,6 +1813,14 @@ public final class ViewerContentView: NSView {
         layoutSubtreeIfNeeded()
         return imageView.frame
     }
+
+    /// The file behind a strip cell changed on disk (spec 27 B4).
+    @discardableResult
+    func reloadFilmstripThumbnail(for url: URL, services: ShrikeServices) -> Int {
+        filmstrip.reloadThumbnail(for: url, services: services)
+    }
+
+    var filmstripForCellTesting: FilmstripView { filmstrip }
 
     public func updateFilmstripNeighbors(
         _ neighbors: [(idx: Int, source: any ImageSource)],
@@ -2050,9 +2133,9 @@ public final class ViewerContentView: NSView {
         toImage.isActive = windowMode == .windowed
         NSLayoutConstraint.activate(Self.histogramSizeConstraints(view, canvas: imageView))
         if isEditModeActive {
-            let clear = histogramClearOfEditPanel(view)
-            clear.isActive = true
-            editPanelConstraints.append(clear)
+            let dock = histogramDockedInEditColumn(view)
+            dock.isActive = true
+            editPanelConstraints.append(dock)
         }
         view.onCycleMode = { [weak self] in self?.histogram.cycleMode() }
         view.onClose = { [weak self, weak view] in
@@ -2076,16 +2159,40 @@ public final class ViewerContentView: NSView {
         return view
     }
 
-    /// Edit mode: the overlay ends 12 pt left of the parameter panel.
-    private func histogramClearOfEditPanel(_ view: HistogramOverlayView) -> NSLayoutConstraint {
-        view.trailingAnchor.constraint(lessThanOrEqualTo: editModeController.parameterPanel.leadingAnchor,
-                                       constant: -12)
+    /// Spec 27 V3 / P3-4: in edit mode the floating histogram sits inside the right
+    /// column (the panel's 280 pt, 16 pt from the edge, bottom of the band), never
+    /// over the photo. It is hidden when the column has no room (see `editHistogramRoom`).
+    static let editHistogramWidth: CGFloat = EditParameterPanel.panelWidth
+    /// The least free column height the docked histogram needs (spec 27 V3).
+    static let editHistogramMinFreeHeight: CGFloat = 160
+
+    private func histogramDockedInEditColumn(_ view: HistogramOverlayView) -> NSLayoutConstraint {
+        view.widthAnchor.constraint(equalToConstant: Self.editHistogramWidth)
     }
+
+    /// The column height left under the tool panel, above the band's bottom edge.
+    var editColumnFreeHeight: CGFloat {
+        let panel = editModeController.parameterPanel
+        guard isEditModeActive, panel.superview === self, !panel.isHidden else { return .infinity }
+        let bottomGap: CGFloat = windowMode == .windowed ? windowedHistogramBottomGap : 16
+        let columnBottom = (windowMode == .windowed ? imageView.frame.minY : bounds.minY) + bottomGap
+        return panel.frame.minY - columnBottom - 8
+    }
+
+    /// Edit mode: whether the column has room for the histogram. Not with no tool (the
+    /// card fills the column), not with Levels (its panel shows its own), and not when
+    /// less than 160 pt is free under the tool panel.
+    var editHistogramRoom: Bool {
+        guard isEditModeActive else { return true }
+        guard let tool = editModeController.currentTool, tool != .levels else { return false }
+        return editColumnFreeHeight >= Self.editHistogramMinFreeHeight
+    }
+    private var lastEditHistogramRoom = true
 
     /// Shown when toggled on; in full screen it also fades with the
     /// chrome (hidden after the idle delay, back on pointer movement).
     private func updateHistogramVisibility(animated: Bool) {
-        inspector.updateHistogramVisible(Prefs.viewerHistogramVisible)
+        inspector.updateHistogramVisible(Prefs.viewerHistogramVisible && !isShowingDecodeError)
         // Windowed: the docked split inspector shows its own histogram, so
         // the floating one steps aside. Full screen: the floating one is a
         // user toggle; it stays until toggled off and sits beside the
@@ -2095,7 +2202,14 @@ public final class ViewerContentView: NSView {
         // Spec 24 §1.3: the setting alone decides. In a window the docked
         // inspector's own section follows the same setting; in full screen
         // the overlay steps aside while the HUD inspector shows.
-        let show = Prefs.viewerHistogramVisible && fits && !isCropToolActive
+        // Spec 27 P3-13: one histogram at a time. A window's open inspector shows its
+        // own section, so the floating copy steps aside. Spec 27 P3-3: a photo that
+        // cannot be read has no histogram at all (not a "No data" box).
+        let room = editHistogramRoom
+        lastEditHistogramRoom = room
+        let show = Prefs.viewerHistogramVisible && fits && !isCropToolActive && room
+            && !isShowingDecodeError
+            && !(windowMode == .windowed && windowedInspectorShown)
             && !(windowMode == .fullscreen && fullscreenTarget(.inspector))
         // Built on the first show; never built just to stay hidden.
         guard let view = show ? histogramOverlay : histogramStorage else { return }
@@ -2180,7 +2294,9 @@ public final class ViewerContentView: NSView {
         let pillBottom: CGFloat = -rowBottom
         let leading: CGFloat = panelEdge
         let inspectorShown = fullscreenTarget(.inspector)
-        let trailing: CGFloat = inspectorShown ? -(panelEdge + 280 + HUDGlass.gap) : -panelEdge
+        // Edit mode: docked in the tool column, 16 pt from the edge (spec 27 V3).
+        let trailing: CGFloat = isEditModeActive ? -16
+            : inspectorShown ? -(panelEdge + 280 + HUDGlass.gap) : -panelEdge
         // The pill never reaches under the capsule; the name
         // truncates in the middle.
         if navOverlayMaxWidth == nil {
@@ -2302,6 +2418,7 @@ public final class ViewerContentView: NSView {
     private func pulseZoomBadge() {
         zoomBadge.setZoom(imageView.pixelScale)
         zoomBadge.alphaValue = 1
+        zoomBadgeVisibilityChanged()
         zoomBadgePulse &+= 1
         let pulse = zoomBadgePulse
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.zoomBadgeLifetime) { [weak self] in
@@ -2309,8 +2426,21 @@ public final class ViewerContentView: NSView {
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.3
                 self.zoomBadge.animator().alphaValue = 0
+            } completionHandler: {
+                MainActor.assumeIsolated {
+                    if self.zoomBadgePulse == pulse { self.zoomBadgeVisibilityChanged() }
+                }
             }
+            self.zoomBadgeVisibilityChanged()
         }
+    }
+
+    /// The zoom HUD was shown or hidden (spec 27 B2): the toast's "stay below the
+    /// HUD" rule follows it. A toast already on screen is not moved; the change
+    /// lands when that toast ends or on the next `show`. Do not override the
+    /// badge's `alphaValue` for this: `animator()` calls the Swift setter on a proxy.
+    private func zoomBadgeVisibilityChanged() {
+        toastHost.refreshAvoidance()
     }
 
     /// The user changed the zoom (menu, key, toolbar, double-click,
@@ -2324,7 +2454,7 @@ public final class ViewerContentView: NSView {
 
     internal var zoomBadgeTextForTesting: String { zoomBadge.textForTesting }
     internal var zoomBadgeShownForTesting: Bool { zoomBadge.alphaValue > 0 }
-    internal func hideZoomBadgeForTesting() { zoomBadge.alphaValue = 0 }
+    internal func hideZoomBadgeForTesting() { zoomBadge.alphaValue = 0; zoomBadgeVisibilityChanged() }
     internal var zoomBadgeForTesting: HUDSurfaceView { zoomBadge }
 
     // MARK: - Hover / panel reveal
@@ -2925,5 +3055,27 @@ extension ViewerContentView: MetalImageViewDelegate {
 
     public func metalImageViewDidPresentFirstDrawable(_ view: MetalImageView) {
         ShrikeSignposts.launch.event("viewerFirstDrawable")
+    }
+}
+
+/// Black at `topAlpha` at the top, clear at the bottom, under the titlebar (spec 27 P3-2).
+@MainActor
+final class TitleScrimView: NSView {
+    let topAlpha: CGFloat
+
+    init(topAlpha: CGFloat) {
+        self.topAlpha = topAlpha
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("programmatic only") }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSGradient(starting: NSColor.black.withAlphaComponent(topAlpha), ending: NSColor.black.withAlphaComponent(0))?
+            .draw(in: bounds, angle: 90)
     }
 }

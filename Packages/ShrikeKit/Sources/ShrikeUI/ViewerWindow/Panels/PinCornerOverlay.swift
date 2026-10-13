@@ -9,7 +9,7 @@
 //  Look and behaviour:
 //   * 28×28 pt hit area, SF Symbol at 13 pt.
 //   * Symbol: `pin` (not pinned) / `pin.fill` (pinned).
-//   * Tint: `secondaryLabelColor` (not pinned) / `controlAccentColor` (pinned),
+//   * Tint: `secondaryLabelColor` (not pinned) / `ShrikeAccent.mark` (pinned),
 //     resolved in the HUD's dark appearance in full screen.
 //   * Hover platter: rounded rect, radius 6, 24×24, drawn in
 //     `updateLayer` so it follows appearance changes.
@@ -138,7 +138,7 @@ final class PinCornerOverlay: NSView {
     private func updateTint() {
         // Dynamic system colours: resolved at draw time.
         // Spec 24 §1.4: a pin must read as a pin: accent when pinned.
-        imageView.contentTintColor = isPinned ? .controlAccentColor : .secondaryLabelColor
+        imageView.contentTintColor = isPinned ? ShrikeAccent.mark : .secondaryLabelColor
     }
 
     private var colorObserver: LiveColorObserver?

@@ -143,14 +143,21 @@ final class ViewerSplitController: NSSplitViewController {
 
     // MARK: Edit mode makes room for the tool panel (spec 26 §5)
 
-    /// The canvas needs the tool panel column (280 + 16) plus the crop handle
-    /// margins and a strip of photo. Narrower than this, the inspector steps
-    /// aside while editing (at the 480 pt window minimum the canvas is only
-    /// 240 pt with it open, and the panel would run off the left edge).
-    static let canvasWidthForEditPanel: CGFloat = 360
+    /// The canvas needs the tool panel column (280 + 16), the crop handle
+    /// margins and a photo at least 320 pt wide: `EditLayout.minCanvasWidth`
+    /// (648 pt, spec 27 V7; it was 360 in spec 26 §5). Narrower than this, the
+    /// inspector steps aside while editing.
+    static let canvasWidthForEditPanel: CGFloat = EditLayout.minCanvasWidth
     /// True while this controller has collapsed the inspector for editing.
     private(set) var inspectorCollapsedForEdit = false
     private var isEditing = false
+
+    /// The inspector column's width while it is open (0 when collapsed).
+    var inspectorColumnWidth: CGFloat {
+        guard isInspectorShown else { return 0 }
+        let width = inspectorController.view.frame.width
+        return width > 0 ? width : 280
+    }
 
     /// Edit mode started or ended. On end, an inspector we collapsed returns.
     func editModeChanged(active: Bool) {

@@ -266,6 +266,7 @@ final class CropPanel: NSView {
     internal var _widthField: NSTextField { widthField }
     internal var _heightField: NSTextField { heightField }
     internal var _applyButton: NSButton { applyButton }
+    internal var _resetButton: NSButton { resetButton }
     internal var _thirdsCheckbox: NSButton { thirdsCheckbox }
     internal var _goldenCheckbox: NSButton { goldenCheckbox }
 
