@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.21 to 0.2.22 - 2026-10-19
+### Fixed
+- Release validation no longer leaves generated Python bytecode in the source checkout.
+
 ## 0.2.10 to 0.2.11 - 2026-10-13
 ### Changed
 - The mouse wheel keeps every notch, also when you spin it fast. Before, a quick spin could skip photos.
