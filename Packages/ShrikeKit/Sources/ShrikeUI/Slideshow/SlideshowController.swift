@@ -73,7 +73,7 @@ final class SlideshowController: NSObject, NSWindowDelegate {
         self.presentsOnScreen = presentsOnScreen
         self.playlist = SlideshowPlaylist(count: groups.count, start: start,
                                           random: settings.random, loop: settings.loop)
-        self.queue = services.makeDecodeQueue(preparer: DisplayTextureFactory.preparer)
+        self.queue = services.makeDisplayDecodeQueue()
         super.init()
     }
 
@@ -207,9 +207,11 @@ final class SlideshowController: NSObject, NSWindowDelegate {
             .rating, urls: urls, store: services.metadataStore,
             undoManager: origin?.slideshowUndoManager,
             compute: { Culling.ratingValues(stars, urls: urls, previous: $0) },
-            onChange: { [weak self] values in self?.origin?.slideshowDidChangeCulling(values) }
+            onChange: { [weak self] values in
+                self?.origin?.slideshowDidChangeCulling(values)
+                if let record = values[urls[0]] { self?.toast(Culling.ratingAnnouncement(record.rating)) }
+            }, onFailure: { [weak self] error in self?.toast(CullingUndo.failureMessage(.rating, error: error)) }
         )
-        toast(stars == 0 ? "Rating cleared" : String(repeating: "★", count: stars), glyph: stars > 0)
     }
 
     private func toggleFlagShown() {
@@ -219,15 +221,14 @@ final class SlideshowController: NSObject, NSWindowDelegate {
         let leaders = [group.primary]
         let store = services.metadataStore
         let undo = origin?.slideshowUndoManager
-        Task { @MainActor [weak self] in
-            let was = await store.records(for: [group.primary])[group.primary]?.flagged ?? false
-            CullingUndo.perform(
-                .flag, urls: urls, store: store, undoManager: undo,
-                compute: { Culling.toggledFlagValues(urls: urls, leaders: leaders, previous: $0) },
-                onChange: { [weak self] values in self?.origin?.slideshowDidChangeCulling(values) }
-            )
-            self?.toast(was ? "Flag removed" : "Flagged")
-        }
+        CullingUndo.perform(
+            .flag, urls: urls, store: store, undoManager: undo,
+            compute: { Culling.toggledFlagValues(urls: urls, leaders: leaders, previous: $0) },
+            onChange: { [weak self] values in
+                self?.origin?.slideshowDidChangeCulling(values)
+                if let record = values[group.primary] { self?.toast(Culling.flagAnnouncement(record.flagged)) }
+            }, onFailure: { [weak self] error in self?.toast(CullingUndo.failureMessage(.flag, error: error)) })
+
     }
 
     private func toast(_ text: String, glyph: Bool = false) {
@@ -266,7 +267,9 @@ final class SlideshowController: NSObject, NSWindowDelegate {
                 entry = try await queue.jumpToEntry(index: position)
             } catch {
                 guard let self, generation == self.showGeneration, !self.ended else { return }
-                // Unreadable: skip it after the normal interval.
+                // The failed identity is explicit; no preceding photo remains.
+                self.front?.setImage(nil, sourceID: nil); self.back?.setImage(nil, sourceID: nil)
+                self.toast("Can’t open ‘\(url.lastPathComponent)’. Continuing after the interval.")
                 self.didShow(item: item, url: url)
                 return
             }
@@ -285,7 +288,7 @@ final class SlideshowController: NSObject, NSWindowDelegate {
 
     private func present(_ entry: DecodedImage, animated: Bool) async {
         guard let front, let back else { return }
-        back.setImage(entry.image, sourceID: entry.sourceID, prepared: entry.prepared as? DisplayTexture)
+        back.setImage(entry.image, sourceID: entry.sourceID, prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy)
         applyFit(back, image: entry.image)
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let transition = animated ? settings.transition.effective(reduceMotion: reduceMotion) : .cut

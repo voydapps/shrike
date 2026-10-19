@@ -117,8 +117,8 @@ final class ContactSheetSheetTests: XCTestCase {
 
     func testControlsMapToOptions() {
         let scope = ContactSheetScope(allCount: 180, folderName: "Italy 2026", selectedCount: 12)
-        XCTAssertEqual(scope.allTitle, "All 180 in “Italy 2026”")
-        XCTAssertEqual(scope.selectedTitle, "The 12 selected")
+        XCTAssertEqual(scope.allTitle, "All 180 visible photos in ‘Italy 2026’")
+        XCTAssertEqual(scope.selectedTitle, "12 selected photos")
         let initial = ContactSheetOptions(title: "Italy 2026", columns: 5, paper: .usLetter, caption: .fileName)
         var answer: ContactSheetRequest?
         let sheet = ContactSheetSheet.makeForTesting(scope: scope, initial: initial) { answer = $0 }
@@ -156,7 +156,7 @@ final class ContactSheetSheetTests: XCTestCase {
         XCTAssertEqual(ContactSheetForm.progressText(0.4), "Making contact sheet… 40%")
         XCTAssertEqual(ContactSheetForm.savedText("Italy 2026 contact sheet.pdf"),
                        "Saved “Italy 2026 contact sheet.pdf”.")
-        XCTAssertEqual(ContactSheetScope(allCount: 3, folderName: "", selectedCount: 0).allTitle, "All 3 images")
+        XCTAssertEqual(ContactSheetScope(allCount: 3, folderName: "", selectedCount: 0).allTitle, "All 3 visible photos")
     }
 
     // MARK: 180 images

@@ -19,8 +19,14 @@ extension ViewerWindow {
         coordinator.presentAlert = { [weak self] title, info, buttons in
             await self?.presentFileAlert(message: title, information: info, buttons: buttons)
         }
-        coordinator.showToast = { [weak self] content, action in
-            self?.contentRoot.toast(content, action: action)
+        coordinator.showProgressToast = { [weak self] content in
+            self?.contentRoot.toastHost.showProgress(content)
+        }
+        coordinator.updateProgressToast = { [weak self] content, ticket in
+            self?.contentRoot.toastHost.updateProgress(content, matching: ticket)
+        }
+        coordinator.dismissProgressToast = { [weak self] ticket in
+            self?.contentRoot.toastHost.dismissProgress(matching: ticket)
         }
         coordinator.onHUDPick = { [weak self] verb, choice in
             self?.clearChord()

@@ -19,6 +19,10 @@ public final class ThumbnailItem: NSCollectionViewItem {
 
     // MARK: - Identifier
 
+    var imageResources: ImageResourceBudget = .shared
+    private let imageResourceOwner = ImageResourceOwner()
+    private var imageLease: ImageResourceLease?
+
     public static let reuseIdentifier = NSUserInterfaceItemIdentifier("Browser.ThumbnailItem")
 
     // MARK: - Geometry
@@ -29,7 +33,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
     static let cardRadius: CGFloat = 10
     static let ringRadius: CGFloat = 13
     static let nameFontSize: CGFloat = 12
-    static let capsuleHeight: CGFloat = 18
+    static var capsuleHeight: CGFloat { Prefs.largerChrome ? 22 : 18 }
     static let capsulePadding: CGFloat = 6
     /// "Can't preview" shows only on cells at least this wide.
     static let failureTextMinWidth: CGFloat = 96
@@ -130,7 +134,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
 
         failureIcon.image = Badges.brokenFileGlyph(pointSize: 20)
         failureIcon.contentTintColor = Badges.brokenFileTint
-        failureLabel.font = .systemFont(ofSize: 11)
+        failureLabel.font = ChromeTypography.font(11)
         failureLabel.textColor = .secondaryLabelColor
         failureLabel.alignment = .center
         failureStack.orientation = .vertical
@@ -149,7 +153,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
         root.addSubview(nameCapsule)
 
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
-        nameLabel.font = .systemFont(ofSize: Self.nameFontSize)
+        nameLabel.font = ChromeTypography.font(Self.nameFontSize)
         nameLabel.textColor = .labelColor
         nameLabel.maximumNumberOfLines = 1
         nameLabel.lineBreakMode = .byClipping
@@ -277,7 +281,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
             // Capsule: 18 pt high, 6 pt side padding, never wider than
             // the cell; the name truncates in the middle inside it.
             nameCapsule.topAnchor.constraint(equalTo: ringView.bottomAnchor, constant: 4),
-            nameCapsule.heightAnchor.constraint(equalToConstant: Self.capsuleHeight),
+            ChromeTypography.scaled(nameCapsule.heightAnchor.constraint(equalToConstant: Self.capsuleHeight), normal: 18, large: 22),
             nameCapsule.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             nameCapsule.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor),
             nameCapsule.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor),
@@ -315,6 +319,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
         loadTask?.cancel()
         loadTask = nil
         thumbnailView.image = nil
+        imageLease = nil
         thumbnailView.layer?.removeAnimation(forKey: Self.fadeInKey)
         nameLabel.fullName = ""
         applyBadges(ItemBadges())
@@ -425,6 +430,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
     /// Shows the decoded thumbnail with a fade: 80 ms,
     /// ease-out; at once under Reduce Motion.
     func showThumbnail(_ image: CGImage, animated: Bool = true) {
+        imageLease = imageResources.retain(image: image, owner: imageResourceOwner, category: .thumbnail)
         let size = NSSize(width: image.width, height: image.height)
         thumbnailView.image = NSImage(cgImage: image, size: size)
         guard animated, !ReduceMotion.isOn, let layer = thumbnailView.layer else { return }

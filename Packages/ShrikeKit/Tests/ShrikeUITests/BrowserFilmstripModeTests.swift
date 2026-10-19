@@ -62,17 +62,34 @@ final class BrowserFilmstripModeTests: XCTestCase {
     func testFilmstripIsOnePreviewOnTopAndOneFixedHeightRowBelow() async throws {
         let browser = try await makeBrowser(count: 41)
         defer { browser.close() }
+        // This case checks local preview/row geometry within usable content.
+        // Full-size native toolbar exclusion is covered by the production
+        // BrowserFilterStripCollapseTests window/search-field regression.
+        let window = try XCTUnwrap(browser.window)
+        let toolbar = try XCTUnwrap(window.toolbar)
+        toolbar.autosavesConfiguration = false
+        toolbar.isVisible = true
+        window.styleMask.remove(.fullSizeContentView)
         let content = browser.contentController
         content.setMode(.filmstrip)
         content.view.frame = NSRect(x: 0, y: 0, width: 1000, height: 700)
         content.view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(toolbar.isVisible, "The real native toolbar remains shown")
+        XCTAssertEqual(content.view.safeAreaInsets.top, 0, accuracy: 0.5,
+                       "The local geometry fixture starts below native chrome")
 
         let layout = try XCTUnwrap(content.collectionViewForTesting.collectionViewLayout as? NSCollectionViewFlowLayout)
         XCTAssertEqual(layout.scrollDirection, .horizontal)
 
         let strip = content.filmstripStripFrameForTesting
-        XCTAssertEqual(strip.height, BrowserContentViewController.filmstripStripHeight, accuracy: 0.5,
-                       "a fixed height, not the whole content area")
+        let scroll = content.gridScrollViewForTesting
+        let nativeFrame = NSScrollView.frameSize(forContentSize: NSSize(width: 1, height: 162),
+            horizontalScrollerClass: scroll.horizontalScroller.map { type(of: $0) } ?? NSScroller.self,
+            verticalScrollerClass: nil, borderType: scroll.borderType,
+            controlSize: scroll.horizontalScroller?.controlSize ?? .regular, scrollerStyle: .legacy)
+        let expected = max(BrowserContentViewController.filmstripStripHeight, ceil(nativeFrame.height))
+        XCTAssertEqual(strip.height, expected, accuracy: 0.5,
+                       "one fixed row plus actual native scroller space, not the whole content area")
         XCTAssertEqual(strip.minY, 0, accuracy: 0.5, "the strip sits at the bottom")
         let preview = content.filmstripPreviewFrameForTesting
         XCTAssertEqual(preview.minY, strip.maxY, accuracy: 0.5, "the preview is right above the strip")
@@ -89,6 +106,46 @@ final class BrowserFilmstripModeTests: XCTestCase {
         XCTAssertEqual(attributes[0].frame.height, BrowserContentViewController.filmstripItemSize.height, accuracy: 0.5)
         XCTAssertGreaterThan(collection.frame.width, strip.width, "the row scrolls horizontally")
         XCTAssertLessThanOrEqual(collection.frame.height, strip.height + 0.5, "no vertical scrolling")
+    }
+
+    func testNativeScrollerStylesKeepFullRowAndSelectedNameVisibleAcrossResize() async throws {
+        let browser = try await makeBrowser(count: 12)
+        defer { browser.close() }
+        let content = browser.contentController
+        let scroll = content.gridScrollViewForTesting
+        let collection = content.collectionViewForTesting
+        let selected = content.visibleItems[4].url
+        XCTAssertTrue(content.select(url: selected))
+        content.setMode(.filmstrip)
+        for style in [NSScroller.Style.legacy, .overlay, .legacy] {
+            scroll.scrollerStyle = style
+            XCTAssertGreaterThanOrEqual(scroll.contentView.bounds.height, 162, "Live native retile must fit before any owner layout")
+            XCTAssertGreaterThanOrEqual(collection.bounds.height, 162)
+            for width: CGFloat in [1000, 800] {
+                browser.window?.setContentSize(NSSize(width: width, height: 700))
+                browser.splitController.splitViewItems[2].isCollapsed = width == 1000
+                for _ in 0..<3 { browser.window?.contentView?.superview?.layoutSubtreeIfNeeded() }
+                let layout = try XCTUnwrap(collection.collectionViewLayout as? NSCollectionViewFlowLayout)
+                let required = layout.itemSize.height + layout.sectionInset.top + layout.sectionInset.bottom
+                XCTAssertGreaterThanOrEqual(scroll.contentView.bounds.height, required,
+                    "Actual clip must fit the complete unchanged item and both section insets")
+                XCTAssertGreaterThanOrEqual(collection.bounds.height, required)
+                XCTAssertEqual(layout.itemSize, BrowserContentViewController.filmstripItemSize)
+                XCTAssertEqual(content.selectedItems.map(\.url), [selected])
+                let index = try XCTUnwrap(content.visibleItems.firstIndex { $0.url == selected })
+                let path = IndexPath(item: index, section: 0)
+                let itemFrame = try XCTUnwrap(collection.layoutAttributesForItem(at: path)).frame
+                let contained = await waitUntil { scroll.contentView.bounds.contains(itemFrame) }
+                XCTAssertTrue(contained, "Selected image follows resizing and inspector width")
+                let cell = try XCTUnwrap(collection.item(at: path) as? ThumbnailItem)
+                let name = cell.view.convert(cell.nameCapsuleFrameForTesting, to: scroll.contentView)
+                XCTAssertTrue(scroll.contentView.bounds.contains(name), "The selected name clears the scroller")
+            }
+        }
+        content.setMode(.grid); content.setMode(.filmstrip)
+        for _ in 0..<3 { browser.window?.contentView?.superview?.layoutSubtreeIfNeeded() }
+        XCTAssertEqual(content.selectedItems.map(\.url), [selected])
+        XCTAssertGreaterThanOrEqual(scroll.contentView.bounds.height, 162)
     }
 
     func testArrowKeysMoveTheSelectionAndThePreviewFollows() async throws {

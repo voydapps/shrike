@@ -2,9 +2,9 @@
 //  ViewerTitleScrim028Tests.swift
 //  ShrikeUITests
 //
-//  Spec 27 P3-2: a dark top scrim behind the title block while the photo runs
-//  under the titlebar (zoomed in, or filling the window); none at Fit when the
-//  photo sits below it, and none in edit mode.
+//  Native title contrast: one opaque, appearance-matched backing belongs to
+//  the native chrome, independently of image zoom or edit canvas placement.
+//  The original case identities retain their image-overlap regression checks.
 //
 
 import AppKit
@@ -22,6 +22,8 @@ final class ViewerTitleScrim028Tests: XCTestCase {
     private var dir: URL!
     private var savedAutoHide = false
     private var savedInspector = false
+    private let filmstripKey = "shrike.viewer.filmstrip.visibleInWindowed"
+    private var savedFilmstripPreference: Any?
 
     override func setUp() async throws {
         dir = FileManager.default.temporaryDirectory
@@ -29,7 +31,11 @@ final class ViewerTitleScrim028Tests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedAutoHide = Prefs.viewerToolbarAutoHide
         savedInspector = Prefs.viewerInspectorVisibleWindowed
-        Prefs.viewerToolbarAutoHide = false
+        savedFilmstripPreference = ShrikeDefaults.store.object(forKey: filmstripKey)
+        // The original Fit/nonoverlap case requires the full-height canvas.
+        // A visible strip is covered separately against its actual Fit area.
+        Prefs.filmstripVisibleInWindowed = false
+        Prefs.viewerToolbarAutoHide = true
         Prefs.viewerInspectorVisibleWindowed = false
         MetalImageView.reduceMotionOverrideForTesting = true
         ReduceMotion.overrideForTesting = true
@@ -38,12 +44,19 @@ final class ViewerTitleScrim028Tests: XCTestCase {
     override func tearDown() async throws {
         Prefs.viewerToolbarAutoHide = savedAutoHide
         Prefs.viewerInspectorVisibleWindowed = savedInspector
+        if let savedFilmstripPreference {
+            ShrikeDefaults.store.set(savedFilmstripPreference, forKey: filmstripKey)
+        } else {
+            ShrikeDefaults.store.removeObject(forKey: filmstripKey)
+        }
+        XCTAssertEqual(ShrikeDefaults.store.object(forKey: filmstripKey) as? NSObject,
+                       savedFilmstripPreference as? NSObject, "Restore the exact preference object or absence")
         MetalImageView.reduceMotionOverrideForTesting = nil
         ReduceMotion.overrideForTesting = nil
         try? FileManager.default.removeItem(at: dir)
     }
 
-    private func makeViewer() async throws -> ViewerWindow {
+    private func makeViewer(toolbarShown: Bool = true) async throws -> ViewerWindow {
         let cs = CGColorSpace(name: CGColorSpace.sRGB)!
         let ctx = CGContext(data: nil, width: 4000, height: 2000, bitsPerComponent: 8, bytesPerRow: 0,
                             space: cs, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
@@ -57,17 +70,26 @@ final class ViewerTitleScrim028Tests: XCTestCase {
         let meta = MetadataStore.openWithFallback(primary: dir.appendingPathComponent("meta.sqlite"), fallback: nil)
         let services = ShrikeServices(thumbnailCache: thumbs, metadataStore: meta)
         let window = ViewerWindow(imageSources: [FileImageSource(url: url)], startIndex: 0, services: services)
+        // Per-instance control avoids inheriting another test's toolbar state
+        // and never changes the native toolbar's global autosaved defaults.
+        let toolbar = try XCTUnwrap(window.toolbar)
+        toolbar.autosavesConfiguration = false
+        toolbar.isVisible = toolbarShown
         window.setContentSize(NSSize(width: 900, height: 600))
-        window.contentView?.layoutSubtreeIfNeeded()
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(toolbar.isVisible, toolbarShown)
+        XCTAssertFalse(toolbar.autosavesConfiguration)
         let view = window.imageViewForTesting
         let deadline = Date().addingTimeInterval(8)
         while Date() < deadline, !(view.image != nil && !view.isCurrentImagePlaceholder && view.sourcePixelSize != nil) {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        window.contentView?.layoutSubtreeIfNeeded()
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
         return window
     }
 
+    /// The historical case name is retained; the translucent image scrim recipe
+    /// was superseded by an opaque native band in the contrast specification.
     func testScrimShowsWhenTheZoomedPhotoRunsUnderTheTitlebarAndNotAtFit() async throws {
         let viewer = try await makeViewer()
         defer { viewer.close() }
@@ -75,28 +97,22 @@ final class ViewerTitleScrim028Tests: XCTestCase {
         let view = viewer.imageViewForTesting
         content.layoutSubtreeIfNeeded()
         XCTAssertFalse(content.imageOverlapsTitlebar, "at Fit the photo sits below the titlebar")
-        XCTAssertFalse(content.titleScrimIsShownForTesting)
+        assertNativeBand(viewer)
 
         view.setPixelScale(1.0, anchor: CGPoint(x: view.bounds.midX, y: view.bounds.midY))
         view.finishZoomAnimationForTesting()
         content.layoutSubtreeIfNeeded()
         XCTAssertTrue(content.imageOverlapsTitlebar, "at 100 % the photo is taller than the window")
-        XCTAssertTrue(content.titleScrimIsShownForTesting)
-        let scrim = try XCTUnwrap(content.titleScrimForTesting)
-        XCTAssertEqual(scrim.topAlpha, 0.5, accuracy: 0.001, "black 0.5 at the top")
-        XCTAssertEqual(scrim.alphaValue, 1, accuracy: 0.01)
-        content.layoutSubtreeIfNeeded()
-        XCTAssertEqual(scrim.frame.height, content.safeAreaInsets.top + 24, accuracy: 0.5, "titlebar + 24 pt")
-        XCTAssertEqual(scrim.frame.maxY, content.bounds.maxY, accuracy: 0.5, "from the window top")
-        XCTAssertNil(scrim.hitTest(NSPoint(x: 10, y: 10)), "never takes a click")
+        assertNativeBand(viewer)
 
         view.zoomToFit()
         view.finishZoomAnimationForTesting()
         content.layoutSubtreeIfNeeded()
-        XCTAssertFalse(content.titleScrimIsShownForTesting, "back at Fit it goes")
-        XCTAssertEqual(scrim.alphaValue, 0, accuracy: 0.01)
+        XCTAssertFalse(content.imageOverlapsTitlebar, "back at Fit the photo clears the titlebar")
+        assertNativeBand(viewer)
     }
 
+    /// No separate image-overlap scrim in Edit; the native chrome stays backed.
     func testNoScrimInEditMode() async throws {
         let viewer = try await makeViewer()
         defer { viewer.close() }
@@ -105,11 +121,128 @@ final class ViewerTitleScrim028Tests: XCTestCase {
         view.setPixelScale(1.0, anchor: CGPoint(x: view.bounds.midX, y: view.bounds.midY))
         view.finishZoomAnimationForTesting()
         content.layoutSubtreeIfNeeded()
-        XCTAssertTrue(content.titleScrimIsShownForTesting)
+        XCTAssertTrue(content.imageOverlapsTitlebar)
+        assertNativeBand(viewer)
         content.enterEditMode(image: SaveFlowTests.image(), url: nil, landOn: nil)
         content.layoutSubtreeIfNeeded()
         XCTAssertFalse(content.imageOverlapsTitlebar)
-        XCTAssertFalse(content.titleScrimIsShownForTesting, "the edit toolbar is opaque glass")
+        assertNativeBand(viewer)
         content.editModeController.finalizeExit()
+        assertNativeBand(viewer)
+    }
+
+    func testNativeBandIsOpaqueInBothAppearancesAndTracksNativeLayoutAndVisibility() async throws {
+        let viewer = try await makeViewer()
+        defer { viewer.close() }
+        let hider = try XCTUnwrap(viewer.autoHider)
+        let container = try XCTUnwrap(hider.container)
+        let toolbar = try XCTUnwrap(viewer.toolbar)
+        let content = viewer.contentRootForTesting
+        let view = viewer.imageViewForTesting
+        var nativeBandHeights: [Bool: CGFloat] = [:]
+        for stripShown in [false, true] {
+            if Prefs.filmstripVisibleInWindowed != stripShown { content.togglePanel(.filmstrip) }
+            for toolbarShown in [false, true] {
+                toolbar.isVisible = toolbarShown
+                for name in [NSAppearance.Name.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua] {
+                    viewer.appearance = try XCTUnwrap(NSAppearance(named: name))
+                    for size in [NSSize(width: 900, height: 600), NSSize(width: 720, height: 480)] {
+                        viewer.setContentSize(size)
+                        viewer.contentView?.superview?.layoutSubtreeIfNeeded()
+                        view.zoomToFit()
+                        view.finishZoomAnimationForTesting()
+                        content.layoutSubtreeIfNeeded()
+                        XCTAssertEqual(toolbar.isVisible, toolbarShown)
+                        XCTAssertFalse(toolbar.autosavesConfiguration)
+                        XCTAssertEqual(content.filmstripForTesting.isHidden, !stripShown)
+                        XCTAssertTrue(view.isAtFit)
+                        XCTAssertTrue(view.fitArea.insetBy(dx: -0.5, dy: -0.5).contains(view.drawnImageRect),
+                                      "Fit remains within its canvas even when auto-hide lets it overlap native chrome")
+                        XCTAssertEqual(view.frame.maxY, content.bounds.maxY, accuracy: 0.5)
+                        XCTAssertEqual(view.frame.minY, stripShown ? content.filmstripForTesting.frame.maxY : 0, accuracy: 0.5)
+                        nativeBandHeights[toolbarShown] = container.bounds.height
+                        let imageFrame = viewer.imageViewForTesting.frame
+                        let imageRect = viewer.imageViewForTesting.drawnImageRect
+                        assertNativeBand(viewer)
+                        let backing = try XCTUnwrap(viewer.titlebarScrim)
+                        XCTAssertEqual(backing.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]),
+                                       container.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]))
+                        let rep = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 3,
+                            pixelsHigh: 3, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+                        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+                        var expected: NSColor!
+                        NSGraphicsContext.saveGraphicsState()
+                        NSGraphicsContext.current = context
+                        backing.effectiveAppearance.performAsCurrentDrawingAppearance {
+                            expected = NSColor.windowBackgroundColor.usingColorSpace(.deviceRGB)
+                            context.cgContext.scaleBy(x: 3 / backing.bounds.width, y: 3 / backing.bounds.height)
+                            backing.draw(backing.bounds)
+                        }
+                        NSGraphicsContext.restoreGraphicsState()
+                        for (x, y) in [(0, 0), (1, 1), (2, 2)] {
+                            let actual = try XCTUnwrap(rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+                            XCTAssertEqual(actual.alphaComponent, 1, accuracy: 1 / 255, "No photo may show through the native band")
+                            XCTAssertEqual(actual.redComponent, expected.redComponent, accuracy: 1 / 255)
+                            XCTAssertEqual(actual.greenComponent, expected.greenComponent, accuracy: 1 / 255)
+                            XCTAssertEqual(actual.blueComponent, expected.blueComponent, accuracy: 1 / 255)
+                        }
+                        XCTAssertEqual(viewer.imageViewForTesting.frame, imageFrame)
+                        XCTAssertEqual(viewer.imageViewForTesting.drawnImageRect, imageRect)
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(try XCTUnwrap(nativeBandHeights[true]), try XCTUnwrap(nativeBandHeights[false]),
+                             "Exercise the complete shown toolbar band as well as the title-only band")
+        print("Native band geometry: toolbar shown \(try XCTUnwrap(nativeBandHeights[true])) pt, hidden \(try XCTUnwrap(nativeBandHeights[false])) pt; strip on/off Fit containment verified")
+        hider.hideForTesting()
+        XCTAssertTrue(container.isHidden)
+        XCTAssertTrue(try XCTUnwrap(viewer.titlebarScrim).isDescendant(of: container),
+                      "The band must disappear with native chrome, without a second fade")
+        hider.show(animated: false)
+        XCTAssertFalse(container.isHidden)
+        XCTAssertEqual(container.alphaValue, 1)
+        assertNativeBand(viewer)
+    }
+
+    func testNativeBandIsRemovedForFullscreenAndRestoredWithTheNativeToolbar() async throws {
+        let viewer = try await makeViewer()
+        defer { viewer.close() }
+        assertNativeBand(viewer)
+        NotificationCenter.default.post(name: NSWindow.willEnterFullScreenNotification, object: viewer)
+        XCTAssertNil(viewer.titlebarScrim, "Fullscreen uses its separate bottom HUD")
+        NotificationCenter.default.post(name: NSWindow.willExitFullScreenNotification, object: viewer)
+        NotificationCenter.default.post(name: NSWindow.didExitFullScreenNotification, object: viewer)
+        viewer.contentView?.superview?.layoutSubtreeIfNeeded()
+        assertNativeBand(viewer)
+    }
+
+    func testAutoHideOffUsesTheNativeOpaqueTitlebarWithoutAnImageGradient() async throws {
+        Prefs.viewerToolbarAutoHide = false
+        for toolbarShown in [false, true] {
+            let viewer = try await makeViewer(toolbarShown: toolbarShown)
+            defer { viewer.close() }
+            XCTAssertFalse(viewer.titlebarAppearsTransparent)
+            XCTAssertNil(viewer.titlebarScrim, "AppKit supplies the opaque backing when auto-hide is off")
+            let view = viewer.imageViewForTesting
+            view.setPixelScale(1, anchor: CGPoint(x: view.bounds.midX, y: view.bounds.midY))
+            view.finishZoomAnimationForTesting()
+            viewer.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertNil(viewer.titlebarScrim)
+        }
+    }
+
+    private func assertNativeBand(_ viewer: ViewerWindow, file: StaticString = #filePath, line: UInt = #line) {
+        guard let backing = viewer.titlebarScrim, let container = viewer.autoHider?.container else {
+            XCTFail("The native chrome requires its own opaque backing", file: file, line: line)
+            return
+        }
+        XCTAssertTrue(backing.isOpaque, "Native text requires a fully opaque plateau", file: file, line: line)
+        XCTAssertTrue(backing.superview === container, "Backing must share native chrome layout and animation", file: file, line: line)
+        XCTAssertEqual(backing.frame, container.bounds, "Cover the entire measured native band", file: file, line: line)
+        XCTAssertEqual(backing.alphaValue, 1, accuracy: 0.001, file: file, line: line)
+        XCTAssertNil(backing.hitTest(NSPoint(x: backing.bounds.midX, y: backing.bounds.midY)),
+                     "Never take a native chrome click", file: file, line: line)
     }
 }

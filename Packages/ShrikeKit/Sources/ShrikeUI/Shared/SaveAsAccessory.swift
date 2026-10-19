@@ -62,7 +62,7 @@ final class SaveAsAccessory: NSView {
         self.panel = panel
         super.init(frame: NSRect(x: 0, y: 0, width: 360, height: 10))
 
-        messageLabel.font = .systemFont(ofSize: 11)
+        messageLabel.font = ChromeTypography.font(11)
         messageLabel.textColor = .secondaryLabelColor
         messageLabel.maximumNumberOfLines = 2
         messageLabel.stringValue = message ?? ""

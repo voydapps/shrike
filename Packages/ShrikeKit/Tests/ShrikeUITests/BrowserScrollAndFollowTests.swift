@@ -13,6 +13,7 @@ import AppKit
 import ImageIO
 import UniformTypeIdentifiers
 import XCTest
+import ShrikeRendering
 @testable import ShrikeCore
 @testable import ShrikeIO
 @testable import ShrikeUI
@@ -23,8 +24,13 @@ final class BrowserScrollAndFollowTests: XCTestCase {
     private var root: URL!
     private var dir: URL!
     private var fakeTrash: URL!
+    private var savedReduceMotion: Bool?
 
     override func setUp() async throws {
+        savedReduceMotion = ReduceMotion.overrideForTesting
+        // Hidden test windows do not service NSClipView's scroll animator.
+        // Assert final scroll geometry here; native QA covers normal motion.
+        ReduceMotion.overrideForTesting = true
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("shrike-bscroll-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Folder", isDirectory: true)
@@ -34,6 +40,7 @@ final class BrowserScrollAndFollowTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        ReduceMotion.overrideForTesting = savedReduceMotion
         try? FileManager.default.removeItem(at: root)
     }
 

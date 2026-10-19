@@ -71,7 +71,7 @@ final class RAWSwitchTests: XCTestCase {
         let window = ViewerWindow(groups: [pair, single], startIndex: 0, services: .makeDefault())
         window.setContentSize(NSSize(width: 800, height: 600))
         let shown = await waitUntil {
-            window.displayedItem?.group.primary == p1
+            window.canPerform(.editImage) && window.displayedItem?.group.primary == p1
                 && window.contentRootForTesting.imageView.image != nil
                 && !window.contentRootForTesting.imageView.isCurrentImagePlaceholder
         }
@@ -120,7 +120,7 @@ final class RAWSwitchTests: XCTestCase {
         let landed = await waitUntil { window.displayedItem?.isRAWShown == true }
         XCTAssertTrue(landed)
         window.perform(.toggleRAWFile)
-        let back = await waitUntil { window.displayedItem?.isRAWShown == false }
+        let back = await waitUntil { window.displayedItem?.isRAWShown == false && window.canPerform(.editImage) }
         XCTAssertTrue(back)
         XCTAssertTrue(window.canPerform(.editImage))
     }
@@ -149,7 +149,7 @@ final class RAWSwitchTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(editItem.toolTip).hasSuffix("\n" + ViewerWindow.rawEditBlockedCopy),
                       "the Edit button's tooltip carries the reason: \(editItem.toolTip ?? "nil")")
         window.perform(.toggleRAWFile)
-        let off = await waitUntil { window.displayedItem?.shownURL == pair.primary }
+        let off = await waitUntil { window.displayedItem?.shownURL == pair.primary && window.canPerform(.editImage) }
         XCTAssertTrue(off)
         XCTAssertFalse(window.contentRootForTesting.editBlockedByRAW)
         XCTAssertFalse(try XCTUnwrap(editItem.toolTip).contains("\n"), "the reason is gone on the JPEG")

@@ -87,19 +87,22 @@ public struct DecodedImage: Sendable {
     /// True when `image` holds no decoded pixels yet (a lazy twin from
     /// `FileImageSource.lazyDisplayImage`; the texture carries the photo).
     public let imageIsLazy: Bool
+    public let resourceLease: ImageResourceLease?
 
     public init(
         sourceID: String,
         image: CGImage,
         prepared: (any PreparedDisplayImage)? = nil,
         requestedLongEdge: Int? = nil,
-        imageIsLazy: Bool = false
+        imageIsLazy: Bool = false,
+        resourceLease: ImageResourceLease? = nil
     ) {
         self.sourceID = sourceID
         self.image = image
         self.prepared = prepared
         self.requestedLongEdge = requestedLongEdge
         self.imageIsLazy = imageIsLazy
+        self.resourceLease = resourceLease
     }
 
     /// Resident bytes: CPU pixels (unless lazy) plus prepared (GPU) bytes.
@@ -223,6 +226,9 @@ public actor DecodeQueue {
     /// `sharedByteBudget`.
     private let ledger: DecodeMemoryLedger
     private let sharedByteBudget: Int
+    public nonisolated let resources: ImageResourceBudget
+    public nonisolated let resourceOwner: ImageResourceOwner
+    private var pressureObservation: ImagePressureObservation?
 
     public init(
         windowRadius: Int = 2,
@@ -231,7 +237,9 @@ public actor DecodeQueue {
         preparer: DisplayPreparer? = nil,
         ledger: DecodeMemoryLedger = .shared,
         sharedByteBudget: Int = DecodeMemoryLedger.defaultSharedBudget,
-        idleTrimDelay: Duration? = .seconds(3)
+        idleTrimDelay: Duration? = .seconds(3),
+        resources: ImageResourceBudget = .shared,
+        resourceOwner: ImageResourceOwner = .init()
     ) {
         self.idleTrimDelay = idleTrimDelay
         self.windowRadius = max(1, windowRadius)
@@ -240,6 +248,7 @@ public actor DecodeQueue {
         self.preparer = preparer
         self.ledger = ledger
         self.sharedByteBudget = sharedByteBudget
+        self.resources = resources; self.resourceOwner = resourceOwner
     }
 
     deinit {
@@ -249,6 +258,7 @@ public actor DecodeQueue {
     /// Background (not the key window): keep only the current photo and
     /// drop the neighbours; foreground again: prefetch them again.
     public func setBackground(_ background: Bool) {
+        observeResourcePressure()
         guard background != isBackground else { return }
         isBackground = background
         if !list.isEmpty { schedule(around: currentIndex) }
@@ -262,6 +272,18 @@ public actor DecodeQueue {
     private func reportBytes() {
         ledger.set(ObjectIdentifier(self), bytes: cachedBytes())
         publishReadyCurrent()
+    }
+
+    private func observeResourcePressure() {
+        guard pressureObservation == nil else { return }
+        pressureObservation = resources.observePressure { [weak self] pressure in
+            guard pressure != .normal else { return }
+            Task { await self?.relieveResourcePressure() }
+        }
+    }
+    private func relieveResourcePressure() {
+        compactWindow = true
+        if !list.isEmpty { schedule(around: currentIndex) }
     }
 
     // MARK: - Configuration
@@ -446,6 +468,8 @@ public actor DecodeQueue {
     /// check in `install`. (Closed windows used to keep
     /// their caches while anything still referenced the queue.)
     public func purge() {
+        pressureObservation?.cancel()
+        pressureObservation = nil
         idleTrimTask?.cancel()
         idleTrimTask = nil
         fullResTask?.cancel()
@@ -462,6 +486,8 @@ public actor DecodeQueue {
         dimensionLRU.removeAll()
         reportBytes()
         readyCurrent.withLockUnchecked { $0 = nil }
+        // Restart the quiet period after releasing the queue's cached buffers.
+        MemoryRelief.schedule()
     }
 
     /// Full-resolution image of the photo at `index`, for zoom past the
@@ -486,14 +512,22 @@ public actor DecodeQueue {
         let source = list[index]
         let id = source.id
         let preparer = self.preparer
+        let resources = self.resources, owner = resourceOwner
         fullResTask?.cancel()
         let state = ShrikeSignposts.decode.begin("loadFullResolution", "index=\(index)")
         let task = Task.detached(priority: .userInitiated) { () throws -> DecodedImage in
+            let estimate = try await Self.workingSet(for: source, target: nil)
+            let reservation = try await resources.reserve(bytes: estimate, owner: owner, category: .decodeWork,
+                                                          priority: .visible, policy: .requiredImage)
             guard let file = source as? FileImageSource else {
                 let img = try await source.loadCGImage(maxPixelSize: nil)
-                return DecodedImage(sourceID: id, image: img, prepared: preparer?.prepare(img, nil))
+                return withExtendedLifetime(reservation) {
+                    DecodedImage(sourceID: id, image: img, prepared: preparer?.prepare(img, nil))
+                        .retaining(in: resources, owner: owner, category: .fullResolution)
+                }
             }
             return try await DecodeLane.fullResolution.runInterruptible { isCancelled in
+                defer { withExtendedLifetime(reservation) {} }
                 // Upright + texture: the texture builder decodes the lazy
                 // image itself, once (fastest, see
                 // `uprightFullResolutionImage`); the caller gets a lazy
@@ -504,16 +538,23 @@ public actor DecodeQueue {
                         let twin = file.uprightFullResolutionImage(cacheDecoded: true) ?? source
                         return DecodedImage(sourceID: id, image: twin, prepared: prepared,
                                             requestedLongEdge: nil, imageIsLazy: true)
+                            .retaining(in: resources, owner: owner, category: .fullResolution)
                     }
                 }
                 if isCancelled() { throw CancellationError() }
                 let img = try file.decodeFullResolution(isCancelled: isCancelled)
                 if isCancelled() { throw CancellationError() }
                 return DecodedImage(sourceID: id, image: img, prepared: preparer?.prepare(img, nil),
-                                    requestedLongEdge: nil)
+                                    requestedLongEdge: nil).retaining(in: resources, owner: owner, category: .fullResolution)
             }
         }
         fullResTask = task
+        defer {
+            // A completed task retains its result. Keep only the active
+            // cancellation handle, so returning to Fit can release the
+            // full-size image. An older call must not clear a newer task.
+            if fullResTask == task { fullResTask = nil }
+        }
         do {
             let entry = try await withTaskCancellationHandler {
                 try await task.value
@@ -565,6 +606,19 @@ public actor DecodeQueue {
     func spawnedIndicesForTesting() -> [Int] { spawnedForTesting }
     func inFlightIDs() -> Set<String> { Set(inFlight.keys) }
     func wantedIDs() -> Set<String> { wanted }
+
+    #if DEBUG
+    /// Failure-only ownership/lifetime diagnostics for integration tests.
+    /// One actor snapshot avoids mixing state from different replans.
+    func stateForTesting() -> String {
+        let cached = cache.keys.sorted().map { id in
+            guard let entry = cache[id] else { return id }
+            let requested = entry.requestedLongEdge.map { String($0) } ?? "nil"
+            return "\(id){pixels=\(entry.image.width)x\(entry.image.height),requested=\(requested),prepared=\(entry.prepared != nil)}"
+        }
+        return "queue currentIndex=\(currentIndex) currentID=\(currentID ?? "nil") sourceCount=\(list.count) sourceIDs=\(list.map(\.id)) wanted=\(wanted.sorted()) cached=\(cached) inFlight=\(inFlight.keys.sorted()) spawned=\(spawnedForTesting) background=\(isBackground) compact=\(compactWindow) generation=\(generation) maxLongEdge=\(effectiveMaxLongEdge) pressure=\(resources.snapshot().pressure)"
+    }
+    #endif
 
     // MARK: - Window
 
@@ -627,7 +681,11 @@ public actor DecodeQueue {
         let estimate = estimatedBytes()
         // Far neighbours must fit this window's budget AND what the other
         // windows leave of the shared one.
-        var budgetLeft = min(byteBudget, max(0, sharedByteBudget - ledger.others(than: ObjectIdentifier(self))))
+        observeResourcePressure()
+        let sharedAvailable = ledger === DecodeMemoryLedger.shared
+            ? resources.availableBytes(excluding: resourceOwner)
+            : max(0, sharedByteBudget - ledger.others(than: ObjectIdentifier(self))) // legacy isolated cache-policy tests
+        var budgetLeft = min(byteBudget, min(sharedByteBudget, sharedAvailable))
         var keep: [String] = []
         var toStart: [Int] = []
         for (rank, i) in windowOrder(around: index).enumerated() {
@@ -688,6 +746,8 @@ public actor DecodeQueue {
         let target = targetPixelSize(for: index)
         let preparer = self.preparer
         let lane = self.lane
+        let resources = self.resources, owner = resourceOwner
+        let required = abs(index - currentIndex) <= 1
         let format: ImageFormat? = (source as? FileImageSource).flatMap { ImageFormat(url: $0.url) }
 
         // Cold open: the app may have started this file's decode before
@@ -706,16 +766,32 @@ public actor DecodeQueue {
                     ShrikeSignposts.decode.event("handoffTaken")
                     return DecodedImage(
                         sourceID: id, image: early.image, prepared: early.prepared,
-                        requestedLongEdge: early.requestedLongEdge, imageIsLazy: early.imageIsLazy
-                    )
+                        requestedLongEdge: early.requestedLongEdge, imageIsLazy: early.imageIsLazy,
+                        resourceLease: early.resourceLease
+                    ).retaining(in: resources, owner: owner, category: .displayCache)
                 }
             }
             try Task.checkCancellation()
+            let estimate = try await Self.workingSet(for: source, target: target)
+            let reservation: ImageWorkReservation
+            if required {
+                reservation = try await resources.reserve(bytes: estimate, owner: owner, category: .decodeWork,
+                                                          priority: .visible, policy: .requiredImage)
+            } else {
+                guard let optional = resources.tryReserve(bytes: estimate, owner: owner, category: .decodeWork,
+                                                         priority: .speculative, policy: .bounded) else {
+                    throw DecodeQueueError.memoryBudgetExceeded
+                }
+                reservation = optional
+            }
+            defer { withExtendedLifetime(reservation) {} }
             let t0 = Date()
             let made: DecodedImage
             if let file = source as? FileImageSource, let target {
                 made = try await lane.run { () throws -> DecodedImage in
-                    try DecodeQueue.makeEntry(file: file, id: id, target: target, preparer: preparer)
+                    defer { withExtendedLifetime(reservation) {} }
+                    return try DecodeQueue.makeEntry(file: file, id: id, target: target, preparer: preparer)
+                        .retaining(in: resources, owner: owner, category: .displayCache)
                 }
             } else {
                 let img = try await source.loadCGImage(maxPixelSize: target)
@@ -733,7 +809,7 @@ public actor DecodeQueue {
             if !Task.isCancelled, let format {
                 await DecodeStatsStore.shared.record(format: format, duration: Date().timeIntervalSince(t0))
             }
-            return made
+            return made.resourceLease == nil ? made.retaining(in: resources, owner: owner, category: .displayCache) : made
         }
         inFlight[id] = Pending(token: token, task: task)
 

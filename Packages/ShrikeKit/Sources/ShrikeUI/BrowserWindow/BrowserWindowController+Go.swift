@@ -16,9 +16,10 @@ extension BrowserWindowController {
     func goToAdjacentFolder(_ direction: FolderScanner.Direction) {
         guard let folder = currentFolder else { return }
         let hidden = Prefs.showHiddenFiles
+        let generation = folderRequestGeneration
         adjacentFolderTask = Task { @MainActor [weak self] in
             let target = await FolderScanner.adjacentFolder(of: folder, direction, showHidden: hidden)
-            guard let self, self.currentFolder == folder else { return }
+            guard let self, self.acceptsFolderRequest(generation, folder: folder) else { return }
             guard let target else {
                 self.toast(direction == .next ? "No next folder." : "No previous folder.")
                 return
@@ -58,14 +59,15 @@ extension BrowserWindowController {
     /// off main.
     func checkSubfolders(of folder: URL) {
         let hidden = Prefs.showHiddenFiles
+        let generation = folderRequestGeneration
         subfolderCheckTask?.cancel()
         subfolderCheckTask = Task { @MainActor [weak self] in
             let count = await Task.detached(priority: .utility) {
                 Self.subfolderCount(folder, showHidden: hidden)
             }.value
-            guard let self, !Task.isCancelled, self.currentFolder == folder else { return }
+            guard let self, !Task.isCancelled, self.acceptsFolderRequest(generation, folder: folder) else { return }
             let inSidebar = count > 0 ? await self.sidebarShowsSubfolders(of: folder) : false
-            guard !Task.isCancelled, self.currentFolder == folder,
+            guard !Task.isCancelled, self.acceptsFolderRequest(generation, folder: folder),
                   self.contentController.allItems.isEmpty else { return }
             self.contentController.emptyFolder = (folder.lastPathComponent, count, inSidebar)
             self.onSubfolderCheckForTesting?()

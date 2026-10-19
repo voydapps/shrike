@@ -45,6 +45,7 @@ extension BrowserWindowController {
         guard !items.isEmpty else { return }
         BatchWindowController.open(
             groups: items.map(\.group), services: services, launcher: window, renameOn: renameOn,
+            originScope: (selected.isEmpty ? "Visible in " : "Selected in ") + (currentFolder?.lastPathComponent ?? "this folder"),
             toast: { [weak self] message in self?.toast(message, kind: .error) })
     }
 

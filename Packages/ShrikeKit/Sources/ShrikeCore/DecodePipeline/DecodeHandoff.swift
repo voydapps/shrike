@@ -74,7 +74,9 @@ public final class DecodeHandoff: Sendable {
         url: URL,
         targetLongEdge: Int,
         preparer: DisplayPreparer?,
-        lane: DecodeLane = .shared
+        lane: DecodeLane = .shared,
+        resources: ImageResourceBudget = .shared,
+        resourceOwner: ImageResourceOwner = .init()
     ) {
         let key = Self.key(for: url)
         let source = FileImageSource(url: url)
@@ -88,9 +90,14 @@ public final class DecodeHandoff: Sendable {
                     ShrikeSignposts.decode.end("handoffDecode", signpost)
                     finish.done.signal()
                 }
+                let estimate = try await DecodeQueue.workingSet(for: source, target: targetLongEdge)
+                let reservation = try await resources.reserve(bytes: estimate, owner: resourceOwner, category: .decodeWork,
+                                                              priority: .visible, policy: .requiredImage)
                 let entry = try await lane.run {
-                    try DecodeQueue.makeEntry(file: source, id: source.id,
+                    defer { withExtendedLifetime(reservation) {} }
+                    return try DecodeQueue.makeEntry(file: source, id: source.id,
                                               target: targetLongEdge, preparer: preparer)
+                        .retaining(in: resources, owner: resourceOwner, category: .displayCache)
                 }
                 finish.result.withLockUnchecked { $0 = entry }
                 // The box only serves a viewer that is being built right

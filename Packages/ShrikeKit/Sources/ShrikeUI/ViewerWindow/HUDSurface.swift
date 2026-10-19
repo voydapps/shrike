@@ -475,6 +475,10 @@ public class HUDSurfaceView: NSView {
         applyContrastBorder()
     }
 
+    /// A local opaque surface can keep a light Increase Contrast border in
+    /// both windowed and fullscreen surroundings. Other HUDs use the defaults.
+    var increasedContrastBorderColor: NSColor? { nil }
+
     /// Fill colour and the 1 pt border: white at 12 % always; under
     /// Increase Contrast white at 35 % in full screen, `separatorColor`
     /// in a window. The docked strip (`.plain`) has no border.
@@ -482,9 +486,9 @@ public class HUDSurfaceView: NSView {
         guard let layer, look != .unbuilt else { return }
         let borderColor: CGColor
         if ShrikeTokens.increaseContrast {
-            borderColor = (isFullScreenHUD
+            borderColor = (increasedContrastBorderColor ?? (isFullScreenHUD
                 ? NSColor.white.withAlphaComponent(HUDGlass.fullScreenBorderAlpha)
-                : NSColor.separatorColor).resolvedCGColor(for: effectiveAppearance)
+                : NSColor.separatorColor)).resolvedCGColor(for: effectiveAppearance)
         } else if let style = surfaceStyle, look != .glass {
             borderColor = style.hairline.cgColor
         } else {

@@ -513,8 +513,10 @@ public final class WindowCoordinator {
             viewer.pairedBrowser = nil
         }
         if let browser = browsers.first(where: { $0.window === closed }) {
-            browser.pairedViewer?.pairedBrowser = nil
+            let viewer = browser.pairedViewer
+            viewer?.pairedBrowser = nil
             browser.pairedViewer = nil
+            viewer?.refreshBrowserReturnContext()
         }
         viewers.removeAll { $0 === closed }
         browsers.removeAll { $0.window === closed }

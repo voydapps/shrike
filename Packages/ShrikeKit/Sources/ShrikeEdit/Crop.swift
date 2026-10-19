@@ -35,20 +35,21 @@ public struct CropTool: Sendable {
     /// crop is identity, degenerate, or invalid — the renderer treats
     /// an invalid crop as a no-op rather than throwing.
     public static func apply(_ crop: CropRect, to image: CGImage) -> CGImage {
-        guard crop.isValid else { return image }
+        guard let pixelRect = pixelRect(crop, width: image.width, height: image.height) else { return image }
+        return image.cropping(to: pixelRect) ?? image
+    }
+
+    /// Shared integer bounds for replay and metadata-only output sizing.
+    /// Nil means the existing identity/invalid-crop fast path.
+    static func pixelRect(_ crop: CropRect, width: Int, height: Int) -> CGRect? {
+        guard crop.isValid else { return nil }
 
         // Treat rects that round to "full image" as identity — avoids a
         // needless allocation for the common "no crop applied" case.
-        if crop.originX <= 1e-9,
-           crop.originY <= 1e-9,
-           crop.width >= 1 - 1e-9,
-           crop.height >= 1 - 1e-9
-        {
-            return image
-        }
+        if isIdentity(crop) { return nil }
 
-        let w = Double(image.width)
-        let h = Double(image.height)
+        let w = Double(width)
+        let h = Double(height)
 
         // Round to integer pixel bounds after clamping into the image.
         // `CGImage.cropping(to:)` tolerates floating rects but integer
@@ -58,12 +59,16 @@ public struct CropTool: Sendable {
         var cw = Int((crop.width  * w).rounded())
         var ch = Int((crop.height * h).rounded())
 
-        x = max(0, min(x, image.width - 1))
-        y = max(0, min(y, image.height - 1))
-        cw = max(1, min(cw, image.width - x))
-        ch = max(1, min(ch, image.height - y))
+        x = max(0, min(x, width - 1))
+        y = max(0, min(y, height - 1))
+        cw = max(1, min(cw, width - x))
+        ch = max(1, min(ch, height - y))
 
-        let pixelRect = CGRect(x: x, y: y, width: cw, height: ch)
-        return image.cropping(to: pixelRect) ?? image
+        return CGRect(x: x, y: y, width: cw, height: ch)
+    }
+
+    static func isIdentity(_ crop: CropRect) -> Bool {
+        crop.isValid && crop.originX <= 1e-9 && crop.originY <= 1e-9 &&
+            crop.width >= 1 - 1e-9 && crop.height >= 1 - 1e-9
     }
 }

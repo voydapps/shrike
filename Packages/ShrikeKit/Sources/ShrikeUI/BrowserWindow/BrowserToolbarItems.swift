@@ -106,7 +106,7 @@ public final class BrowserFilterPopover: NSViewController {
     let ratingPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let flagPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private(set) var kindBoxes: [BrowserFilterKind: NSButton] = [:]
-    let clearButton = NSButton(title: "Clear", target: nil, action: nil)
+    let clearButton = NSButton(title: "Clear Filters", target: nil, action: nil)
 
     public init(filter: BrowserFilter) {
         self.filter = filter

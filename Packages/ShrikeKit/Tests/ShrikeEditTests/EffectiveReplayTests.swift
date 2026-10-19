@@ -89,6 +89,7 @@ final class EffectiveReplayTests: XCTestCase {
             switch op {
             case .crop(let r): return CropTool.apply(r, to: img)
             case .rotate(let d): return RotateTool.apply(degrees: d, to: img, autocrop: false)
+            case .rotateAutoCrop(let d): return RotateTool.apply(degrees: d, to: img, autocrop: true)
             case .rotate90(let q): return RotateTool.apply90(quarters: q, to: img)
             case .resize(let s): return ResizeTool.apply(s, to: img)
             case .colorAdjust(let p): return ColorAdjustTool.apply(p, to: img)

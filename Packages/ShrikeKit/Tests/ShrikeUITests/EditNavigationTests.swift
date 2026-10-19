@@ -27,6 +27,7 @@ final class EditNavigationTests: XCTestCase {
     private var asked = 0
 
     override func setUp() async throws {
+        EditToolTransitionModal.responderForTesting = { _ in .keep }
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("shrike-editnav-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -34,6 +35,7 @@ final class EditNavigationTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        EditToolTransitionModal.responderForTesting = nil
         EditExitModal.responderForTesting = nil
         try? FileManager.default.removeItem(at: dir)
     }
@@ -78,7 +80,7 @@ final class EditNavigationTests: XCTestCase {
         viewer.setContentSize(NSSize(width: 900, height: 640))
         let content = viewer.contentRootForTesting
         try await waitUntil("first photo") {
-            viewer.displayedItem?.listIndex == start
+            viewer.canPerform(.editImage) && viewer.displayedItem?.listIndex == start
                 && content.imageView.image != nil && !content.imageView.isCurrentImagePlaceholder
         }
         viewer.enterEditMode(landOn: .color)
@@ -171,6 +173,40 @@ final class EditNavigationTests: XCTestCase {
         XCTAssertEqual(viewer.displayedItem?.listIndex, 2)
     }
 
+    func testWindowedEditingFilmstripNavigationResumesEditingOnTheTarget() async throws {
+        let viewer = try await editingViewer(dirty: false)
+        defer { viewer.close() }
+        answer(.cancel)
+        viewer.contentRootForTesting.onFilmstripJump?(3)
+        await viewer.waitForEditExit()
+        try await waitUntil("windowed filmstrip target settled") {
+            viewer.navCoalescer.isIdle && viewer.displayedItem?.listIndex == 3
+        }
+        await viewer.waitForEditReentryForTesting()
+        XCTAssertEqual(asked, 0)
+        XCTAssertTrue(viewer.contentRootForTesting.isEditModeActive)
+        XCTAssertNil(viewer.contentRootForTesting.editModeController.currentTool)
+        XCTAssertEqual(viewer.contentRootForTesting.editModeController.sourceURL, viewer.displayedItem?.group.primary)
+    }
+
+    func testFullscreenNavigationDoesNotRequestWindowedEditReentry() async throws {
+        let viewer = try await editingViewer(dirty: false)
+        defer { viewer.close() }
+        let content = viewer.contentRootForTesting
+        content.windowMode = .fullscreen
+        answer(.cancel)
+        // A synthetic callback exercises the existing fullscreen policy;
+        // actual fullscreen editing does not expose the filmstrip.
+        content.onFilmstripJump?(3)
+        await viewer.waitForEditExit()
+        try await waitUntil("fullscreen target settled") {
+            viewer.navCoalescer.isIdle && viewer.displayedItem?.listIndex == 3
+        }
+        await viewer.waitForEditReentryForTesting()
+        XCTAssertEqual(asked, 0)
+        XCTAssertFalse(content.isEditModeActive)
+    }
+
     /// With keyboard focus on the crop frame, → nudges it and
     /// does not leave the photo.
     func testArrowNudgesTheCropFrameWhenItHasFocus() async throws {
@@ -178,6 +214,7 @@ final class EditNavigationTests: XCTestCase {
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         content.editModeController.selectTool(.crop)
+        await content.editModeController.settleForTesting()
         content.layoutSubtreeIfNeeded()
         let overlay = content.editModeController.cropOverlay
         XCTAssertFalse(overlay.isHidden)

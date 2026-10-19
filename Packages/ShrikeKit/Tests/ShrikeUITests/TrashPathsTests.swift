@@ -161,6 +161,9 @@ final class TrashPathsTests: XCTestCase {
         // The right-click took the viewer to photo 5 (it paints after the decode).
         let shown = await waitUntil { viewer.displayedItem?.group.primary == urls[4] }
         XCTAssertTrue(shown, "photo 5 is shown: \(String(describing: viewer.displayedItem?.group.primary))")
+        await viewer.waitForEditReentryForTesting()
+        XCTAssertFalse(viewer.contentRootForTesting.isEditModeActive, "A browsing right-click must stay in browsing mode")
+        XCTAssertTrue(viewer.canPerform(.moveToTrash))
         // The menu is the viewer's own, and its Trash row acts on the displayed photo.
         menu.delegate?.menuNeedsUpdate?(menu)
         let item = try XCTUnwrap(menu.items.first { $0.title == "Move to Trash" })
@@ -168,6 +171,29 @@ final class TrashPathsTests: XCTestCase {
         await viewer.waitForPendingTrash()
         assertTrashedWithUndo(urls[4], host: viewer.contentRootForTesting.toastHost, "strip right-click")
         XCTAssertTrue(FileManager.default.fileExists(atPath: urls[0].path), "photo 1 stays")
+    }
+
+    func testOrdinaryFilmstripJumpStaysBrowsingAndCanTrashAfterNavigationSettles() async throws {
+        let urls = try makeFiles(5, real: true)
+        let viewer = viewer(urls, start: 0)
+        defer { viewer.close() }
+        let content = viewer.contentRootForTesting
+        var editSourceLoads = 0
+        viewer.editSourceLoaderForTesting = { _ in
+            editSourceLoads += 1
+            return SaveFlowTests.image()
+        }
+        content.onFilmstripJump?(3)
+        let shown = await waitUntil { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[3] }
+        XCTAssertTrue(shown)
+        await viewer.waitForEditReentryForTesting()
+        XCTAssertEqual(editSourceLoads, 0, "Browsing must not schedule an edit-source decode")
+        XCTAssertFalse(content.isEditModeActive)
+        XCTAssertTrue(viewer.canPerform(.moveToTrash))
+        viewer.dispatch(.deleteToTrash)
+        await viewer.waitForPendingTrash()
+        assertTrashedWithUndo(urls[3], host: content.toastHost, "settled filmstrip click")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: urls[0].path))
     }
 
     // MARK: Browser

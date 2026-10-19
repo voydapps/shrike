@@ -179,7 +179,25 @@ final class BrowserToolbarTests: XCTestCase {
 
         let search = try XCTUnwrap(browser.searchToolbarItem)
         XCTAssertTrue(search.view === browser.searchField, "a plain item holding the field")
-        XCTAssertEqual(browser.searchField.placeholderString, "Search")
+        XCTAssertEqual(browser.searchField.placeholderString, "Find File Names")
+        XCTAssertEqual(browser.searchField.accessibilityLabel(), "Find file names in this folder")
+        let scope = "Matches file names in this folder. Subfolders are not searched."
+        let presetKey = "shrike.shortcuts.preset"
+        let savedPreset = ShrikeDefaults.store.object(forKey: presetKey)
+        defer {
+            if let savedPreset { ShrikeDefaults.store.set(savedPreset, forKey: presetKey) }
+            else { ShrikeDefaults.store.removeObject(forKey: presetKey) }
+            LiveTooltips.shared.refreshIfPresetChanged()
+        }
+        for preset in [ShortcutPreset.macNative, .fastStoneCompat] {
+            Prefs.shortcutPreset = preset
+            LiveTooltips.shared.refreshIfPresetChanged()
+            let tooltip = try XCTUnwrap(browser.searchField.toolTip)
+            XCTAssertEqual(tooltip, LiveTooltips.text(.find, context: .browser, preset: preset, title: scope))
+            XCTAssertTrue(tooltip.hasPrefix(scope), "the folder-only scope survives live shortcut refresh")
+            let shortcut = try XCTUnwrap(ShortcutTable.bindings(for: .find, context: .browser, preset: preset).first)
+            XCTAssertTrue(tooltip.hasSuffix(shortcut.displayString), "the current shortcut remains available")
+        }
         for item in [browser.sortToolbarItem, browser.filterToolbarItem, browser.viewModeGroup, browser.historyGroup] {
             XCTAssertEqual(item?.visibilityPriority, .high, "Search gives way first")
         }

@@ -248,7 +248,7 @@ extension ViewerWindow {
             let pan = view.pan
             self.contentRoot.setImage(entry.image, index: index, total: self.list.count,
                                       sourceID: entry.sourceID,
-                                      prepared: entry.prepared as? DisplayTexture)
+                                      prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy)
             self.contentRoot.histogramImageShown(entry.image, url: url)
             // The fresh decode carries the file's orientation.
             view.resetOrientation()

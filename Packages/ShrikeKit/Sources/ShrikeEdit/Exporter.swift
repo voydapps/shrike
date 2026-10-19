@@ -26,6 +26,15 @@ import UniformTypeIdentifiers
 import ShrikeCore
 import ShrikeIO
 
+public struct ImageExportResourceContext: Sendable {
+    public let resources: ImageResourceBudget
+    public let owner: ImageResourceOwner
+    public let reservation: ImageWorkReservation
+    public init(resources: ImageResourceBudget, owner: ImageResourceOwner, reservation: ImageWorkReservation) {
+        self.resources = resources; self.owner = owner; self.reservation = reservation
+    }
+}
+
 public enum ExportFormat: String, Sendable, Codable, CaseIterable {
     case jpeg, png, tiff, heic
     /// WebP / AVIF: only usable when the running OS ships an encoder —
@@ -86,8 +95,25 @@ public enum ExportError: Error, Sendable, Equatable {
     case ioFailure(underlying: String)
 }
 
+extension ExportError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .sourceMissing: return "The source file is no longer available."
+        case .sourceUnreadable: return "Shrike could not decode the source image."
+        case .recipeApplyFailed: return "The requested edits could not be rendered."
+        case .destinationCreateFailed, .destinationFinalizeFailed: return "The output image could not be fully encoded and validated. The previous destination was kept."
+        case .unwritableFormat: return "This image format cannot be written on this Mac."
+        case .inPlaceWriteNotAllowed: return "Save an edited copy to keep the original format, frames and precision safe."
+        case .extensionMismatch: return "The output filename extension does not match the selected image format."
+        case .backupFailed(let reason): return "The previous destination could not be backed up; nothing was overwritten. \(reason)"
+        case .atomicReplaceFailed(let reason), .ioFailure(let reason): return "The output could not be committed. \(reason)"
+        }
+    }
+}
+
 /// Baking + encoding pipeline for the edit save path.
 public actor ImageExporter {
+    public enum Checkpoint: Sendable, Equatable { case decoded, rendered, encoded, beforeBackup, beforeCommit }
 
     /// Suffix appended to the stem when the save path redirects a RAW
     /// source to a sibling JPEG. Exposed as a `public
@@ -105,11 +131,18 @@ public actor ImageExporter {
     /// When set, ratings / flags / tags follow the save: re-stamped on an
     /// in-place overwrite, copied onto a Save-As file.
     private let metadataStore: MetadataStore?
+    private let checkpoint: (@Sendable (Checkpoint) async throws -> Void)?
+    private let resources: ImageResourceBudget
+    private let resourceOwner: ImageResourceOwner
 
     public init(backupStore: BackupStore? = BackupStore.shared,
-                metadataStore: MetadataStore? = nil) {
+                metadataStore: MetadataStore? = nil,
+                checkpoint: (@Sendable (Checkpoint) async throws -> Void)? = nil,
+                resources: ImageResourceBudget = .shared, resourceOwner: ImageResourceOwner = .init()) {
         self.backupStore = backupStore
         self.metadataStore = metadataStore
+        self.checkpoint = checkpoint
+        self.resources = resources; self.resourceOwner = resourceOwner
     }
 
     /// Bake `recipe` against the `CGImage` read from `from` and write
@@ -134,8 +167,12 @@ public actor ImageExporter {
         format: ExportFormat,
         quality: Double = ImageExporter.defaultQuality,
         preserveEXIF: Bool = true,
-        stripGPS: Bool = false
+        stripGPS: Bool = false,
+        backupReason: BackupReason = .save,
+        resourceContext: ImageExportResourceContext? = nil,
+        resourceCategory: ImageResourceCategory = .exportWork
     ) async throws -> BackupRecord? {
+        try Task.checkCancellation()
         // 1. Read the source.
         guard FileManager.default.fileExists(atPath: source.path) else {
             throw ExportError.sourceMissing
@@ -145,15 +182,42 @@ public actor ImageExporter {
         //    Defence in depth: the UI is supposed to route these to
         //    Save As already, via `ExportFormat.inPlaceFormat(for:)`.
         try Self.validateDestination(source: source, destination: destination, format: format)
+        let operations = await recipe.snapshot()
+        if FileIdentity.sameFile(source, destination),
+           Self.capability(for: source, operations: operations, format: format).requiresCopy {
+            throw ExportError.inPlaceWriteNotAllowed
+        }
         guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil) else {
             throw ExportError.sourceUnreadable
         }
-        guard let storedImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
-            throw ExportError.sourceUnreadable
-        }
-
         let sourceProperties =
             CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
+        guard let width = sourceProperties?[kCGImagePropertyPixelWidth] as? Int,
+              let height = sourceProperties?[kCGImagePropertyPixelHeight] as? Int else { throw ExportError.sourceUnreadable }
+        let outputSize = try Self.outputBounds(width: width, height: height, operations: operations)
+        let estimate = try ImageWorkingSetEstimate(width: width, height: height,
+            bitsPerComponent: sourceProperties?[kCGImagePropertyDepth] as? Int ?? 8,
+            floatingPoint: sourceProperties?[kCGImagePropertyIsFloat] as? Bool ?? false,
+            outputWidth: outputSize.0, outputHeight: outputSize.1)
+        let reservation: ImageWorkReservation
+        if let resourceContext { reservation = resourceContext.reservation }
+        else {
+            reservation = try await resources.reserve(bytes: estimate.totalBytes, owner: resourceOwner,
+                category: resourceCategory, priority: resourceCategory == .batchWork ? .batch : .visible,
+                policy: .oneOversizedOperation)
+        }
+        // Non-interruptible work owns this token until the real lane
+        // closure ends, even if its async caller has been cancelled.
+        defer { withExtendedLifetime(reservation) {} }
+        let storedImage = try await DecodeLane.shared.run {
+            try withExtendedLifetime(reservation) {
+                guard let src = CGImageSourceCreateWithURL(source as CFURL, nil),
+                      let image = CGImageSourceCreateImageAtIndex(src, 0,
+                        [kCGImageSourceShouldAllowFloat: true] as CFDictionary) else { throw ExportError.sourceUnreadable }
+                return image
+            }
+        }
+        try await check(.decoded)
 
         // The recipe (crop rect, rotations) was built on screen against
         // the *displayed* image, which the viewer decodes with the EXIF
@@ -168,6 +232,10 @@ public actor ImageExporter {
         // — we want a result, not a "maybe dropped" CGImage.
         let renderer = EditRenderer()
         let finalImage = await renderer.renderFinal(recipe: recipe, from: originalImage)
+        try await check(.rendered)
+        if FileIdentity.sameFile(source, destination), storedImage.bitsPerComponent > finalImage.bitsPerComponent {
+            throw ExportError.inPlaceWriteNotAllowed
+        }
 
         // 3. Encode to a temp file.
         let tmpURL = temporaryURL(sameDirectoryAs: destination, format: format)
@@ -182,18 +250,27 @@ public actor ImageExporter {
             preserveEXIF: preserveEXIF,
             stripGPS: stripGPS
         )
+        guard let validated = CGImageSourceCreateWithURL(tmpURL as CFURL, nil),
+              CGImageSourceGetCount(validated) == 1,
+              let dimensions = CGImageSourceCopyPropertiesAtIndex(validated, 0, nil) as? [CFString: Any],
+              dimensions[kCGImagePropertyPixelWidth] as? Int == finalImage.width,
+              dimensions[kCGImagePropertyPixelHeight] as? Int == finalImage.height
+        else { throw ExportError.destinationFinalizeFailed }
+        try await check(.encoded)
 
         // 4. Back up whatever we are about to replace. No backup, no
         // overwrite.
         let replacing = FileManager.default.fileExists(atPath: destination.path)
         var record: BackupRecord?
         if replacing, let backupStore {
+            try await check(.beforeBackup)
             do {
-                record = try await backupStore.backup(destination, reason: .save)
+                record = try await backupStore.backup(destination, reason: backupReason)
             } catch {
                 throw ExportError.backupFailed(underlying: "\(error)")
             }
         }
+        try await check(.beforeCommit)
 
         // 5. Atomic replace. Same-directory guarantee keeps the rename
         // on one filesystem, which is what `replaceItemAt` requires for
@@ -218,6 +295,23 @@ public actor ImageExporter {
             }
         }
         return record
+    }
+
+    private func check(_ point: Checkpoint) async throws {
+        try Task.checkCancellation()
+        try await checkpoint?(point)
+        try Task.checkCancellation()
+    }
+
+    private static func outputBounds(width: Int, height: Int, operations: [EditOperation]) throws -> (Int, Int) {
+        // Use the renderer's rounded geometry, including the frozen Auto Crop
+        // choice, for the allocation guard as well as the eventual pixels.
+        guard let size = EditRenderer.outputPixelSize(
+            from: CGSize(width: width, height: height), operations: operations
+        ), let outputWidth = Int(exactly: size.width), let outputHeight = Int(exactly: size.height) else {
+            throw ImageResourceError.dimensionOverflow
+        }
+        return (outputWidth, outputHeight)
     }
 
     /// Throws when writing `format` to `destination` would damage or

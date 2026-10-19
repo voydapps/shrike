@@ -147,6 +147,178 @@ final class EditRecipeTests: XCTestCase {
         XCTAssertFalse(dirty, "reset clears both stacks")
     }
 
+    // MARK: Tool-entry checkpoints.
+
+    func test_checkpointRestoresAppliedEditsAndExactRedoOrderAfterFork() async {
+        let kept: EditOperation = .crop(CropRect(originX: 0, originY: 0, width: 0.5, height: 1))
+        let next: EditOperation = .rotate90(quarters: 1)
+        let last: EditOperation = .colorAdjust(ColorAdjustParams(brightness: 0.2))
+        let recipe = EditRecipe(operations: [kept, next, last])
+        await recipe.undo()
+        await recipe.undo()
+        let entry = await recipe.checkpoint()
+
+        // A new tool forks the timeline and clears redo. Discard must bring
+        // back that old future, rather than merely undoing the newest step.
+        await recipe.append(.resize(ResizeSpec(width: 12, height: 10,
+                                               interpolation: .lanczos, preventUpscale: true)))
+        await recipe.append(.rotate(degrees: 5))
+        await recipe.restore(entry)
+        let restored = await recipe.checkpoint()
+        XCTAssertEqual(restored, entry)
+        let firstRedo = await recipe.redo()
+        let secondRedo = await recipe.redo()
+        let exhaustedRedo = await recipe.redo()
+        let operations = await recipe.snapshot()
+        XCTAssertEqual(firstRedo, next)
+        XCTAssertEqual(secondRedo, last)
+        XCTAssertNil(exhaustedRedo)
+        XCTAssertEqual(operations, [kept, next, last])
+    }
+
+    func test_checkpointRestoresTailBeforeCoalescedReplacementAndReset() async {
+        let kept: EditOperation = .colorAdjust(ColorAdjustParams(brightness: 0.15))
+        let recipe = EditRecipe(operations: [.rotate90(quarters: 1), kept])
+        let entry = await recipe.checkpoint()
+        for frame in 1...20 {
+            await recipe.replaceLast(.colorAdjust(ColorAdjustParams(brightness: Double(frame) / 50)))
+        }
+        await recipe.restore(entry)
+        let afterCoalescing = await recipe.checkpoint()
+        XCTAssertEqual(afterCoalescing, entry, "a checkpoint must not share mutable array contents")
+        await recipe.reset()
+        await recipe.restore(entry)
+        let restored = await recipe.snapshot()
+        let lastUndo = await recipe.undo()
+        XCTAssertEqual(restored, [.rotate90(quarters: 1), kept])
+        XCTAssertEqual(lastUndo, kept, "restoring must preserve the earlier undo boundary")
+    }
+
+    func test_discardCurrentGeometryRestoresKeptCropPixelsAndDimensions() async {
+        let source = makeWedge(width: 64, height: 64)
+        let recipe = EditRecipe(operations: [
+            .crop(CropRect(originX: 0, originY: 0, width: 0.5, height: 1)),
+        ])
+        let renderer = EditRenderer()
+        let entry = await recipe.checkpoint()
+        let keptImage = await renderer.renderFinal(recipe: recipe, from: source)
+        await recipe.append(.rotate90(quarters: 1))
+        await recipe.append(.crop(CropRect(originX: 0, originY: 0, width: 1, height: 0.5)))
+        let changedImage = await renderer.renderFinal(recipe: recipe, from: source)
+        XCTAssertNotEqual(ImageHash.bytes(of: changedImage), ImageHash.bytes(of: keptImage))
+
+        await recipe.restore(entry)
+        let restoredImage = await renderer.renderFinal(recipe: recipe, from: source)
+        XCTAssertEqual(restoredImage.width, 32)
+        XCTAssertEqual(restoredImage.height, 64)
+        XCTAssertEqual(ImageHash.bytes(of: restoredImage), ImageHash.bytes(of: keptImage))
+        let undone = await recipe.undo()
+        XCTAssertNotNil(undone, "the previously kept crop must remain undoable")
+        let empty = await recipe.isEmpty
+        XCTAssertTrue(empty)
+    }
+
+    func test_contentChangesIgnoreRedoOnlyButDetectUndoOfKeptEdit() async {
+        let recipe = EditRecipe(operations: [.rotate90(quarters: 1)])
+        let entry = await recipe.checkpoint()
+        await recipe.append(.rotate90(quarters: 2))
+        await recipe.undo()
+        var changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertFalse(changed, "adding a redo-only future does not change the photo")
+        let differentHistory = await recipe.checkpoint()
+        XCTAssertNotEqual(differentHistory, entry, "a restore still needs the exact history")
+
+        await recipe.undo()
+        changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertTrue(changed, "undoing a kept step changes the photo")
+        await recipe.restore(entry)
+        changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertFalse(changed)
+    }
+
+    func test_contentChangesCompareEffectiveWholeStateAndKeepPriorGeometry() async {
+        let keptColor = ColorAdjustParams(brightness: 0.15)
+        let recipe = EditRecipe(operations: [
+            .colorAdjust(keptColor),
+            .crop(CropRect(originX: 0, originY: 0, width: 0.5, height: 1)),
+        ])
+        let entry = await recipe.checkpoint()
+        await recipe.append(.colorAdjust(ColorAdjustParams(brightness: 0.3)))
+        var changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertTrue(changed)
+        await recipe.append(.colorAdjust(keptColor))
+        await recipe.append(.levels(.identity))
+        changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertFalse(changed, "returning the controls to the entry output needs no prompt")
+        await recipe.append(.crop(CropRect(originX: 0, originY: 0, width: 1, height: 0.5)))
+        changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertTrue(changed, "a further crop differs even with earlier kept edits")
+    }
+
+    func test_emptyCheckpointRestoresCleanRecipeWithoutRedo() async {
+        let recipe = EditRecipe()
+        let entry = await recipe.checkpoint()
+        await recipe.append(.rotate90(quarters: 1))
+        await recipe.undo()
+        await recipe.restore(entry)
+        let dirty = await recipe.isDirty
+        let redo = await recipe.redo()
+        XCTAssertFalse(dirty)
+        XCTAssertNil(redo)
+    }
+
+    func test_contentChangesIgnoreRotateDragReturningToZeroAndRestorePriorRedo() async {
+        let kept: EditOperation = .crop(CropRect(originX: 0, originY: 0, width: 0.5, height: 1))
+        let priorFuture: EditOperation = .rotate90(quarters: 1)
+        let recipe = EditRecipe(operations: [kept, priorFuture])
+        await recipe.undo()
+        let entry = await recipe.checkpoint()
+        await recipe.append(.rotate(degrees: 10))
+        var changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertTrue(changed)
+        await recipe.replaceLast(.rotate(degrees: 0))
+        changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertFalse(changed, "returning a drag to its origin must not prompt")
+        let rawOperations = await recipe.snapshot()
+        XCTAssertEqual(rawOperations, [kept, .rotate(degrees: 0)], "comparison must not mutate history")
+        await recipe.restore(entry)
+        let restored = await recipe.checkpoint()
+        let redo = await recipe.redo()
+        let noDiscardedFuture = await recipe.redo()
+        XCTAssertEqual(restored, entry)
+        XCTAssertEqual(redo, priorFuture)
+        XCTAssertNil(noDiscardedFuture)
+    }
+
+    func test_contentChangesIgnoreOnlyKnownRendererIdentityGeometry() async {
+        let recipe = EditRecipe()
+        let entry = await recipe.checkpoint()
+        let identities: [EditOperation] = [
+            .rotate(degrees: 360), .rotate(degrees: -720), .rotate(degrees: 0.00000001),
+            .rotate90(quarters: 4), .rotate90(quarters: -8), .crop(.full),
+        ]
+        for operation in identities { await recipe.append(operation) }
+        let changed = await recipe.hasContentChanges(since: entry)
+        let rawOperations = await recipe.snapshot()
+        XCTAssertFalse(changed)
+        XCTAssertEqual(rawOperations, identities)
+        XCTAssertEqual(EditRecipe.effectiveOperations(rawOperations), identities,
+                       "identity filtering belongs to checkpoint comparison only")
+    }
+
+    func test_contentChangesStillDetectRealAnglesAndDoNotNormalizeInverseGeometry() async {
+        let recipe = EditRecipe()
+        let entry = await recipe.checkpoint()
+        await recipe.append(.rotate(degrees: 0.00001))
+        var changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertTrue(changed, "an angle beyond the renderer's identity threshold still changes output")
+        await recipe.restore(entry)
+        await recipe.append(.rotate90(quarters: 1))
+        await recipe.append(.rotate90(quarters: -1))
+        changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertTrue(changed, "do not add general composite or inverse geometry normalization")
+    }
+
     // MARK: - Helpers
 
     /// A 64×64 image with a distinct "TL quadrant is red, rest is
@@ -166,4 +338,88 @@ final class EditRecipeTests: XCTestCase {
         ctx.fill(CGRect(x: 0, y: height / 2, width: width / 2, height: height / 2))
         return ctx.makeImage()!
     }
+    func testOwnedRotationRevisionsKeepOneReplayAndCompleteReplacementRemovalHistory() async {
+        let recipe = EditRecipe(operations: [.rotate90(quarters: 1)])
+        let prefix = await recipe.snapshot()
+        let owner = EditRecipe.GeometryOwner()
+        _ = await recipe.setOwnedFreeRotation(.rotateAutoCrop(degrees: 12.5), owner: owner, beginsUndoStep: true)
+        _ = await recipe.setOwnedFreeRotation(.rotateAutoCrop(degrees: 13), owner: owner, beginsUndoStep: true)
+        let revised = await recipe.snapshot(), depth = await recipe.undoDepth
+        XCTAssertEqual(revised, prefix + [.rotateAutoCrop(degrees: 13)])
+        XCTAssertEqual(depth, 3, "replacement gestures are history actions without cumulative replay geometry")
+        let accepted = await recipe.checkpoint()
+        _ = await recipe.undo()
+        let first = await recipe.snapshot(), firstOwner = await recipe.ownedFreeRotation()
+        XCTAssertEqual(first, prefix + [.rotateAutoCrop(degrees: 12.5)])
+        XCTAssertEqual(firstOwner?.owner, owner)
+        let withRedo = await recipe.checkpoint()
+        _ = await recipe.setOwnedFreeRotation(.rotateAutoCrop(degrees: 12.5), owner: owner, beginsUndoStep: true)
+        let noOp = await recipe.checkpoint()
+        XCTAssertEqual(noOp, withRedo, "unchanged parameters preserve real Redo and metadata")
+        _ = await recipe.redo()
+        let redone = await recipe.checkpoint()
+        XCTAssertEqual(redone, accepted)
+        _ = await recipe.setOwnedFreeRotation(nil, owner: owner, beginsUndoStep: true)
+        let identity = await recipe.snapshot(), identityOwner = await recipe.ownedFreeRotation()
+        XCTAssertEqual(identity, prefix)
+        XCTAssertEqual(identityOwner?.owner, owner)
+        XCTAssertNil(identityOwner?.operation)
+        _ = await recipe.undo()
+        let undoZero = await recipe.snapshot()
+        XCTAssertEqual(undoZero, revised)
+        _ = await recipe.redo()
+        let redoZero = await recipe.snapshot()
+        XCTAssertEqual(redoZero, prefix)
+        await recipe.restore(withRedo)
+        let restored = await recipe.checkpoint()
+        XCTAssertEqual(restored, withRedo, "checkpoint restores owners, replacement history and exact Redo")
+        _ = await recipe.redo()
+        let afterRestoreRedo = await recipe.snapshot()
+        XCTAssertEqual(afterRestoreRedo, revised)
+    }
+
+    func testOwnedRotationCannotRewriteEarlierBoundaryOrMergeAfterContinuousIdentity() async {
+        let recipe = EditRecipe(operations: [.rotate90(quarters: 1)])
+        let owner = EditRecipe.GeometryOwner()
+        _ = await recipe.setOwnedFreeRotation(.rotate(degrees: 10), owner: owner, beginsUndoStep: true)
+        _ = await recipe.setOwnedFreeRotation(nil, owner: owner, beginsUndoStep: false)
+        _ = await recipe.setOwnedFreeRotation(.rotate(degrees: 13), owner: owner, beginsUndoStep: false)
+        let depth = await recipe.undoDepth
+        XCTAssertEqual(depth, 2, "passing through zero cannot merge this gesture into the accepted prefix")
+        _ = await recipe.undo()
+        let prefix = await recipe.snapshot()
+        XCTAssertEqual(prefix, [.rotate90(quarters: 1)])
+        _ = await recipe.redo()
+        await recipe.append(.rotate90(quarters: -1))
+        let boundary = await recipe.checkpoint()
+        let rejected = await recipe.setOwnedFreeRotation(.rotate(degrees: 45), owner: owner, beginsUndoStep: true)
+        XCTAssertFalse(rejected)
+        let unchanged = await recipe.checkpoint()
+        XCTAssertEqual(unchanged, boundary)
+        _ = await recipe.undo()
+        let restoredOwner = await recipe.ownedFreeRotation()
+        XCTAssertEqual(restoredOwner?.owner, owner)
+        let refined = await recipe.setOwnedFreeRotation(.rotate(degrees: 14), owner: owner, beginsUndoStep: true)
+        XCTAssertTrue(refined)
+        let forkedRedoDepth = await recipe.redoDepth
+        XCTAssertEqual(forkedRedoDepth, 0)
+    }
+
+    func testLegacyAppendAndCoalescedReplacementStillUseOneHistoryStepEach() async {
+        let recipe = EditRecipe(operations: [.rotate90(quarters: 1)])
+        await recipe.append(.colorAdjust(.init(brightness: 0.1)))
+        await recipe.replaceLast(.colorAdjust(.init(brightness: 0.2)))
+        let before = await recipe.checkpoint()
+        let depth = await recipe.undoDepth
+        XCTAssertEqual(depth, 2)
+        let undo = await recipe.undo()
+        XCTAssertEqual(undo, .colorAdjust(.init(brightness: 0.2)))
+        let remaining = await recipe.snapshot()
+        XCTAssertEqual(remaining, [.rotate90(quarters: 1)])
+        let redo = await recipe.redo()
+        XCTAssertEqual(redo, undo)
+        let after = await recipe.checkpoint()
+        XCTAssertEqual(after, before)
+    }
+
 }

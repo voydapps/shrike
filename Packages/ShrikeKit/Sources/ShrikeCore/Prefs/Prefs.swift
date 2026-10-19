@@ -56,6 +56,10 @@ public enum Prefs {
     // enumeration source of truth for `resetAll()` below — every typed prop
     // below must list its key via `Key.allKeys` so `resetAll()` wipes it.
     internal enum Key {
+        static let largerChrome = "shrike.accessibility.largerChrome"
+        static let reviewControlsVisible = "shrike.review.controlsVisible"
+        static let advanceAfterRating = "shrike.review.advanceAfterRating"
+        static let hasSeenBrowserReturnHint = "shrike.viewer.hasSeenBrowserReturnHint"
         static let shortcutPreset             = "shrike.shortcuts.preset"
         static let thumbnailSizePt            = "shrike.thumbnails.sizePt"
         static let browserSortKey             = "shrike.browser.sortKey"
@@ -114,6 +118,7 @@ public enum Prefs {
         /// Every `shrike.*` user-preference key. `resetAll()` walks this list.
         /// Add new keys here when adding new typed props.
         static let allKeys: [String] = [
+            largerChrome, reviewControlsVisible, advanceAfterRating, hasSeenBrowserReturnHint,
             shortcutPreset,
             thumbnailSizePt,
             browserSortKey,
@@ -169,6 +174,23 @@ public enum Prefs {
             PrintSettingsStore.Key.contactSheetPaper,   // shrike.print.contactSheet.paper
             PrintSettingsStore.Key.contactSheetCaption, // shrike.print.contactSheet.caption
         ]
+    }
+
+    public static var largerChrome: Bool {
+        get { defaults.bool(forKey: Key.largerChrome) }
+        set { defaults.set(newValue, forKey: Key.largerChrome) }
+    }
+    public static var reviewControlsVisible: Bool {
+        get { defaults.bool(forKey: Key.reviewControlsVisible) }
+        set { defaults.set(newValue, forKey: Key.reviewControlsVisible) }
+    }
+    public static var advanceAfterRating: Bool {
+        get { defaults.bool(forKey: Key.advanceAfterRating) }
+        set { defaults.set(newValue, forKey: Key.advanceAfterRating) }
+    }
+    public static var hasSeenBrowserReturnHint: Bool {
+        get { defaults.bool(forKey: Key.hasSeenBrowserReturnHint) }
+        set { defaults.set(newValue, forKey: Key.hasSeenBrowserReturnHint) }
     }
 
     // MARK: Shortcuts

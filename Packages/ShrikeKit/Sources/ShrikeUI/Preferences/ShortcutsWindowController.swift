@@ -155,6 +155,7 @@ private struct ShortcutsWindowView: View {
     let onSettings: () -> Void
     let onClose: () -> Void
     @FocusState private var searchFocused: Bool
+    @State private var typography = ShortcutsWindowTypography.current
 
     var body: some View {
         VStack(spacing: 0) {
@@ -175,7 +176,7 @@ private struct ShortcutsWindowView: View {
                 .frame(height: 28)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor)))
                 HStack {
-                    Text(model.presetLine).font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text(model.presetLine).font(.system(size: typography.keysSize)).foregroundStyle(.secondary)
                     Spacer()
                     Button("Settings…", action: onSettings).buttonStyle(.link)
                 }
@@ -184,33 +185,94 @@ private struct ShortcutsWindowView: View {
             Divider()
             if model.sections.isEmpty {
                 Spacer()
-                Text(verbatim: "No shortcuts match “\(model.query)”.").foregroundStyle(.secondary)
+                Text(verbatim: "No shortcuts match “\(model.query)”.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
                 Spacer()
             } else {
-                List {
-                    ForEach(model.listSections, id: \.title) { section in
-                        Section {
-                            ForEach(section.rows) { row in
-                                HStack {
-                                    Text(row.action).font(.system(size: 13))
-                                    Spacer()
-                                    Text(row.keys).font(.system(size: 12)).foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                                .frame(height: 28)
-                                .accessibilityElement(children: .combine)
-                            }
-                        } header: {
-                            Text(section.title).font(.system(size: 13, weight: .semibold))
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        ForEach(model.listSections, id: \.title) { section in
+                            ShortcutsWindowSection(title: section.title, rows: section.rows,
+                                                   typography: typography)
                         }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .background(Color(nsColor: .textBackgroundColor))
+                .focusable()
+                .accessibilityLabel("Keyboard shortcuts")
+                .accessibilityIdentifier("shortcuts.results")
             }
+        }
+        // Typography is an explicit input to every stable section and row;
+        // cached ForEach content must not read a changing global preference.
+        .onReceive(NotificationCenter.default.publisher(for: .shrikeChromePreferencesChanged)) { _ in
+            typography = .current
         }
         .onAppear { searchFocused = true }
         .onChange(of: model.focusTick) { _, _ in searchFocused = true }
         .onExitCommand { if model.query.isEmpty { onClose() } else { model.query = "" } }
         .background(Button("") { searchFocused = true; model.requestSearchFocus() }.keyboardShortcut("f").opacity(0))
         .background(Button("") { onClose() }.keyboardShortcut("w").opacity(0))
+    }
+}
+
+
+private struct ShortcutsWindowTypography: Equatable {
+    let actionSize: CGFloat
+    let keysSize: CGFloat
+    let rowHeight: CGFloat
+
+    static var current: Self {
+        Self(actionSize: ChromeTypography.size(13), keysSize: ChromeTypography.size(12),
+             rowHeight: ChromeTypography.targetHeight)
+    }
+}
+
+private struct ShortcutsWindowSection: View {
+    let title: String
+    let rows: [ShortcutsWindowModel.ListRow]
+    let typography: ShortcutsWindowTypography
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: typography.actionSize, weight: .semibold))
+                .accessibilityAddTraits(.isHeader)
+            VStack(spacing: 0) {
+                ForEach(rows) { row in
+                    ShortcutsWindowRow(row: row, typography: typography)
+                }
+            }
+            .padding(.leading, 8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ShortcutsWindowRow: View {
+    let row: ShortcutsWindowModel.ListRow
+    let typography: ShortcutsWindowTypography
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(row.action)
+                .font(.system(size: typography.actionSize))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(row.keys)
+                .font(.system(size: typography.keysSize))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .frame(minHeight: typography.rowHeight)
+        .accessibilityElement(children: .combine)
     }
 }

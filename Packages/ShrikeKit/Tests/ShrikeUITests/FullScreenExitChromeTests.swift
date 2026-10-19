@@ -136,12 +136,21 @@ final class FullScreenExitChromeTests: XCTestCase {
         if let histogramInFullScreen, histogramInFullScreen != Prefs.viewerHistogramVisible {
             content.toggleHistogramOverlay()
         }
+        let targetIndex = min(viewer.intent.currentIndex + 1, viewer.groups.count - 1)
+        let target = viewer.groups[targetIndex].primary
+        let targetID = FileImageSource(url: target).id
         viewer.dispatch(.nextImage)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        waitFor("accepted next photo before editing") {
+            viewer.displayedItem?.listIndex == targetIndex && viewer.displayedItem?.group.primary == target
+                && viewer.imageViewForTesting.sourceID == targetID && viewer.canPerform(.editImage)
+        }
         viewer.imageViewForTesting.image = RotateDirectionTests.quadrants()
+        XCTAssertEqual(viewer.imageViewForTesting.sourceID, targetID, "controlled pixels retain the accepted photo identity")
+        XCTAssertTrue(viewer.canPerform(.editImage))
         content.layoutSubtreeIfNeeded()
         viewer.dispatch(.openEditMode)
         waitFor("edit mode") { content.isEditModeActive }
+        XCTAssertTrue(content.editModeController.isActive)
         content.layoutSubtreeIfNeeded()
         viewer.dispatch(.exitEditMode)
         if content.isEditModeActive { content.exitEditMode() }

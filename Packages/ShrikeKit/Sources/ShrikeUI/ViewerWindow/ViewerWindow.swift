@@ -80,6 +80,13 @@ public final class ViewerWindow: NSWindow {
     /// The Browser this viewer was opened from. Weak: the
     /// `WindowCoordinator` owns windows; closing either side drops the pair.
     public weak var pairedBrowser: BrowserWindowController?
+    var reviewDecisionSerial: UInt64 = 0
+    var reviewAutomaticMove = false
+    var reviewPersistenceBanner: PersistenceBanner?
+    var returnHintPopover: NSPopover?
+    var browserReturnHintReady = false
+    var imagePressureObservation: ImagePressureObservation?
+    var onImagePressureHandledForTesting: (() -> Void)?
     /// End-of-folder cue in progress.
     var endOfFolderCue: EndOfFolderCue?
     /// What a just-completed swipe left on screen, for the navigation to
@@ -105,6 +112,8 @@ public final class ViewerWindow: NSWindow {
     var watchedFolderPath: String?
     /// Tests answer the Save panel here (suggested URL, message).
     var savePanelResponderForTesting: ((URL, String?) -> URL?)?
+    var savePanelAsyncResponderForTesting: ((URL, String?) async -> URL?)?
+    var exportCheckpointForTesting: (@Sendable (ImageExporter.Checkpoint) async throws -> Void)?
     /// The latest Undo / Redo Save or Revert file swap.
     var pendingFileVersionTask: Task<Void, Never>?
     /// Bumps when a pencil state read lands (tests).
@@ -143,6 +152,13 @@ public final class ViewerWindow: NSWindow {
     private(set) var chordPrefix: Character?
     /// Edit mode waiting for the full decode.
     var editLoadTask: Task<Void, Never>?
+    private var editLoadGeneration: UInt64 = 0
+    private var editReentryTask: Task<Void, Never>?
+    private var editReentryGeneration: UInt64 = 0
+    private var embeddedPreviewTask: Task<Void, Never>?
+    private var thumbnailBridgeTask: Task<Void, Never>?
+    private var navigationPreviewGeneration: UInt64 = 0
+    var editSourceLoaderForTesting: (@MainActor (URL) async -> CGImage?)?
     private var chordExpiryTask: Task<Void, Never>?
 
     /// Coalesces rapid navigation keypresses. Each new Space / arrow / Home
@@ -208,7 +224,7 @@ public final class ViewerWindow: NSWindow {
             return ImageGroup(primary: URL(fileURLWithPath: "/shrike-source/\(source.id)"))
         })
         self.navigation = NavigationController(
-            queue: services.makeDecodeQueue(preparer: DisplayTextureFactory.preparer),
+            queue: services.makeDisplayDecodeQueue(),
             thumbnailCache: services.thumbnailCache
         )
         // Hand the list to the decode queue
@@ -322,13 +338,16 @@ public final class ViewerWindow: NSWindow {
         delegate = fullScreenTransition
         fullScreenTransition.onEnterFailed = { [weak self] in
             self?.contentRoot.windowMode = .windowed
+            self?.installScrimIfNeeded()
         }
         fullScreenTransition.onExitFailed = { [weak self] in
             self?.contentRoot.windowMode = .fullscreen
+            self?.installScrimIfNeeded()
         }
         wireInspectorActions()
         installAutoHide()
         // Edit mode owns the subtitle and the close-button dot.
+        configureReview()
         contentRoot.onDecodeErrorNext = { [weak self] in self?.dispatch(.nextImage) }
         contentRoot.onDecodeErrorReveal = { [weak self] in self?.dispatch(.revealInFinder) }
         contentRoot.onEditSubtitleChanged = { [weak self] state in
@@ -381,14 +400,23 @@ public final class ViewerWindow: NSWindow {
         // click in the middle of a rapid key-mash still "wins".
         // Drag a filmstrip cell out (the whole group).
         contentRoot.filmstripGroups = { [weak self] index in self?.list[index] }
+        contentRoot.editModeController.canStartToolTransition = { [weak self] in
+            self?.editExitTask == nil && self?.didTearDown == false
+        }
         contentRoot.onFilmstripJump = { [weak self] globalIndex in
             guard let self else { return }
+            guard let target = self.list[globalIndex], target.primary != self.displayedItem?.group.primary else { return }
+            self.reviewDecisionSerial &+= 1
+            let wasEditing = self.contentRoot.isEditModeActive
             let windowed = self.contentRoot.windowMode == .windowed
             self.leaveEditModeThen(reason: .navigation) { [weak self] in
-                self?.coalesceNav { [weak self] in
-                    await self?.navigate(to: globalIndex)
+                guard let self else { return }
+                guard let index = self.list.groups.firstIndex(where: { $0.primary == target.primary }) else {
+                    self.contentRoot.toast(ToastContent("That photo is no longer available."))
+                    return
                 }
-                if windowed { self?.reenterEditModeAfterNavigation() }
+                self.coalesceNav { [weak self] in await self?.navigate(to: index) }
+                if wasEditing && windowed { self.reenterEditModeAfterNavigation() }
             }
         }
         // Filmstrip scroll-wheel scrub Positive delta =
@@ -397,6 +425,7 @@ public final class ViewerWindow: NSWindow {
         // pixels internally).
         contentRoot.onFilmstripScrub = { [weak self] delta in
             guard let self else { return }
+            self.reviewDecisionSerial &+= 1
             if self.contentRoot.isEditModeActive {
                 // A scrub is many small steps: ask once, then stop.
                 self.leaveEditModeThen(reason: .navigation) {}
@@ -524,13 +553,31 @@ public final class ViewerWindow: NSWindow {
     /// hold the window object (AppKit, accessibility clients, a late
     /// task), the pixels are gone.
     public override func close() {
-        super.close()
+        // Final close is already authorized by windowShouldClose. Retire the
+        // attached canvas before AppKit orders the window out; afterwards its
+        // live-drawable guard must (correctly) refuse an invisible window.
         tearDownAfterClose()
+        super.close()
     }
 
     func tearDownAfterClose() {
         guard !didTearDown else { return }
         didTearDown = true
+        cancelNavigationPreviews()
+        reviewDecisionSerial &+= 1
+        returnHintPopover?.close(); returnHintPopover = nil
+        imagePressureObservation?.cancel(); imagePressureObservation = nil
+        onImagePressureHandledForTesting = nil
+        reviewPersistenceBanner?.dispose(); reviewPersistenceBanner = nil
+        _ = cancelEditLoad()
+        editReentryGeneration &+= 1
+        editReentryTask?.cancel()
+        editReentryTask = nil
+        cancelFullResolution()
+        textureRefetchTask?.cancel()
+        textureRefetchTask = nil
+        editExitTask?.cancel()
+        editExitTask = nil
         navCoalescer.cancel()
         hiddenTrimTask?.cancel()
         chordExpiryTask?.cancel()
@@ -540,6 +587,7 @@ public final class ViewerWindow: NSWindow {
         autoHider?.stop()
         NotificationCenter.default.removeObserver(self)
         contentRoot.releaseImages()
+        contentRoot.imageView.disposeAfterClose()
         let nav = navigation
         Task.detached(priority: .utility) {
             await nav.teardown()
@@ -610,7 +658,17 @@ public final class ViewerWindow: NSWindow {
     /// Errors still flow through `showDecodeError()`; the feedback
     /// state is reset to `.idle` on error so a subsequent nav starts
     /// fresh.
+    private func cancelNavigationPreviews() {
+        navigationPreviewGeneration &+= 1
+        embeddedPreviewTask?.cancel(); embeddedPreviewTask = nil
+        thumbnailBridgeTask?.cancel(); thumbnailBridgeTask = nil
+    }
+
     private func navigateWithFeedback(_ kind: NavKind) async {
+        guard !didTearDown else { return }
+        cancelNavigationPreviews()
+        _ = cancelEditLoad()
+        let previewGeneration = navigationPreviewGeneration
         // 1. Resolve target from the synchronous main-actor intent cursor.
         //    This is the crux of the bug fix: by committing the user's
         //    intent *here* — before any actor await or decode work — the
@@ -638,6 +696,7 @@ public final class ViewerWindow: NSWindow {
 
         // Leaving a photo that shows its RAW: its slot is the primary again.
         await restorePrimarySourcesBeforeLeaving(to: target.index)
+        guard !Task.isCancelled, !didTearDown, previewGeneration == navigationPreviewGeneration else { return }
         let generation = feedbackState.beginNavigation()
         // What a completed swipe already put on screen.
         let handOver = takeSwipeHandOver(for: target.index)
@@ -699,6 +758,7 @@ public final class ViewerWindow: NSWindow {
         // even if the window moved since: no stand-in may cover it.
         var cachedHit = handOver == .photo
         if !cachedHit { cachedHit = await navigation.cachedEntry(at: target.index) != nil }
+        guard !Task.isCancelled, !didTearDown, previewGeneration == navigationPreviewGeneration else { return }
         if handOver == .standIn || handOver == .nothing {
             // The swipe's picture (thumbnail or empty canvas) is the new
             // photo's: title, subtitle and inspector follow it now.
@@ -782,19 +842,24 @@ public final class ViewerWindow: NSWindow {
         //  * no embedded preview smaller than 1/4 of the window's long
         //    edge in pixels (a 160 px EXIF thumb blown up is worse than
         //    one more frame of the previous photo).
-        let targetURL = (intent.sourceAt(thumbTargetIndex) as? FileImageSource)?.url
+        // Optional work owns only its source/shared cache, never the window's
+        // navigation controller or decode queue while suspended.
+        let thumbSource = intent.sourceAt(thumbTargetIndex)
+        let thumbnailCache = services.thumbnailCache
+        let targetURL = (thumbSource as? FileImageSource)?.url
         let minPreviewLongEdge = Self.minEmbeddedPreviewLongEdge(
             windowLongEdgePixels: max(frame.width, frame.height) * backingScaleFactor
         )
 
         // (a) Embedded preview. No artificial budget — the read either
         //     returns in 10-30 ms or returns `nil` (no embedded preview
-        //     in the container). Errors are swallowed by `embeddedPreview`
-        //     itself and surfaced as `nil`, since this is a best-effort
-        //     fast path.
-        Task { [weak self] in
-            guard let self, !cachedHit else { return }
-            if !self.feedbackState.shouldPaintThumb(generation: generation) {
+        //     in the container). Errors become nil for this best-effort path.
+        embeddedPreviewTask = Task { [weak self, cachedHit] in
+            defer {
+                if self?.navigationPreviewGeneration == previewGeneration { self?.embeddedPreviewTask = nil }
+            }
+            guard !cachedHit, let thumbSource, !Task.isCancelled else { return }
+            if self?.feedbackState.shouldPaintThumb(generation: generation) != true {
                 ShrikeSignposts.thumbnail.event(
                     "embeddedPreviewSkipped",
                     "idx=\(thumbTargetIndex) reason=generation"
@@ -807,11 +872,12 @@ public final class ViewerWindow: NSWindow {
                 )
                 return
             }
+            guard !Task.isCancelled else { return }
             ShrikeSignposts.thumbnail.event(
                 "embeddedPreviewStart",
                 "idx=\(thumbTargetIndex) gen=\(generation)"
             )
-            let preview = await self.navigation.embeddedPreview(at: thumbTargetIndex)
+            let preview = try? await thumbSource.loadEmbeddedPreview()
             guard let preview else {
                 ShrikeSignposts.thumbnail.event(
                     "embeddedPreviewSkipped",
@@ -825,26 +891,25 @@ public final class ViewerWindow: NSWindow {
                 )
                 return
             }
-            await MainActor.run {
-                if self.feedbackState.shouldPaintThumb(generation: generation) {
-                    self.contentRoot.setPlaceholderImage(
-                        preview,
-                        sourceID: self.intent.sourceAt(thumbTargetIndex)?.id
-                    )
-                    self.markDisplayed(thumbTargetIndex)
-                    self.feedbackState.didPaintThumb(generation: generation)
-                    self.contentRoot.clearCanvasDim()
-                    self.contentRoot.showPreviewBadge()
-                    ShrikeSignposts.thumbnail.event(
-                        "embeddedPreviewDone",
-                        "idx=\(thumbTargetIndex) painted=true size=\(preview.width)x\(preview.height)"
-                    )
-                } else {
-                    ShrikeSignposts.thumbnail.event(
-                        "embeddedPreviewSkipped",
-                        "idx=\(thumbTargetIndex) reason=superseded"
-                    )
-                }
+            guard !Task.isCancelled, let self, !self.didTearDown else { return }
+            if self.feedbackState.shouldPaintThumb(generation: generation) {
+                self.contentRoot.setPlaceholderImage(
+                    preview,
+                    sourceID: thumbSource.id
+                )
+                self.markDisplayed(thumbTargetIndex)
+                self.feedbackState.didPaintThumb(generation: generation)
+                self.contentRoot.clearCanvasDim()
+                self.contentRoot.showPreviewBadge()
+                ShrikeSignposts.thumbnail.event(
+                    "embeddedPreviewDone",
+                    "idx=\(thumbTargetIndex) painted=true size=\(preview.width)x\(preview.height)"
+                )
+            } else {
+                ShrikeSignposts.thumbnail.event(
+                    "embeddedPreviewSkipped",
+                    "idx=\(thumbTargetIndex) reason=superseded"
+                )
             }
         }
 
@@ -859,16 +924,20 @@ public final class ViewerWindow: NSWindow {
         //    a thumb that arrives after the embedded preview already
         //    painted (since `didPaintThumb` flips phase to `.showingThumb`).
         //
-        //    A 2 s leak-protection ceiling lives inside
-        //    `timeBoundedThumbnail` below — that is not a UX budget, it's
-        //    a safety net so a hung ThumbnailCache actor doesn't leak
-        //    tasks across many navs. Under normal operation the fetch
+        //    The 2 s branch inside `timeBoundedThumbnail` requests
+        //    cancellation; a cancellation-resistant cache child can keep
+        //    the task group waiting longer. That work owns only the source
+        //    and shared cache, so it cannot keep a closed viewer alive.
+        //    Under normal operation the fetch
         //    returns in a few ms (memory tier) to a few hundred ms (cold
         //    cache on a large HEIC/RAW), and the signposts below let us
         //    measure exactly that in Instruments.
-        Task { [weak self] in
-            guard let self, !cachedHit else { return }
-            if !self.feedbackState.shouldPaintThumb(generation: generation) {
+        thumbnailBridgeTask = Task { [weak self, cachedHit] in
+            defer {
+                if self?.navigationPreviewGeneration == previewGeneration { self?.thumbnailBridgeTask = nil }
+            }
+            guard !cachedHit, let thumbSource, !Task.isCancelled else { return }
+            if self?.feedbackState.shouldPaintThumb(generation: generation) != true {
                 ShrikeSignposts.thumbnail.event(
                     "bridgeFetchSkipped",
                     "idx=\(thumbTargetIndex) reason=generation"
@@ -881,13 +950,14 @@ public final class ViewerWindow: NSWindow {
                 )
                 return
             }
+            guard !Task.isCancelled else { return }
             ShrikeSignposts.thumbnail.event(
                 "bridgeFetchStart",
                 "idx=\(thumbTargetIndex) gen=\(generation)"
             )
             let thumb = await Self.timeBoundedThumbnail(
-                controller: self.navigation,
-                index: thumbTargetIndex,
+                source: thumbSource,
+                cache: thumbnailCache,
                 maxPixelSize: Self.thumbBridgeMaxPixelSize
             )
             guard let thumb else {
@@ -897,38 +967,37 @@ public final class ViewerWindow: NSWindow {
                 )
                 return
             }
-            await MainActor.run {
-                if self.feedbackState.shouldPaintThumb(generation: generation) {
-                    self.contentRoot.setPlaceholderImage(
-                        thumb,
-                        sourceID: self.intent.sourceAt(thumbTargetIndex)?.id
-                    )
-                    self.markDisplayed(thumbTargetIndex)
-                    self.feedbackState.didPaintThumb(generation: generation)
-                    // Thumb paint clears the canvas dim (the image canvas
-                    // is now showing SOMETHING of the new target) but does
-                    // NOT cancel the hairline progress fill. The full decode
-                    // is still running and IS the event the bar is
-                    // actually tracking; the thumb bridge is a separate
-                    // layer. Cancelling the hairline here was the root
-                    // cause of the "no bar at all during rapid
-                    // nav" bug: every cached thumb paint fired within the
-                    // 100 ms grace window and cancelled the pending show,
-                    // so for burst navs the grace never fired.
-                    self.contentRoot.clearCanvasDim()
-                    // Surface the "PREVIEW" pill the same frame as the
-                    // thumb paint so the user sees the cue from frame 0.
-                    self.contentRoot.showPreviewBadge()
-                    ShrikeSignposts.thumbnail.event(
-                        "bridgeFetchDone",
-                        "idx=\(thumbTargetIndex) painted=true"
-                    )
-                } else {
-                    ShrikeSignposts.thumbnail.event(
-                        "bridgeFetchSkipped",
-                        "idx=\(thumbTargetIndex) reason=superseded"
-                    )
-                }
+            guard !Task.isCancelled, let self, !self.didTearDown else { return }
+            if self.feedbackState.shouldPaintThumb(generation: generation) {
+                self.contentRoot.setPlaceholderImage(
+                    thumb,
+                    sourceID: thumbSource.id
+                )
+                self.markDisplayed(thumbTargetIndex)
+                self.feedbackState.didPaintThumb(generation: generation)
+                // Thumb paint clears the canvas dim (the image canvas
+                // is now showing SOMETHING of the new target) but does
+                // NOT cancel the hairline progress fill. The full decode
+                // is still running and IS the event the bar is
+                // actually tracking; the thumb bridge is a separate
+                // layer. Cancelling the hairline here was the root
+                // cause of the "no bar at all during rapid
+                // nav" bug: every cached thumb paint fired within the
+                // 100 ms grace window and cancelled the pending show,
+                // so for burst navs the grace never fired.
+                self.contentRoot.clearCanvasDim()
+                // Surface the "PREVIEW" pill the same frame as the
+                // thumb paint so the user sees the cue from frame 0.
+                self.contentRoot.showPreviewBadge()
+                ShrikeSignposts.thumbnail.event(
+                    "bridgeFetchDone",
+                    "idx=\(thumbTargetIndex) painted=true"
+                )
+            } else {
+                ShrikeSignposts.thumbnail.event(
+                    "bridgeFetchSkipped",
+                    "idx=\(thumbTargetIndex) reason=superseded"
+                )
             }
         }
 
@@ -952,7 +1021,7 @@ public final class ViewerWindow: NSWindow {
                 contentRoot.completeHairlineIndicator()
                 await applyNavigated(
                     image: image, index: idx,
-                    prepared: entry.prepared as? DisplayTexture
+                    prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy
                 )
             }
         } catch is CancellationError {
@@ -975,7 +1044,7 @@ public final class ViewerWindow: NSWindow {
             // 400 ms hold, then revert, preempted by the next nav.
             contentRoot.clearCanvasDim()
             contentRoot.flashPositionOverlayError()
-            contentRoot.showDecodeError(nextEnabled: target.index < list.count - 1)
+            showContextualDecodeError(index: target.index)
             contentRoot.updateInspectorPosition(index: target.index, total: list.count)
             markDisplayed(target.index)
             ShrikeSignposts.navigation.event(
@@ -1135,7 +1204,7 @@ public final class ViewerWindow: NSWindow {
         } catch {
             if Task.isCancelled { return }
             let index = displayedItem?.listIndex ?? intent.currentIndex
-            contentRoot.showDecodeError(nextEnabled: index < list.count - 1)
+            showContextualDecodeError(index: index)
         }
     }
 
@@ -1155,14 +1224,14 @@ public final class ViewerWindow: NSWindow {
     private static let thumbBridgeSafetyCeiling: TimeInterval = 2.0
 
     private static func timeBoundedThumbnail(
-        controller: NavigationController,
-        index: Int,
+        source: any ImageSource,
+        cache: ThumbnailCache,
         maxPixelSize: Int,
         budget: TimeInterval = thumbBridgeSafetyCeiling
     ) async -> CGImage? {
         await withTaskGroup(of: CGImage?.self) { group in
             group.addTask {
-                await controller.thumbnail(at: index, maxPixelSize: maxPixelSize)
+                try? await cache.thumbnail(for: source, maxPixelSize: maxPixelSize)
             }
             group.addTask {
                 try? await Task.sleep(
@@ -1170,8 +1239,9 @@ public final class ViewerWindow: NSWindow {
                 )
                 return nil
             }
-            // First finisher wins; its value is returned. The loser may
-            // still complete but its result is ignored.
+            // First finisher chooses the result. Leaving the group still
+            // waits for the cancelled child to finish safely; this is not
+            // a hard deadline for cancellation-resistant work.
             // `group.next()` returns `Element?` — i.e. `CGImage??`. The
             // outer Optional is only nil if the group is empty (we added
             // two tasks, so never); flattening picks the real value.
@@ -1190,13 +1260,14 @@ public final class ViewerWindow: NSWindow {
     /// metadata (path, EXIF via inspector, Live Photo companion detection,
     /// drag-out source URL).
     private func applyNavigated(
-        image: CGImage, index: Int, prepared: DisplayTexture? = nil
+        image: CGImage, index: Int, prepared: DisplayTexture? = nil,
+        resourceLease: ImageResourceLease? = nil, imageIsLazy: Bool = false
     ) async {
         let total = await navigation.count()
         contentRoot.setImage(
             image, index: index, total: total,
             sourceID: intent.sourceAt(index)?.id,
-            prepared: prepared
+            prepared: prepared, resourceLease: resourceLease, imageIsLazy: imageIsLazy
         )
         markDisplayed(index)
         await updateFilmstrip(centeredOn: index)
@@ -1345,6 +1416,7 @@ public final class ViewerWindow: NSWindow {
         // edge-activated panels are mounted (still hidden) by the time
         // AppKit finishes the zoom.
         contentRoot.windowMode = .fullscreen
+        installScrimIfNeeded()
     }
 
     @objc private func handleDidEnterFullScreen(_ notification: Notification) {
@@ -1363,6 +1435,7 @@ public final class ViewerWindow: NSWindow {
         // The toolbar comes back to the user's setting only once the
         // window is out of full screen.
         restoreToolbarAfterFullScreen()
+        installScrimIfNeeded()
         contentRoot.updateTextureLongEdge()
         contentRoot.refitAfterFullScreenChange()
         finishEditWidthReturnAfterFullScreen()
@@ -1410,6 +1483,8 @@ public final class ViewerWindow: NSWindow {
     }
 
     internal func dispatch(_ action: ViewerAction) {
+        if action == .slideshow { reviewDecisionSerial &+= 1 }
+        if Self.leavesPhoto(action), !reviewAutomaticMove { reviewDecisionSerial &+= 1 }
         // RAW files are never written: refuse edits and rotates on that view.
         if refuseWriteWhileRAWShown(action) { return }
         // Any action during a swipe finishes it at once.
@@ -1417,12 +1492,30 @@ public final class ViewerWindow: NSWindow {
         // Leaving the photo while editing asks first
         // (Save / Don't Save / Cancel), then goes on.
         if contentRoot.isEditModeActive, Self.leavesPhoto(action) {
-            // Window: edit mode ends for the move and starts again, with no tool,
-            // on the new photo (spec 25 §3.3). Full screen has no strip and stays inert.
+            let targetIndex: Int
+            switch action {
+            case .nextImage:
+                if handleEdgeOfFolder(.next) { return }
+                targetIndex = intent.currentIndex + 1
+            case .prevImage:
+                if handleEdgeOfFolder(.previous) { return }
+                targetIndex = intent.currentIndex - 1
+            case .firstImage: targetIndex = 0
+            case .lastImage: targetIndex = list.count - 1
+            case .nextFolder: goToAdjacentFolder(.next); return
+            case .prevFolder: goToAdjacentFolder(.previous); return
+            default: return
+            }
+            guard let target = list[targetIndex], target.primary != displayedItem?.group.primary else { return }
             let windowed = contentRoot.windowMode == .windowed
             leaveEditModeThen(reason: .navigation) { [weak self] in
-                self?.dispatch(action)
-                if windowed { self?.reenterEditModeAfterNavigation() }
+                guard let self else { return }
+                guard let index = self.list.groups.firstIndex(where: { $0.primary == target.primary }) else {
+                    self.contentRoot.toast(ToastContent("That photo is no longer available."))
+                    return
+                }
+                self.coalesceNav { [weak self] in await self?.navigate(to: index) }
+                if windowed { self.reenterEditModeAfterNavigation() }
             }
             return
         }
@@ -1626,7 +1719,31 @@ public final class ViewerWindow: NSWindow {
     /// full-resolution decode: the display texture may
     /// be a preview or subsampled, and `sourcePixelSize` must be the
     /// file's. Over 150 ms shows "Loading full image…"; Esc cancels.
+    func editSourceMatchesDisplayed(_ source: URL, item: DisplayedItem) -> Bool {
+        guard !didTearDown, displayedItem == item, !item.isRAWShown,
+              list.generation == item.generation, list[item.listIndex] == item.group,
+              intent.currentIndex == item.listIndex,
+              (source == item.group.primary || GroupList.canonical(source) == GroupList.canonical(item.group.primary)),
+              let intended = intent.sourceAt(item.listIndex) else { return false }
+        if let file = intended as? FileImageSource {
+            return file.url == source || GroupList.canonical(file.url) == GroupList.canonical(source)
+        }
+        return intended.id == FileImageSource(url: source).id
+    }
+
+    var canBeginEditingDisplayedPhoto: Bool {
+        guard navCoalescer.isIdle, let item = displayedItem,
+              editSourceMatchesDisplayed(item.group.primary, item: item),
+              let intended = intent.sourceAt(item.listIndex) else { return false }
+        return contentRoot.imageView.sourceID == intended.id
+    }
+
     func enterEditMode(landOn tool: EditTool?, then afterEnter: (@MainActor () -> Void)? = nil) {
+        if contentRoot.isEditModeActive {
+            if let tool { contentRoot.editModeController.selectTool(tool) }
+            afterEnter?()
+            return
+        }
         // A photo that cannot be opened has nothing to edit. The image view still holds the
         // previous photo's pixels behind the error card, so without this the keys (E, C, R...)
         // would edit and save the wrong pixels over the broken file (spec 26 §2).
@@ -1634,34 +1751,47 @@ public final class ViewerWindow: NSWindow {
             contentRoot.toast(ViewerContentView.decodeErrorEditReason)
             return
         }
-        guard let shown = contentRoot.imageView.image else {
+        guard contentRoot.imageView.image != nil else {
             contentRoot.toast("No image to edit")
             return
         }
-        guard editLoadTask == nil else { return }
-        let item = displayedItem
-        let url = item?.group.primary
+        guard !didTearDown, editLoadTask == nil else { return }
+        guard canBeginEditingDisplayedPhoto, let item = displayedItem,
+              !contentRoot.editModeController.isActive else {
+            contentRoot.toast("Wait for the current photo to finish loading before editing.")
+            return
+        }
+        reviewDecisionSerial &+= 1
+        editLoadGeneration &+= 1
+        let request = editLoadGeneration
+        let url = item.group.primary
+        let sourceLoader = editSourceLoaderForTesting
         let spinner = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.editLoadingDelay)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self?.didTearDown == false, self?.editLoadGeneration == request else { return }
             self?.contentRoot.setEditLoadingVisible(true)
         }
         editLoadTask = Task { @MainActor [weak self] in
             let full: CGImage?
-            if let url, url.isFileURL {
-                full = await Task.detached(priority: .userInitiated) {
-                    EditSourceLoader.fullImage(at: url)
-                }.value
+            var fullLease: ImageResourceLease?
+            if let sourceLoader {
+                full = await sourceLoader(url)
+            } else if url.isFileURL {
+                let loaded = try? await EditSourceLoader.loadForEditing(at: url, resources: .shared, owner: ImageResourceOwner())
+                full = loaded?.image; fullLease = loaded?.lease
             } else {
                 full = nil
             }
             spinner.cancel()
-            guard let self else { return }
+            guard let self, self.editLoadGeneration == request else { return }
             self.contentRoot.setEditLoadingVisible(false)
             self.editLoadTask = nil
-            guard !Task.isCancelled, self.displayedItem == item else { return }
-            let image = full ?? shown
+            guard !Task.isCancelled, !self.didTearDown, self.navCoalescer.isIdle,
+                  self.editSourceMatchesDisplayed(url, item: item),
+                  !self.contentRoot.isEditModeActive, !self.contentRoot.editModeController.isActive else { return }
+            guard let image = full ?? self.contentRoot.imageView.image else { return }
             do {
+                self.contentRoot.editModeController.loadedOriginalLease = fullLease
                 self.contentRoot.enterEditMode(
                     image: image,
                     url: url,
@@ -1690,6 +1820,7 @@ public final class ViewerWindow: NSWindow {
 
     /// Esc while edit mode waits for the full image: stop waiting.
     func cancelEditLoad() -> Bool {
+        editLoadGeneration &+= 1
         guard let task = editLoadTask else { return false }
         task.cancel()
         editLoadTask = nil
@@ -1702,14 +1833,15 @@ public final class ViewerWindow: NSWindow {
 
     private func handleEditExitOutcome(_ outcome: EditExitOutcome) {
         switch outcome {
-        case .exited, .cancelled:
-            break
-        case .needsSave:
-            // A successful save closes edit mode itself; a failed one
-            // keeps the edits on screen.
-            Task { [weak self] in await self?.saveEditedFile(asPanel: false) }
-        case .needsSaveAs:
-            Task { [weak self] in await self?.saveEditedFile(asPanel: true) }
+        case .exited, .cancelled: break
+        case .needsSave, .needsSaveAs:
+            guard let departure = contentRoot.editModeController.departureToken else { return }
+            Task { [weak self] in
+                guard let self else { return }
+                if await !self.saveEditedFile(asPanel: outcome == .needsSaveAs, departure: departure) {
+                    await self.contentRoot.editModeController.restoreCancelledDeparture(for: departure)
+                }
+            }
         }
     }
 
@@ -1733,15 +1865,29 @@ public final class ViewerWindow: NSWindow {
     /// After a move that left edit mode: wait for the new photo, then start
     /// edit mode again with no tool, so a run of photos can be edited in turn.
     func reenterEditModeAfterNavigation() {
-        Task { @MainActor [weak self] in
+        editReentryTask?.cancel()
+        editReentryGeneration &+= 1
+        let generation = editReentryGeneration
+        editReentryTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.editReentryGeneration == generation { self.editReentryTask = nil }
+            }
             var waited = 0
-            while let self, !self.navCoalescer.isIdle, waited < 300 {
+            while let self, !Task.isCancelled, !self.navCoalescer.isIdle, waited < 300 {
                 try? await Task.sleep(for: .milliseconds(10))
                 waited += 1
             }
-            guard let self, !self.contentRoot.isEditModeActive, self.displayedItem != nil else { return }
+            guard !Task.isCancelled, let self, !self.didTearDown,
+                  !self.contentRoot.isEditModeActive, self.displayedItem != nil else { return }
             self.enterEditMode(landOn: nil)
         }
+    }
+
+    /// Awaits scheduled post-navigation edit entry and its source load.
+    /// Tests must observe the final mode, rather than the first decode paint.
+    func waitForEditReentryForTesting() async {
+        await editReentryTask?.value
+        await editLoadTask?.value
     }
 
     func coalesceNav(_ body: @escaping @MainActor @Sendable () async -> Void) {

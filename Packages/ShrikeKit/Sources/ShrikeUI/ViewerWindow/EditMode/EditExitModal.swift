@@ -36,7 +36,19 @@ enum EditExitModal {
         let primary: Choice
     }
 
-    static func content(fileName: String, writable: Bool) -> Content {
+    static func content(fileName: String, writable: Bool, reason: EditExitReason = .userToggled,
+                        savePolicy: String = "") -> Content {
+        if reason == .navigation {
+            return Content(
+                message: writable ? "Save changes to “\(fileName)” before leaving this photo?"
+                    : "Save a copy of “\(fileName)” before leaving this photo?",
+                information: (writable
+                    ? "Save your edits before opening the other photo. Discard Changes removes all unsaved edits to this photo."
+                    : "Save your edits as a separate file. The original will stay unchanged. Discard Changes removes all unsaved edits to this photo.")
+                    + (savePolicy.isEmpty ? "" : "\n\n" + savePolicy),
+                buttons: [writable ? "Save Changes" : "Save Copy…", "Cancel", "Discard Changes"],
+                primary: writable ? .save : .saveAs)
+        }
         if writable {
             return Content(
                 message: "Save changes to “\(fileName)”?",
@@ -73,6 +85,8 @@ enum EditExitModal {
         alert.informativeText = content.information
         alert.alertStyle = .warning
         for title in content.buttons { alert.addButton(withTitle: title) }
+        alert.buttons[0].keyEquivalent = "\r"
+        alert.buttons[1].keyEquivalent = "\u{1b}"
         let dontSave = alert.buttons[2]
         dontSave.keyEquivalent = "d"
         dontSave.keyEquivalentModifierMask = [.command]
@@ -84,21 +98,23 @@ enum EditExitModal {
 
     /// Show the exit alert attached to `window`. Completion receives the
     /// user's choice on the main actor.
-    static func show(
-        on window: NSWindow,
-        fileName: String,
-        writable: Bool,
-        completion: @escaping @MainActor (Choice) -> Void
-    ) {
-        let content = content(fileName: fileName, writable: writable)
-        if let responder = responderForTesting {
-            completion(responder(content))
-            return
-        }
+    static var presenterForTesting: ((Content, @escaping @MainActor (Choice) -> Void) -> Void)?
+
+    static func show(on window: NSWindow, fileName: String, writable: Bool,
+                     completion: @escaping @MainActor (Choice) -> Void) {
+        _ = show(on: window, content: content(fileName: fileName, writable: writable), completion: completion)
+    }
+
+    @discardableResult
+    static func show(on window: NSWindow, content: Content,
+                     completion: @escaping @MainActor (Choice) -> Void) -> NSAlert? {
+        if let presenterForTesting { presenterForTesting(content, completion); return nil }
+        if let responder = responderForTesting { completion(responder(content)); return nil }
         let alert = makeAlert(content)
         alert.beginSheetModal(for: window) { response in
             let choice = Self.choice(for: response, content: content)
             Task { @MainActor in completion(choice) }
         }
+        return alert
     }
 }

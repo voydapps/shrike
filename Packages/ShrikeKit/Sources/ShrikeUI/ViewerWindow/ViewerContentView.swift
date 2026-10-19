@@ -131,6 +131,83 @@ public final class ViewerContentView: NSView {
     private let canvasDim: NSView
 
     /// Edit-mode shell. Not mounted until `enterEditMode(…)`.
+    lazy var reviewControls = ReviewControls()
+    private let editSavePolicyLabel = NSTextField(wrappingLabelWithString: "")
+    private(set) var editSavePolicySurface: HUDSurfaceView?
+    private(set) var persistenceSurface: HUDSurfaceView?
+    private var editSavePolicyInstalled = false
+    private var reviewInstalled = false
+    private var overlayPreferences: ChromeTextObservation?
+    private var reviewBottomConstraint: NSLayoutConstraint?
+    private weak var reviewBottomTarget: NSView?
+
+    func installReviewControls() {
+        guard Prefs.reviewControlsVisible, !reviewInstalled else { return }; reviewInstalled = true
+        reviewControls.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(reviewControls)
+        applySurfaceLook(reviewControls)
+        NSLayoutConstraint.activate([reviewControls.centerXAnchor.constraint(equalTo: imageView.centerXAnchor),
+            reviewControls.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -16)])
+        observeOverlayTypography(reviewControls)
+        refreshReviewVisibility()
+    }
+    func refreshReviewVisibility() {
+        guard reviewInstalled else { return }
+        reviewControls.isHidden = !Prefs.reviewControlsVisible || isEditModeActive
+        if windowMode == .fullscreen { reviewControls.isHidden = reviewControls.isHidden || !fullscreenTarget(.filmstrip) }
+        let target: NSView
+        if windowMode == .fullscreen, fullscreenTarget(.filmstrip) {
+            if fullscreenTarget(.toolbar), let capsule = capsuleStorage { target = capsule }
+            else { target = filmstrip }
+        } else { target = imageView }
+        if target !== reviewBottomTarget {
+            reviewBottomConstraint?.isActive = false
+            reviewBottomTarget = target
+            reviewBottomConstraint = target === imageView
+                ? reviewControls.bottomAnchor.constraint(equalTo: target.bottomAnchor, constant: -8)
+                : reviewControls.bottomAnchor.constraint(equalTo: target.topAnchor, constant: -8)
+            reviewBottomConstraint?.isActive = true
+        }
+    }
+
+    private func observeOverlayTypography(_ view: NSView) {
+        ChromeTypography.register(view)
+        if overlayPreferences == nil {
+            overlayPreferences = ChromeTextObservation(root: self) { [weak self] in
+                self?.refreshEditPrimaryTypography()
+            }
+        }
+    }
+    func installPersistenceBanner(_ banner: PersistenceBanner) {
+        banner.onVisibilityChanged = { [weak self, weak banner] hidden in
+            guard let self, let banner else { return }
+            self.updatePersistenceSurface(banner, hidden: hidden)
+        }
+        updatePersistenceSurface(banner, hidden: banner.isHidden)
+    }
+    private func updatePersistenceSurface(_ banner: PersistenceBanner, hidden: Bool) {
+        if !hidden, persistenceSurface == nil {
+            let surface = HUDSurfaceView(frame: .zero)
+            surface.usesOpaqueFill = true
+            surface.translatesAutoresizingMaskIntoConstraints = false
+            banner.translatesAutoresizingMaskIntoConstraints = false
+            surface.addSubview(banner); addSubview(surface)
+            NSLayoutConstraint.activate([
+                surface.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+                surface.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+                surface.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 8),
+                banner.leadingAnchor.constraint(equalTo: surface.contentHost.leadingAnchor, constant: 4),
+                banner.trailingAnchor.constraint(equalTo: surface.contentHost.trailingAnchor, constant: -4),
+                banner.topAnchor.constraint(equalTo: surface.contentHost.topAnchor, constant: 4),
+                banner.bottomAnchor.constraint(equalTo: surface.contentHost.bottomAnchor, constant: -4),
+            ])
+            for button in banner.arrangedSubviews.compactMap({ $0 as? NSButton }) { button.font = ChromeTypography.font(12) }
+            observeOverlayTypography(surface)
+            persistenceSurface = surface; applySurfaceLook(surface)
+        }
+        persistenceSurface?.isHidden = hidden
+    }
+
     public let editModeController: EditModeController = EditModeController()
     private var editPanelConstraints: [NSLayoutConstraint] = []
     private var editOverlayConstraints: [NSLayoutConstraint] = []
@@ -432,6 +509,7 @@ public final class ViewerContentView: NSView {
         }
         editModeController.chooseToolInFullScreen = { [weak self] in self?.windowMode == .fullscreen }
         editModeController.onChromeStateChanged = { [weak self] state in
+            self?.editSavePolicyLabel.stringValue = state.savePolicy
             self?.applyEditChromeState(state)
         }
     }
@@ -447,6 +525,29 @@ public final class ViewerContentView: NSView {
             return
         }
         isEditModeActive = true
+        if !editSavePolicyInstalled {
+            editSavePolicyInstalled = true
+            editSavePolicyLabel.font = ChromeTypography.font(12)
+            editSavePolicyLabel.textColor = .secondaryLabelColor
+            editSavePolicyLabel.translatesAutoresizingMaskIntoConstraints = false
+            let surface = HUDSurfaceView(frame: .zero)
+            surface.usesOpaqueFill = true
+            surface.translatesAutoresizingMaskIntoConstraints = false
+            surface.addSubview(editSavePolicyLabel); addSubview(surface)
+            NSLayoutConstraint.activate([
+                surface.leadingAnchor.constraint(equalTo: imageView.leadingAnchor, constant: 8),
+                surface.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -EditLayout.columnWidth - 8),
+                surface.bottomAnchor.constraint(equalTo: imageView.bottomAnchor, constant: -8),
+                editSavePolicyLabel.leadingAnchor.constraint(equalTo: surface.contentHost.leadingAnchor, constant: 8),
+                editSavePolicyLabel.trailingAnchor.constraint(equalTo: surface.contentHost.trailingAnchor, constant: -8),
+                editSavePolicyLabel.topAnchor.constraint(equalTo: surface.contentHost.topAnchor, constant: 8),
+                editSavePolicyLabel.bottomAnchor.constraint(equalTo: surface.contentHost.bottomAnchor, constant: -8),
+            ])
+            observeOverlayTypography(surface)
+            editSavePolicySurface = surface; applySurfaceLook(surface)
+        }
+        editSavePolicySurface?.isHidden = false
+        editSavePolicyLabel.stringValue = editModeController.chromeState.savePolicy
         onEditModeActiveChanged?(true)
         // The photo always starts fitted to the edit canvas, whatever zoom, pan or
         // half-finished zoom animation the viewer had (0.2.10 audit item 2): the crop
@@ -457,7 +558,7 @@ public final class ViewerContentView: NSView {
         imageView.fileDragEnabled = false   // drags belong to the tool
         // Discard shows this again directly, with no
         // preview frame in between.
-        imageBeforeEdit = imageView.image.map { ($0, imageView.sourceID) }
+        imageBeforeEdit = imageView.image.map { ($0, imageView.sourceID, imageView.imageResourceLease, imageView.imageIsLazy) }
 
         // Parameter panel on the right, below the edit toolbar (the
         // safe area ends under the titlebar + toolbar in a window).
@@ -526,6 +627,7 @@ public final class ViewerContentView: NSView {
 
         editModeController.hostWindow = window
         editModeController.enter(image: image, url: url, landOn: tool)
+        refreshReviewVisibility()
         positionHistogram(animated: false)
         updateHistogramVisibility(animated: true)
         installEditChrome()
@@ -551,7 +653,7 @@ public final class ViewerContentView: NSView {
     }()
 
     /// The image on screen when edit mode began (restored on Discard).
-    private var imageBeforeEdit: (CGImage, String?)?
+    private var imageBeforeEdit: (CGImage, String?, ImageResourceLease?, Bool)?
 
     /// "Loading full image…" while edit mode waits for the full decode.
     private(set) lazy var editLoadingView: HUDSurfaceView = {
@@ -562,7 +664,7 @@ public final class ViewerContentView: NSView {
         spinner.controlSize = .small
         spinner.startAnimation(nil)
         let label = NSTextField(labelWithString: "Loading full image…")
-        label.font = .systemFont(ofSize: 13)
+        label.font = ChromeTypography.font(13)
         label.textColor = .white
         let stack = NSStackView(views: [spinner, label])
         stack.spacing = 8
@@ -700,6 +802,13 @@ public final class ViewerContentView: NSView {
         applyEditChromeState(editModeController.chromeState)
     }
 
+    /// Only the mounted fullscreen primary uses task-scaled typography;
+    /// the native window toolbar retains its own font.
+    func refreshEditPrimaryTypography() {
+        guard isEditModeActive, windowMode == .fullscreen else { return }
+        editCapsule.doneButton.setAccentTitle(editCapsule.doneButton.title)
+    }
+
     private func applyEditChromeState(_ state: EditChromeState) {
         editToolbarController.apply(state)
         editCapsule.apply(state)
@@ -763,7 +872,6 @@ public final class ViewerContentView: NSView {
     /// Runs on layout (resize, full screen), zoom, pan, a
     /// view turn and a new photo; nothing while the badge is hidden.
     func layoutLiveBadge() {
-        updateTitleScrim()   // the same moments: layout, zoom, pan, a turn, a new photo
         guard !livePhotoBadge.isHidden,
               let leading = liveBadgeLeading, let top = liveBadgeTopPreferred else { return }
         let canvas = imageView.frame
@@ -779,17 +887,7 @@ public final class ViewerContentView: NSView {
         if abs(top.constant - y) > 0.25 { top.constant = y }
     }
 
-    // MARK: Title scrim (spec 27 P3-2)
-
-    /// A dark top gradient that keeps the white title and subtitle readable when a bright
-    /// photo runs under the titlebar (zoomed in, or filling the window). Absent at Fit
-    /// when the photo sits below the titlebar, in full screen and in edit mode.
-    static let titleScrimTopAlpha: CGFloat = 0.5
-    static let titleScrimTail: CGFloat = 24
-    static let titleScrimFade: TimeInterval = 0.12
-    private var titleScrimStorage: TitleScrimView?
-    private var titleScrimHeight: NSLayoutConstraint?
-    private var titleScrimShown = false
+    // MARK: Native chrome overlap geometry
 
     /// The photo as drawn reaches above the titlebar's bottom edge.
     var imageOverlapsTitlebar: Bool {
@@ -799,43 +897,6 @@ public final class ViewerContentView: NSView {
         let inSelf = convert(drawn, from: imageView)
         return inSelf.maxY > bounds.maxY - safeAreaInsets.top + 0.5
     }
-
-    func updateTitleScrim() {
-        let want = imageOverlapsTitlebar
-        if want {
-            if titleScrimStorage == nil {
-                let scrim = TitleScrimView(topAlpha: Self.titleScrimTopAlpha)
-                scrim.translatesAutoresizingMaskIntoConstraints = false
-                scrim.alphaValue = 0
-                addSubview(scrim, positioned: .above, relativeTo: imageView)
-                let height = scrim.heightAnchor.constraint(equalToConstant: 0)
-                titleScrimHeight = height
-                NSLayoutConstraint.activate([
-                    scrim.topAnchor.constraint(equalTo: topAnchor),
-                    scrim.leadingAnchor.constraint(equalTo: leadingAnchor),
-                    scrim.trailingAnchor.constraint(equalTo: trailingAnchor),
-                    height,
-                ])
-                titleScrimStorage = scrim
-            }
-            let height = safeAreaInsets.top + Self.titleScrimTail
-            if let constraint = titleScrimHeight, abs(constraint.constant - height) > 0.5 { constraint.constant = height }
-        }
-        guard want != titleScrimShown, let scrim = titleScrimStorage else { return }
-        titleScrimShown = want
-        if reducesMotion || window == nil {
-            scrim.alphaValue = want ? 1 : 0
-            return
-        }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = Self.titleScrimFade
-            scrim.animator().alphaValue = want ? 1 : 0
-        }
-    }
-
-    /// Test seams.
-    var titleScrimForTesting: TitleScrimView? { titleScrimStorage }
-    var titleScrimIsShownForTesting: Bool { titleScrimShown }
 
     /// The part of the canvas the photo fits in.
     /// Edit mode: clear of the side panel and the
@@ -882,8 +943,8 @@ public final class ViewerContentView: NSView {
         onEditModeActiveChanged?(false)
         imageView.fileDragEnabled = true
         applyFitInsets()   // the rest fit area before the photo comes back
-        if restoreImage, let (image, sourceID) = imageBeforeEdit {
-            imageView.setImage(image, sourceID: sourceID)
+        if restoreImage, let (image, sourceID, lease, lazy) = imageBeforeEdit {
+            imageView.setImage(image, sourceID: sourceID, prepared: nil, resourceLease: lease, imageIsLazy: lazy)
             histogram.imageShown(image, url: histogramURL)
         }
         imageBeforeEdit = nil
@@ -896,7 +957,9 @@ public final class ViewerContentView: NSView {
         editPanelConstraints = []
         editOverlayConstraints = []
 
+        editSavePolicySurface?.isHidden = true
         editModeController.parameterPanel.removeFromSuperview()
+        refreshReviewVisibility()
         editModeController.cropOverlay.removeFromSuperview()
         installEditChrome()
         needsLayout = true
@@ -1287,6 +1350,7 @@ public final class ViewerContentView: NSView {
             empty.inFullScreen = windowMode == .fullscreen
         }
         for surface in hudSurfaces { applySurfaceLook(surface) }
+        refreshReviewVisibility()
         needsLayout = true
         positionHistogram(animated: false)
         updateHistogramVisibility(animated: false)
@@ -1298,6 +1362,9 @@ public final class ViewerContentView: NSView {
     private var hudSurfaces: [HUDSurfaceView] {
         var out: [HUDSurfaceView] = [filmstrip, inspector, zoomBadge,
                                      toastHost, navPositionOverlay]
+        if reviewInstalled { out.append(reviewControls) }
+        if let surface = editSavePolicySurface { out.append(surface) }
+        if let surface = persistenceSurface { out.append(surface) }
         if let capsule = capsuleStorage { out.append(capsule) }
         if let histogram = histogramStorage { out.append(histogram) }
         return out
@@ -1413,10 +1480,11 @@ public final class ViewerContentView: NSView {
 
     public func setImage(
         _ image: CGImage, index: Int, total: Int,
-        sourceID: String? = nil, prepared: DisplayTexture? = nil
+        sourceID: String? = nil, prepared: DisplayTexture? = nil,
+        resourceLease: ImageResourceLease? = nil, imageIsLazy: Bool = false
     ) {
         hideErrorOverlay()
-        imageView.setImage(image, sourceID: sourceID, prepared: prepared)
+        imageView.setImage(image, sourceID: sourceID, prepared: prepared, resourceLease: resourceLease, imageIsLazy: imageIsLazy)
         histogram.markStale()
         layoutLiveBadge()
         inspector.updatePlaceholder(index: index, total: total, image: image)
@@ -1457,7 +1525,12 @@ public final class ViewerContentView: NSView {
 
     /// The window closed: let go of every image and texture now,
     /// even if something still references this view.
+    var hasPreEditImageForTesting: Bool { imageBeforeEdit != nil }
+
     public func releaseImages() {
+        editModeController.releaseAfterClose()
+        isEditModeActive = false
+        imageBeforeEdit = nil
         releaseLivePhoto()
         histogram.reset()
         loupeView.sourceImage = nil
@@ -1698,6 +1771,9 @@ public final class ViewerContentView: NSView {
     }
 
     /// `nextEnabled` is false on the last photo of a folder that does not wrap.
+    func configureDecodeRecovery(title: String, revealAvailable: Bool, action: @escaping () -> Void) {
+        errorOverlay.configureRecovery(title: title, revealAvailable: revealAvailable, action: action)
+    }
     public func showDecodeError(nextEnabled: Bool = true) {
         errorOverlay.setNextEnabled(nextEnabled)
         if errorOverlay.isHidden { errorOverlay.announce() }
@@ -2884,6 +2960,7 @@ public final class ViewerContentView: NSView {
     }
 
     private func updatePanelVisibility() {
+        refreshReviewVisibility()
         for panel in PanelKind.allCases {
             let shouldShow: Bool
             shouldShow = fullscreenTarget(panel)
@@ -3092,27 +3169,5 @@ extension ViewerContentView: MetalImageViewDelegate {
 
     public func metalImageViewDidPresentFirstDrawable(_ view: MetalImageView) {
         ShrikeSignposts.launch.event("viewerFirstDrawable")
-    }
-}
-
-/// Black at `topAlpha` at the top, clear at the bottom, under the titlebar (spec 27 P3-2).
-@MainActor
-final class TitleScrimView: NSView {
-    let topAlpha: CGFloat
-
-    init(topAlpha: CGFloat) {
-        self.topAlpha = topAlpha
-        super.init(frame: .zero)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("programmatic only") }
-
-    override var isFlipped: Bool { true }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override func draw(_ dirtyRect: NSRect) {
-        NSGradient(starting: NSColor.black.withAlphaComponent(topAlpha), ending: NSColor.black.withAlphaComponent(0))?
-            .draw(in: bounds, angle: 90)
     }
 }

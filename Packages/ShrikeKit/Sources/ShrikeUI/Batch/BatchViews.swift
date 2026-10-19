@@ -54,7 +54,7 @@ struct BatchRootView: View {
             case .done: BatchDoneView(model: model, actions: actions)
             }
         }
-        .font(.system(size: 13))
+        .font(.system(size: ChromeTypography.size(13)))
         .frame(minWidth: 760, minHeight: 520)
     }
 }
@@ -71,15 +71,35 @@ struct BatchFormView: View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 BatchQueuePane(model: model, actions: actions)
+                    .disabled(model.reviewingRemaining)
                     .frame(width: 280)
                 Divider()
+                ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    operations
+                    if model.reviewingRemaining {
+                        Text("Review remaining work. Completed steps will not run again. To change the selection or operations, choose Run Another Batch.").textSelection(.enabled)
+                        HStack { Button("Back to Results") { model.cancelRemainingReview() }; Button("Run Another Batch") { model.runAnother() } }
+                    }
+                    operations.disabled(model.reviewingRemaining)
+                    if model.reviewingRemaining {
+                        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 9) {
+                            GridRow {
+                                Text("Output")
+                                outputRow
+                            }
+                        }
+                    }
                     conflictRow
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("What Will Happen").font(.headline)
+                        Text(model.consequenceSummary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                        ForEach(model.conversionDisclosures, id: \.self) { disclosure in Text(disclosure).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
+                    }
                     BatchPreviewBox(model: model)
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
             }
             Divider()
             bottomBar
@@ -215,9 +235,11 @@ struct BatchFormView: View {
                 }
                 .disabled(!model.form.renameOn)
             }
-            GridRow {
-                Text("Output")
-                outputRow
+            if !model.reviewingRemaining {
+                GridRow {
+                    Text("Output")
+                    outputRow
+                }
             }
         }
     }
@@ -280,16 +302,18 @@ struct BatchFormView: View {
             }
             .fixedSize()
             .accessibilityLabel("Preset")
+            .disabled(model.reviewingRemaining)
             if let line = model.validationLine {
                 Text(line)
                     .foregroundStyle(model.templateError == nil ? Color.secondary : Color(nsColor: .systemRed))
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
                     .padding(.leading, 8)
             }
             Spacer(minLength: 12)
             Button("Cancel", action: actions.cancel)
                 .keyboardShortcut(.cancelAction)
-            Button(BatchModel.Copy.runButton(model.queue.count)) { model.run() }
+            Button(model.reviewingRemaining ? "Retry \(model.queue.count) Remaining \(model.queue.count == 1 ? "Photo" : "Photos")" : BatchModel.Copy.runButton(model.queue.count)) { model.run() }
                 .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(.borderedProminent)
                 .disabled(!model.canRun)
@@ -345,7 +369,7 @@ struct BatchQueuePane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Text(BatchModel.Copy.images(model.queue.count))
+                Text(verbatim: "\(model.queue.count) \(model.queue.count == 1 ? "photo" : "photos") chosen · \(model.scopeDescription)")
                     .font(.system(size: 13, weight: .semibold))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -373,7 +397,7 @@ struct BatchQueuePane: View {
                         Spacer(minLength: 4)
                         if let size = model.sizes[item.id] {
                             Text(verbatim: "\(Int(size.width)) × \(Int(size.height))")
-                                .font(.system(size: 11))
+                                .font(.system(size: ChromeTypography.size(11)))
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
                                 .frame(minWidth: BatchLayout.dimensionsColumnWidth, alignment: .trailing)
@@ -402,7 +426,7 @@ struct BatchPreviewBox: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Preview")
+            Text(model.moreCount > 0 ? "Preview · first 200 of \(model.queue.count)" : "Preview")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
             ScrollView {
@@ -457,7 +481,7 @@ struct BatchPreviewRowView: View {
                 }
             }
         }
-        .font(.system(size: 12))
+        .font(.system(size: ChromeTypography.size(12)))
         .accessibilityElement(children: .combine)
     }
 }
@@ -569,7 +593,7 @@ struct BatchRunningView: View {
                         .accessibilityHidden(true)
                 }
                 Text(model.currentName ?? " ")
-                    .font(.system(size: 11))
+                    .font(.system(size: ChromeTypography.size(11)))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -579,10 +603,10 @@ struct BatchRunningView: View {
             Divider()
             HStack {
                 Spacer()
-                Button(model.isStopping ? "Stopping…" : "Stop") { model.stop() }
+                Button(model.isStopping ? "Stopping…" : "Stop After Safe Changes") { model.stop() }
                     .keyboardShortcut(".", modifiers: .command)
                     .disabled(model.isStopping)
-                    .help("Stop the batch (⌘.)")
+                    .help("Stops remaining work. Completed changes are kept. (⌘.)")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -608,12 +632,14 @@ struct BatchDoneView: View {
             }
             Divider()
             HStack(spacing: 8) {
-                Button("Copy Log", action: actions.copyLog)
-                Button("Show in Finder", action: actions.showInFinder)
-                    .disabled(model.doneURLs.isEmpty)
-                Button("Open in Shrike", action: actions.openInShrike)
-                    .disabled(model.doneFolders.isEmpty)
+                Menu("Actions") {
+                    Button("Copy Log", action: actions.copyLog)
+                    Button("Show Completed Files", action: actions.showInFinder).disabled(model.doneURLs.isEmpty)
+                    Button("Open Completed in Shrike", action: actions.openInShrike).disabled(model.doneFolders.isEmpty)
+                    Button("Run Another Batch") { model.runAnother() }
+                }
                 Spacer()
+                Button("Review Remaining…") { model.reviewRemaining() }.disabled(!model.canReviewRemaining)
                 Button("Done", action: actions.done)
                     .keyboardShortcut(.defaultAction)
             }
@@ -645,14 +671,15 @@ struct BatchDoneView: View {
     private var withReasons: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Color(nsColor: .systemGreen))
+                Image(systemName: model.result?.doneCount == 0 ? "xmark.circle" : "exclamationmark.triangle")
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                     .accessibilityHidden(true)
-                Text(model.summary)
+                Text(model.resultTitle + "\n" + model.summary)
                     .font(.system(size: 15, weight: .semibold))
             }
             folderLink
-            List(Array(model.skippedRows.enumerated()), id: \.offset) { _, row in
+            List(selection: $model.selectedResultRows) {
+                ForEach(model.skippedRows, id: \.source) { row in
                 HStack(spacing: 8) {
                     Text(row.name)
                         .lineLimit(1)
@@ -660,14 +687,16 @@ struct BatchDoneView: View {
                     Spacer(minLength: 8)
                     Text(row.reason)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
                 }
                 .accessibilityElement(children: .combine)
+                .tag(row.source)
+                }
             }
-            // Stripes help only a long list; as tall as its rows (then it
-            // scrolls), so a short list has no empty stripes under it.
             .listStyle(.inset(alternatesRowBackgrounds: model.skippedRows.count > 8))
-            .frame(maxHeight: CGFloat(model.skippedRows.count) * 24 + 20)
+            .frame(minHeight: 100, maxHeight: 320)
+            Text("Select intentional skips to include them in Review Remaining.").font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

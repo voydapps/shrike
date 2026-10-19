@@ -24,7 +24,7 @@ extension ViewerWindow {
             if view.isAtFit, !view.isZoomAnimating { view.dropFullResolution() }
             return
         }
-        guard fullResTask == nil, !contentRoot.isEditModeActive,
+        guard !didTearDown, fullResTask == nil, !contentRoot.isEditModeActive,
               view.wantsFullResolution, let item = displayedItem else { return }
         let index = item.listIndex
         let sourceID = view.sourceID
@@ -44,7 +44,7 @@ extension ViewerWindow {
                     self.fullResTask = nil
                 }
             }
-            let queue = await nav.decodeQueue
+            let queue = nav.decodeQueue
             guard let entry = try? await queue.loadFullResolution(at: index),
                   !Task.isCancelled, let self else { return }
             // Land a running double-click animation first (its steps are
@@ -54,9 +54,9 @@ extension ViewerWindow {
                 try? await Task.sleep(nanoseconds: 16_000_000)
                 waits += 1
             }
-            guard !Task.isCancelled, self.displayedItem == item,
+            guard !Task.isCancelled, !self.didTearDown, self.displayedItem == item,
                   !self.contentRoot.isEditModeActive, !view.isAtFit else { return }
-            view.swapInFullResolution(entry.image, prepared: entry.prepared as? DisplayTexture,
+            view.swapInFullResolution(entry.image, prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy,
                                       sourceID: sourceID)
         }
     }

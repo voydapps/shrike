@@ -171,7 +171,7 @@ public final class FolderWatcher: Sendable {
         let core = FolderWatcherCore(folder: folder, options: options, continuation: continuation)
         try core.start()
         continuation.onTermination = { [weak core] _ in
-            core?.stop()
+            core?.requestStopAfterTermination()
         }
         self.folder = folder
         self.changes = stream
@@ -199,6 +199,18 @@ public final class FolderWatcher: Sendable {
     public var isRunning: Bool {
         core.isRunning
     }
+
+    #if DEBUG
+    /// Test-only access to the real queue and registered termination callback.
+    /// Allows a bounded lock-order regression without blocking an XCTest task.
+    func enqueueOnQueueForTesting(_ body: @escaping @Sendable () -> Void) {
+        core.enqueueOnQueueForTesting(body)
+    }
+
+    func invokeTerminationForTesting() {
+        core.invokeTerminationForTesting()
+    }
+    #endif
 
     deinit {
         core.stop()
@@ -271,6 +283,25 @@ private final class FolderWatcherCore: @unchecked Sendable {
     func stop() {
         onQueue { stopOnQueue() }
     }
+
+    /// AsyncStream may invoke termination while cancellation holds a Swift
+    /// task-status lock. A concurrent yield on our queue can need that lock,
+    /// so this callback must never synchronously join the queue. Enqueue even
+    /// when already on it to avoid reentering finish(); retain the core until
+    /// its idempotent teardown has run. Explicit stop()/deinit still drain.
+    func requestStopAfterTermination() {
+        queue.async { [self] in stopOnQueue() }
+    }
+
+    #if DEBUG
+    func enqueueOnQueueForTesting(_ body: @escaping @Sendable () -> Void) {
+        queue.async(execute: body)
+    }
+
+    func invokeTerminationForTesting() {
+        continuation.onTermination?(.cancelled)
+    }
+    #endif
 
     // MARK: Queue helpers
 

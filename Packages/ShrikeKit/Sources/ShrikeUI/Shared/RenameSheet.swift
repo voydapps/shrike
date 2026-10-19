@@ -69,16 +69,16 @@ final class RenameSheet: NSObject, NSTextFieldDelegate {
 
     private func build() {
         let title = NSTextField(labelWithString: model.title)
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.font = ChromeTypography.font(13, weight: .semibold)
         title.lineBreakMode = .byTruncatingMiddle
 
         field.stringValue = model.oldStem
-        field.font = .systemFont(ofSize: 13)
+        field.font = ChromeTypography.font(13)
         field.delegate = self
         field.setAccessibilityLabel("New name")
         field.widthAnchor.constraint(equalToConstant: 300).isActive = true
         let ext = NSTextField(labelWithString: model.fileExtension)
-        ext.font = .systemFont(ofSize: 13)
+        ext.font = ChromeTypography.font(13)
         ext.textColor = .secondaryLabelColor
         let fieldRow = NSStackView(views: [field, ext])
         fieldRow.orientation = .horizontal
@@ -87,11 +87,11 @@ final class RenameSheet: NSObject, NSTextFieldDelegate {
         var rows: [NSView] = [title, fieldRow]
         if let line = model.companionsLine {
             let label = NSTextField(wrappingLabelWithString: line)
-            label.font = .systemFont(ofSize: 11)
+            label.font = ChromeTypography.font(11)
             label.textColor = .secondaryLabelColor
             rows.append(label)
         }
-        errorLabel.font = .systemFont(ofSize: 11)
+        errorLabel.font = ChromeTypography.font(11)
         errorLabel.textColor = .systemRed
         errorLabel.isHidden = true
         rows.append(errorLabel)

@@ -13,6 +13,8 @@ import ShrikeCore
 import ShrikeIO
 
 /// Which field a culling change writes.
+public enum CullingCommitKind: Sendable, Equatable { case forward, undo, redo }
+
 public enum CullingField: Sendable, Hashable {
     case rating
     case flag
@@ -90,55 +92,36 @@ public enum Culling {
     }
 }
 
-/// Reads the current values, computes the new ones, writes them in one
-/// transaction per distinct value. Returns (previous, new).
+/// Writes only the requested field in one database transaction. File
+/// attributes are best-effort mirrors; database failures reach the caller.
 public struct CullingWriter: Sendable {
-
     public let store: MetadataStore
-
     public init(store: MetadataStore) { self.store = store }
 
     public func apply(
         _ field: CullingField, urls: [URL],
         compute: @Sendable ([URL: FileRecord]) -> [URL: FileRecord]
-    ) async -> (previous: [URL: FileRecord], new: [URL: FileRecord]) {
-        guard !urls.isEmpty else { return ([:], [:]) }
-        let previous = await store.records(for: urls)
-        let new = compute(previous)
+    ) async throws -> MetadataWriteResult {
+        let previous = try await store.recordsStrict(for: urls)
+        let desired = compute(previous)
         switch field {
-        case .rating:
-            var byValue: [Int: [URL]] = [:]
-            for (url, record) in new { byValue[record.rating, default: []].append(url) }
-            for (value, targets) in byValue { try? await store.setRating(value, for: targets) }
-        case .flag:
-            var byValue: [Bool: [URL]] = [:]
-            for (url, record) in new { byValue[record.flagged, default: []].append(url) }
-            for (value, targets) in byValue { try? await store.setFlag(value, for: targets) }
+        case .rating: return try await store.setRatings(desired.mapValues(\.rating))
+        case .flag: return try await store.setFlags(desired.mapValues(\.flagged))
         }
-        return (previous, new)
     }
 }
 
-/// One undo step per culling press, with redo. The undo
-/// entry is registered at once (so ⌘Z right after the key works); it
-/// restores the values read just before the write.
+/// Undo entries are registered synchronously, but resolve their source
+/// snapshot inside the ordered write queue. Even Undo then Redo in the
+/// same event waits for the corresponding committed result.
 @MainActor
 public final class CullingUndo {
-
-    private var previous: [URL: FileRecord] = [:]
+    private var previous: [URL: FileRecord]?
     private weak var manager: UndoManager?
-
     private init(manager: UndoManager?) { self.manager = manager }
-
-    /// The last culling write in flight. Writes run one after another in
-    /// the order of the presses: each one reads the
-    /// values it changes after the one before has saved. Two presses a
-    /// few ms apart (flag, then a rating) used to read the same old
-    /// record, and the second one's result put the old flag back on
-    /// screen.
     private static var lastWrite: Task<Void, Never>?
+    static var beforeWriteForTesting: (@MainActor () async throws -> Void)?
 
-    /// Waits until every culling write started so far has saved (tests).
     static func waitForPendingWrites() async {
         while let task = lastWrite {
             await task.value
@@ -146,42 +129,71 @@ public final class CullingUndo {
         }
     }
 
-    /// Writes `field` for `urls`. `onChange` runs with the new values once
-    /// they are saved, and again after each undo / redo.
+    public static func failureMessage(_ field: CullingField, error: any Error) -> String {
+        "Couldn't save \(field == .rating ? "rating" : "flag"): \(error.localizedDescription)"
+    }
+
     public static func perform(
         _ field: CullingField, urls: [URL], store: MetadataStore, undoManager: UndoManager?,
         compute: @escaping @Sendable ([URL: FileRecord]) -> [URL: FileRecord],
-        onChange: @escaping @MainActor @Sendable ([URL: FileRecord]) -> Void
+        onChange: @escaping @MainActor @Sendable ([URL: FileRecord]) -> Void,
+        onFailure: @escaping @MainActor @Sendable (any Error) -> Void = { Culling.announce($0.localizedDescription) },
+        onCommit: @escaping @MainActor @Sendable (MetadataWriteResult, CullingCommitKind) -> Void = { _, _ in }
+    ) {
+        schedule(field, urls: urls, store: store, undoManager: undoManager,
+                 restoreFrom: nil, compute: compute, onChange: onChange, onFailure: onFailure, onCommit: onCommit, kind: .forward)
+    }
+
+    private static func schedule(
+        _ field: CullingField, urls: [URL], store: MetadataStore, undoManager: UndoManager?,
+        restoreFrom: CullingUndo?,
+        compute: @escaping @Sendable ([URL: FileRecord]) -> [URL: FileRecord],
+        onChange: @escaping @MainActor @Sendable ([URL: FileRecord]) -> Void,
+        onFailure: @escaping @MainActor @Sendable (any Error) -> Void,
+        onCommit: @escaping @MainActor @Sendable (MetadataWriteResult, CullingCommitKind) -> Void,
+        kind: CullingCommitKind
     ) {
         guard !urls.isEmpty else { return }
         let step = CullingUndo(manager: undoManager)
-        let writer = CullingWriter(store: store)
         let before = lastWrite
         lastWrite = Task { @MainActor in
             await before?.value
-            // The rating and flag are mirrored in the
-            // files' extended attributes, and the folder watchers saw that
-            // write as a changed file: the Browser dropped the thumbnails
-            // and listed the folder again (the whole grid blinked).
-            FolderWatcherRegistry.shared.ignore(paths: urls, for: .seconds(2))
-            let result = await writer.apply(field, urls: urls, compute: compute)
-            step.previous = result.previous
-            onChange(result.new)
-        }
-        guard let undoManager else { return }
-        // NSUndoManager does not retain its target: the handler holds
-        // `step` strongly so the entry keeps it alive.
-        undoManager.registerUndo(withTarget: step) { [step] _ in
-            MainActor.assumeIsolated {
-                // Values not read yet (⌘Z within the same few ms): nothing
-                // was written either, so there is nothing to restore.
-                let restore = step.previous
-                let ordered = urls.filter { restore[$0] != nil }
-                perform(field, urls: ordered, store: store, undoManager: step.manager,
-                        compute: { _ in restore }, onChange: onChange)
+            // A failed predecessor has no committed change to invert.
+            let restore = restoreFrom?.previous
+            if restoreFrom != nil && restore == nil {
+                step.manager?.removeAllActions(withTarget: step)
+                return
+            }
+            do {
+                try await beforeWriteForTesting?()
+                FolderWatcherRegistry.shared.ignore(paths: urls, for: .seconds(2))
+                let result = try await CullingWriter(store: store).apply(field, urls: urls) { current in
+                    restore ?? compute(current)
+                }
+                step.previous = result.previous
+                onChange(result.new)
+                onCommit(result, kind)
+                let mixed = field == .rating ? Set(result.new.values.map(\.rating)).count > 1
+                                             : Set(result.new.values.map(\.flagged)).count > 1
+                if mixed {
+                    Culling.announce(field == .rating ? "Ratings restored" : "Flags restored")
+                } else if let record = result.new[urls[0]] {
+                    Culling.announce(field == .rating ? Culling.ratingAnnouncement(record.rating)
+                                                     : Culling.flagAnnouncement(record.flagged))
+                }
+            } catch {
+                step.manager?.removeAllActions(withTarget: step)
+                onFailure(error)
             }
         }
-        undoManager.setActionName(Culling.actionName(field))
+        undoManager?.registerUndo(withTarget: step) { [step] _ in
+            MainActor.assumeIsolated {
+                schedule(field, urls: urls, store: store, undoManager: step.manager,
+                         restoreFrom: step, compute: compute, onChange: onChange, onFailure: onFailure,
+                         onCommit: onCommit, kind: kind == .undo ? .redo : .undo)
+            }
+        }
+        undoManager?.setActionName(Culling.actionName(field))
     }
 }
 

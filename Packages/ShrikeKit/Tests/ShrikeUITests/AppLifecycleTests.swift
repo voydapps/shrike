@@ -111,8 +111,8 @@ final class WelcomeWindowTests: XCTestCase {
         XCTAssertEqual(window?.contentView?.frame.size, NSSize(width: 640, height: 440))
         XCTAssertEqual(window?.isReleasedWhenClosed, false)
         XCTAssertEqual(window?.styleMask.contains(.resizable), false)
-        XCTAssertEqual(controller.openButton.title, "Open…")
-        XCTAssertEqual(controller.openButton.keyEquivalent, "", "Open… is the plain button; Open Folder… is the primary")
+        XCTAssertEqual(controller.openButton.title, "Open Photo…")
+        XCTAssertEqual(controller.openButton.keyEquivalent, "", "Open Photo… is the plain button; Open Folder… is the primary")
         XCTAssertEqual(controller.openFolderButton.title, "Open Folder…")
         XCTAssertEqual(controller.dropZone.accessibilityLabel(), "Drop photos or folders here")
     }

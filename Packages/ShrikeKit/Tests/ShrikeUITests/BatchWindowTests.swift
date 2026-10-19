@@ -122,6 +122,49 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertEqual(model.phase, .done)
     }
 
+    func testReviewRemainingPreservesNoncontiguousNamesWhileRunAnotherStartsFresh() async throws {
+        let urls = try [jpeg("GPS.jpg"), jpeg("Coast.jpg"), jpeg("Gardener.jpg")]
+        let sourceBytes = try urls.map { try Data(contentsOf: $0) }
+        let model = makeModel(), output = dir.appendingPathComponent("out")
+        var form = BatchForm(); form.format = .png; form.resizeOn = false
+        form.renameOn = true; form.template = "{counter:000}_{name}"; form.counterStart = 7
+        form.outputFolder = output; model.form = form; model.add(groups(urls))
+        try await runAndWait(model)
+        XCTAssertEqual(model.result?.doneCount, 3)
+        let originalNames = ["007_GPS.png", "008_Coast.png", "009_Gardener.png"]
+        let originalBytes = try originalNames.map { try Data(contentsOf: output.appendingPathComponent($0)) }
+
+        model.runAnother(); XCTAssertTrue(model.queue.isEmpty)
+        model.form.onConflict = .skip; model.add(groups(urls))
+        try await runAndWait(model)
+        XCTAssertEqual(model.result?.skippedCount, 3)
+        model.selectedResultRows = Set([urls[0], urls[2]])
+        model.reviewRemaining(); await model.waitForPreview()
+        XCTAssertTrue(model.reviewingRemaining)
+        XCTAssertEqual(model.queue.map(\.id), [urls[0], urls[2]])
+        XCTAssertEqual(model.previewRows.map(\.outputName), ["007_GPS.png", "009_Gardener.png"])
+        // A second Skip/Review must preserve the same job identity too.
+        try await runAndWait(model)
+        XCTAssertEqual(model.result?.skippedCount, 2)
+        model.selectedResultRows = Set([urls[0], urls[2]])
+        model.reviewRemaining(); model.form.onConflict = .keepBoth
+        await model.waitForPreview()
+        let preview = model.previewRows
+        XCTAssertEqual(preview.map(\.outputName), ["007_GPS 2.png", "009_Gardener 2.png"])
+        try await runAndWait(model)
+        XCTAssertEqual(model.result?.doneCount, 2)
+        XCTAssertEqual(Set(model.doneURLs), Set(preview.map(\.destination)))
+        for i in urls.indices {
+            XCTAssertEqual(try Data(contentsOf: urls[i]), sourceBytes[i])
+            XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(originalNames[i])), originalBytes[i])
+        }
+
+        model.runAnother(); XCTAssertFalse(model.reviewingRemaining); XCTAssertTrue(model.queue.isEmpty)
+        model.add([ImageGroup(primary: urls[2])]); await model.waitForPreview()
+        XCTAssertEqual(model.previewRows.map(\.outputName), ["007_Gardener.png"],
+                       "Run Another is a fresh batch, not protected retry provenance")
+    }
+
     // MARK: 40 JPEGs → PNG, long edge 1000, into a folder
 
     func testVector1ConvertsFortyJPEGsToPNGAndKeepsOriginals() async throws {
@@ -134,6 +177,8 @@ final class BatchWindowTests: XCTestCase {
         model.form.resizeValue = 1000
         XCTAssertEqual(model.outputFolder?.lastPathComponent, "Shrike Export", "default <source>/Shrike Export")
         XCTAssertNil(model.inPlaceText)
+        XCTAssertTrue(model.consequenceSummary.hasPrefix("Create 40 new photos in "))
+        XCTAssertTrue(model.consequenceSummary.hasSuffix("Originals stay unchanged."))
 
         try await runAndWait(model)
         let out = dir.appendingPathComponent("src/Shrike Export", isDirectory: true)
@@ -144,7 +189,7 @@ final class BatchWindowTests: XCTestCase {
         for (i, url) in sources.enumerated() {
             XCTAssertEqual(try Data(contentsOf: url), before[i], "original \(i) untouched")
         }
-        XCTAssertEqual(model.summary, "Done. 40 images converted.")
+        XCTAssertEqual(model.summary, "40 completed")
         XCTAssertTrue(model.skippedRows.isEmpty)
         XCTAssertNil(model.undoActionName, "new files: no undo")
         XCTAssertEqual(model.doneFolders, [out])
@@ -173,7 +218,7 @@ final class BatchWindowTests: XCTestCase {
                            "\(name) is whole")
         }
         XCTAssertTrue(model.skippedRows.contains { $0.reason == "Cancelled." })
-        XCTAssertTrue(model.summary.hasPrefix("Done. \(result.doneCount) images converted, "))
+        XCTAssertTrue(model.summary.hasPrefix("\(result.doneCount) completed · "))
     }
 
     // MARK: {yyyy-MM-dd}_{lens}_{counter:00} with no lens data
@@ -182,10 +227,13 @@ final class BatchWindowTests: XCTestCase {
         let src = try jpeg("DSC_0001.jpg", dateTaken: "2026:09:25 10:00:00")
         let model = makeModel()
         model.add(groups([src]))
+        XCTAssertTrue(model.consequenceSummary.hasPrefix("Create 1 new photo in "))
+        XCTAssertTrue(model.consequenceSummary.hasSuffix("Original stays unchanged."))
         model.form.convertOn = false
         model.form.resizeOn = false
         model.form.renameOn = true
         model.form.template = "{yyyy-MM-dd}_{lens}_{counter:00}"
+        XCTAssertTrue(model.consequenceSummary.hasPrefix("Rename 1 original file."))
         XCTAssertEqual(model.inPlaceText, "In place")
         let previewed = await waitUntil { model.isPreviewCurrent }
         XCTAssertTrue(previewed)
@@ -193,7 +241,7 @@ final class BatchWindowTests: XCTestCase {
 
         try await runAndWait(model)
         XCTAssertEqual(names(in: "src"), ["2026-09-25_01.jpg"])
-        XCTAssertEqual(model.summary, "Done. 1 image renamed.")
+        XCTAssertEqual(model.summary, "1 completed")
         XCTAssertEqual(model.undoActionName, "Batch Rename")
     }
 
@@ -209,7 +257,8 @@ final class BatchWindowTests: XCTestCase {
         model.form.resizeOn = false
         model.form.rotateOn = true
         model.form.rotation = .right
-        XCTAssertEqual(model.inPlaceText, "In place — originals are kept (Settings ▸ Editing)")
+        XCTAssertEqual(model.inPlaceText, "Changes original files in place; recovery data is kept when available")
+        XCTAssertTrue(model.consequenceSummary.hasPrefix("Rotate 4 original files."))
         let previewed = await waitUntil { model.isPreviewCurrent }
         XCTAssertTrue(previewed)
         XCTAssertEqual(model.previewRows.last?.skip, .cannotRotateLosslessly, "the preview says so first")
@@ -218,8 +267,8 @@ final class BatchWindowTests: XCTestCase {
         for url in jpegs { XCTAssertEqual(orientation(url), 6, "\(url.lastPathComponent): EXIF rewrite") }
         XCTAssertEqual(try Data(contentsOf: webpFile), webpBefore)
         XCTAssertEqual(model.skippedRows, [BatchModel.SkippedRow(
-            name: "R4.webp", reason: "This file type can't be rotated without re-encoding — skipped.")])
-        XCTAssertEqual(model.summary, "Done. 3 images rotated, 1 skipped.")
+            name: "R4.webp", reason: "This file type can't be rotated without re-encoding — skipped.", source: webpFile)])
+        XCTAssertEqual(model.summary, "3 completed · 1 skipped")
         XCTAssertEqual(model.undoActionName, "Batch Rotate")
     }
 
@@ -273,6 +322,7 @@ final class BatchWindowTests: XCTestCase {
         browser.perform(.batch)
         let first = try XCTUnwrap(BatchWindowController.current)
         XCTAssertEqual(first.model.queue.map(\.name), ["a.jpg", "b.jpg", "c.jpg"], "nothing selected: the folder")
+        XCTAssertEqual(first.model.scopeDescription, "Visible in folder")
         XCTAssertEqual(first.window?.title, "Batch — 3 images")
         XCTAssertFalse(first.model.form.renameOn)
         first.close()
@@ -282,6 +332,7 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertTrue(content.select(urls: chosen))
         browser.perform(.batch)
         XCTAssertEqual(BatchWindowController.current?.model.queue.map(\.id), chosen, "the selection")
+        XCTAssertEqual(BatchWindowController.current?.model.scopeDescription, "Selected in folder")
 
         let menuTitles = content.tableViewForTesting.menu?.items.map(\.title) ?? []
         XCTAssertTrue(menuTitles.contains("Batch…"), "context menu: \(menuTitles)")
@@ -393,6 +444,18 @@ final class BatchWindowTests: XCTestCase {
         model.form.outputFolder = URL(fileURLWithPath: "/nonexistent-shrike-\(UUID().uuidString)/out")
         _ = await waitUntil { model.isPreviewCurrent }
         XCTAssertEqual(model.validationLine, "Choose an output folder.")
+        XCTAssertFalse(model.canRun)
+    }
+
+    func testNonpositiveResizeValueRemainsVisibleAndDisablesRun() async throws {
+        let model = makeModel()
+        model.add(groups([try jpeg("a.jpg")]))
+        model.form.resizeOn = true
+        model.form.resizeValue = 0
+        _ = await waitUntil { model.isPreviewCurrent }
+
+        XCTAssertEqual(model.makePlan().plan?.resize?.value, 0, "plan must preserve the entered value")
+        XCTAssertEqual(model.validationLine, "Resize size must be greater than zero.")
         XCTAssertFalse(model.canRun)
     }
 
@@ -512,7 +575,9 @@ final class BatchWindowTests: XCTestCase {
         let hidden = await waitUntil(5) { batch.isHiddenWhileRunning }
         XCTAssertTrue(hidden)
         XCTAssertEqual(asked?.0, "Stop the batch?")
-        XCTAssertTrue(asked?.1.hasSuffix(" of 24 images are done.") ?? false, asked?.1 ?? "")
+        XCTAssertTrue(asked?.1.hasPrefix("Completed: ") ?? false, asked?.1 ?? "")
+        XCTAssertTrue(asked?.1.contains(" of 24 images.") ?? false, asked?.1 ?? "")
+        XCTAssertTrue(asked?.1.hasSuffix("Completed changes are kept; remaining work stops after safe changes.") ?? false, asked?.1 ?? "")
         XCTAssertTrue(badges.last??.hasSuffix("%") ?? false, "Dock badge: \(badges)")
 
         await model.waitForRun()
@@ -520,7 +585,7 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertNil(badges.last ?? "x", "badge cleared at the end")
         XCTAssertEqual(bounces, 1, "the Dock icon bounces once")
         XCTAssertFalse(batch.isHiddenWhileRunning)
-        XCTAssertEqual(announced, ["Done. 24 images converted."], "VoiceOver hears the summary")
+        XCTAssertEqual(announced, ["24 completed"], "VoiceOver hears the summary")
         XCTAssertTrue(batch.windowShouldClose(window), "done: closes without asking")
     }
 
@@ -547,11 +612,11 @@ final class BatchWindowTests: XCTestCase {
 
     func testVoiceOverAndBadgeStrings() {
         XCTAssertEqual(BatchModel.Copy.progress(17, 42), "17 of 42")
-        XCTAssertEqual(BatchModel.Copy.stopAlertInfo(17, 42), "17 of 42 images are done.")
+        XCTAssertEqual(BatchModel.Copy.stopAlertInfo(17, 42), "Completed: 17 of 42 images. Completed changes are kept; remaining work stops after safe changes.")
         XCTAssertEqual(BatchWindowController.badge(completed: 17, total: 42), "40%")
         XCTAssertEqual(BatchModel.Copy.title(42), "Batch — 42 images")
         XCTAssertEqual(BatchModel.Copy.title(1), "Batch — 1 image")
-        XCTAssertEqual(BatchModel.Copy.runButton(42), "Run 42 Images")
+        XCTAssertEqual(BatchModel.Copy.runButton(42), "Run 42 Photos")
         XCTAssertEqual(BatchModel.eta(completed: 10, total: 20, elapsed: .seconds(10)), "about 10 s left")
         XCTAssertEqual(BatchModel.eta(completed: 1, total: 20, elapsed: .seconds(10)), "about 4 min left")
         XCTAssertNil(BatchModel.eta(completed: 0, total: 20, elapsed: .seconds(10)))
@@ -580,10 +645,55 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertEqual(revealed, [out.appendingPathComponent("a.jpg")])
         batch.openResultInShrike()
         XCTAssertEqual(opened, [out])
+        var announcements: [(String, NSAccessibilityPriorityLevel)] = []
+        batch.toastHost.announce = { text, priority in announcements.append((text, priority)) }
         batch.copyLog()
         let log = try XCTUnwrap(batch.pasteboard.string(forType: .string))
-        XCTAssertTrue(log.hasPrefix("Done. 1 image converted."), log)
+        XCTAssertTrue(log.hasPrefix("1 completed"), log)
         XCTAssertTrue(log.contains("a.jpg → "), log)
+        XCTAssertEqual(batch.toastHost.content?.message, BatchWindowController.Copy.logCopied)
+        XCTAssertEqual(batch.toastHost.content?.duration, 2.5, "copy confirmation is transient")
+        XCTAssertEqual(announcements.count, 1)
+        XCTAssertEqual(announcements.first?.0, BatchWindowController.Copy.logCopied)
+        XCTAssertEqual(announcements.first?.1, .medium)
+        let contentView = try XCTUnwrap(batch.window?.contentView)
+        contentView.setFrameSize(BatchWindowController.contentSize)
+        contentView.layoutSubtreeIfNeeded()
+        batch.toastHost.layoutSubtreeIfNeeded()
+        XCTAssertTrue(batch.toastHost.superview === contentView)
+        XCTAssertEqual(contentView.subviews.count, 2)
+        let hostedContent = try XCTUnwrap(contentView.subviews.first)
+        XCTAssertFalse(hostedContent === batch.toastHost)
+        XCTAssertEqual(hostedContent.frame, contentView.bounds,
+                       "the SwiftUI content remains a full-size sibling")
+        XCTAssertTrue(contentView.subviews[1] === batch.toastHost,
+                      "the AppKit toast is the front-most sibling above SwiftUI")
+        XCTAssertEqual(batch.toastHost.frame.height, ToastHostView.height)
+        XCTAssertGreaterThan(batch.toastHost.frame.midY, contentView.bounds.midY,
+                             "the toast stays above the centered Batch results")
+        batch.toastHost.alphaValue = 1
+        contentView.layoutSubtreeIfNeeded()
+        XCTAssertEqual(batch.toastHost.look, .solid,
+                       "showing the toast builds its visible AppKit surface")
+        let toastCenter = batch.toastHost.convert(
+            NSPoint(x: batch.toastHost.bounds.midX, y: batch.toastHost.bounds.midY), to: contentView)
+        let hit = try XCTUnwrap(contentView.hitTest(toastCenter))
+        XCTAssertTrue(hit === batch.toastHost || hit.isDescendant(of: batch.toastHost),
+                      "the visible toast receives events above the hosted results")
+        let bitmap = try XCTUnwrap(contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds))
+        contentView.cacheDisplay(in: contentView.bounds, to: bitmap)
+        let emptyPillPoint = batch.toastHost.convert(
+            NSPoint(x: batch.toastHost.bounds.maxX - 10, y: batch.toastHost.bounds.midY), to: contentView)
+        let sampleX = Int(emptyPillPoint.x.rounded())
+        let sampleY = Int(emptyPillPoint.y.rounded())
+        let sampleColors = [sampleY, bitmap.pixelsHigh - sampleY].compactMap {
+            bitmap.colorAt(x: sampleX, y: $0)?.usingColorSpace(.deviceRGB)
+        }
+        let sampleBrightnesses = sampleColors.map {
+            0.2126 * $0.redComponent + 0.7152 * $0.greenComponent + 0.0722 * $0.blueComponent
+        }
+        XCTAssertTrue(sampleBrightnesses.contains(where: { $0 < 0.45 }),
+                      "the rendered toast capsule is visibly dark over the Batch content")
 
         // A second ⌥⌘B after Done starts a fresh form with the new items.
         let b = try jpeg("b.jpg")

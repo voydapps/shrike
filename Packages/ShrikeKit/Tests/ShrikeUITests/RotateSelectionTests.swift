@@ -116,10 +116,12 @@ final class RotateSelectionTests: XCTestCase {
         Self.writeSplit(url, orientation: 6)
         let viewer = ViewerWindow(groups: [ImageGroup(primary: url)], startIndex: 0, services: services())
         defer { viewer.close() }
-        viewer.markDisplayedForTesting(0)
+        let accepted = await waitUntil { viewer.canPerform(.editImage) }
+        XCTAssertTrue(accepted, "the actual photo is accepted before replacing its preview")
         let content = viewer.contentRootForTesting
         let preview = SaveFlowTests.image(width: 2, height: 4)
-        content.imageView.setPlaceholderImage(preview)
+        content.imageView.setPlaceholderImage(preview, sourceID: FileImageSource(url: url).id)
+        XCTAssertTrue(viewer.canPerform(.editImage))
 
         viewer.enterEditMode(landOn: .resize)
         await viewer.waitForEditLoad()
@@ -144,11 +146,14 @@ final class RotateSelectionTests: XCTestCase {
         Self.writeSplit(url, orientation: 6)
         let viewer = ViewerWindow(groups: [ImageGroup(primary: url)], startIndex: 0, services: services())
         defer { viewer.close() }
-        viewer.markDisplayedForTesting(0)
+        let accepted = await waitUntil { viewer.canPerform(.editImage) }
+        XCTAssertTrue(accepted, "the actual photo is accepted before replacing its preview")
         let content = viewer.contentRootForTesting
-        content.imageView.setPlaceholderImage(SaveFlowTests.image(width: 2, height: 4))
+        content.imageView.setPlaceholderImage(SaveFlowTests.image(width: 2, height: 4), sourceID: FileImageSource(url: url).id)
+        XCTAssertTrue(viewer.canPerform(.editImage))
         viewer.enterEditMode(landOn: .crop)
         await viewer.waitForEditLoad()
+        XCTAssertTrue(content.isEditModeActive)
         let recipe = try XCTUnwrap(content.editModeController.recipe)
         let top = CropTool.normalise(rect: CGRect(x: 0, y: 0, width: 8, height: 8), in: CGSize(width: 8, height: 16))
         await recipe.append(.crop(top))

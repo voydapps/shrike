@@ -90,8 +90,22 @@ public final class MetalImageView: NSView {
     /// screen until the new one is ready, then the main actor flips. Clears
     /// the placeholder flag unless the setter is being driven by
     /// `setPlaceholderImage`.
+    public var resources: ImageResourceBudget = .shared
+    public var resourceOwner = ImageResourceOwner()
+    public private(set) var imageResourceLease: ImageResourceLease?
+    public private(set) var imageIsLazy = false
+    private var pendingImageLease: ImageResourceLease?
+    private var pendingImageIsLazy = false
     public var image: CGImage? {
         didSet {
+            guard !isPermanentlyDisposed else {
+                image = nil
+                imageResourceLease = nil
+                imageIsLazy = false
+                return
+            }
+            imageIsLazy = pendingImageIsLazy
+            imageResourceLease = image.map { pendingImageLease ?? resources.retain(image: $0, owner: resourceOwner, category: .displayCache, isLazy: imageIsLazy) }
             if recordsImageAssignmentsForTesting, let image {
                 imageAssignmentLogForTesting.append((image, sourceID, placeholderAssignmentInProgress, swappingResolution,
                                                      Array(Thread.callStackSymbols.prefix(14))))
@@ -143,6 +157,7 @@ public final class MetalImageView: NSView {
     /// `isCurrentImagePlaceholder` and suppress their pulse on the
     /// placeholder leg.
     public func setPlaceholderImage(_ placeholder: CGImage, sourceID: String? = nil) {
+        guard !isPermanentlyDisposed else { return }
         if sourceID != self.sourceID || sourceID == nil { sourcePixelSize = nil }
         self.sourceID = sourceID
         placeholderAssignmentInProgress = true
@@ -166,7 +181,10 @@ public final class MetalImageView: NSView {
     /// Same, with a texture the decode lane already built for `newImage`
     /// (`DisplayTextureFactory.preparer`). The view then skips the upload
     /// entirely: the main thread only swaps a pointer and draws.
-    public func setImage(_ newImage: CGImage?, sourceID: String?, prepared: DisplayTexture?) {
+    public func setImage(_ newImage: CGImage?, sourceID: String?, prepared: DisplayTexture?, resourceLease: ImageResourceLease? = nil, imageIsLazy: Bool = false) {
+        guard !isPermanentlyDisposed else { return }
+        pendingImageLease = resourceLease; pendingImageIsLazy = imageIsLazy
+        defer { pendingImageLease = nil; pendingImageIsLazy = false }
         // A size recorded for another file must never define "100 %" for
         // this one: the viewer sets the new file's size when it
         // knows it.
@@ -177,21 +195,142 @@ public final class MetalImageView: NSView {
         pendingPrepared = nil
     }
 
-    /// The window closed: drop the image, the texture and the drawables
-    /// now, even if something still holds this view. The view is not used again.
+    /// Drop the photo and request one tiny black presentation for a live canvas.
+    /// AppKit owns this backing layer's contents; clearing that property directly
+    /// can prevent later Metal presentations from recovering when Undo reuses it.
     public func releaseResources() {
+        guard !isPermanentlyDisposed else { return }
+        let wasReleased = drawableWasReleased
+        // Cleanup invalidates layout/display. Enter quiescence before any of
+        // those callbacks can request an ordinary drawable, including queued work.
+        drawableWasReleased = true
         cancelActiveSwipe()
+        onFirstImagePresented = nil
         pendingPrepared = nil
         sourceID = nil
         image = nil
         currentDisplay = nil
-        metalLayer.contents = nil
-        metalLayer.drawableSize = CGSize(width: 1, height: 1)
+        lastPresentedTexture = nil
+        metalLayer?.drawableSize = CGSize(width: 1, height: 1)
+        guard !wasReleased else { return }
+        presentReleasedCanvas()
+    }
+
+    /// Irreversible disposal for a permanently closed viewer or removed pane.
+    /// Reusable Empty/Undo canvases must continue to use `releaseResources()`.
+    public func disposeAfterClose() {
+        guard !isPermanentlyDisposed else { return }
+        // Layer changes can reenter AppKit lifecycle methods. Close every gate
+        // first, before dropping pixels or disconnecting the backing layer.
+        isPermanentlyDisposed = true
+        presentationIsLive.withLock { $0 = false }
         drawableWasReleased = true
+        delegate = nil
+        onFirstImagePresented = nil
+        zoomAnimationTimer?.invalidate()
+        zoomAnimationTimer = nil
+        zoomAnimationFinish = nil
+        zoomPresentation = nil
+        pinch = nil
+        swipeGeneration &+= 1
+        swipe = nil
+        swipeOffsetX = 0
+        swipeFade = 0
+        pendingPrepared = nil
+        pendingImageLease = nil
+        pendingImageIsLazy = false
+        preFullResolution = nil
+        image = nil
+        imageResourceLease = nil
+        currentDisplay = nil
+        lastPresentedTexture = nil
+        sourceID = nil
+        isCurrentImagePlaceholder = false
+        sourcePixelSize = nil
+        standInLogicalSize = nil
+        dragSourceURL = nil
+        lastDragPoint = nil
+        dragStartPoint = nil
+        windowStripActionHandler = nil
+        imageAssignmentLogForTesting.removeAll(keepingCapacity: false)
+        NotificationCenter.default.removeObserver(self)
+        // Release both owners: NSView's public backing and our configured layer.
+        // No final drawable is acquired or presented here.
+        wantsLayer = false
+        layer = nil
+        metalLayer = nil
     }
 
     /// True after `releaseResources()` until a photo is set again.
     private var drawableWasReleased = false
+
+    internal enum ReleasedCanvasOutcome: Equatable {
+        case notRequested, skippedDetached, drawableUnavailable, commandBufferUnavailable, encoderUnavailable
+        case unexpectedDrawableSize(width: Int, height: Int)
+        /// Encoded and committed, not a claim that the compositor displayed it.
+        case submitted
+    }
+    internal private(set) var releasedCanvasOutcomeForTesting: ReleasedCanvasOutcome = .notRequested
+    internal private(set) var releasedCanvasAcquisitionAttemptsForTesting = 0
+    internal private(set) var releasedCanvasAcquisitionsForTesting = 0
+    internal private(set) var releasedCanvasSubmissionsForTesting = 0
+    internal private(set) var releasedCanvasTextureSizeForTesting: CGSize?
+    internal private(set) var releasedCanvasClearColorForTesting: SIMD4<Double>?
+    /// Narrow failure seam: take the same nil-drawable branch without attempting
+    /// an unavailable surface. Never substitutes a texture or a rendering path.
+    internal var failsReleasedCanvasAcquisitionForTesting = false
+
+    private func presentReleasedCanvas() {
+        guard !isPermanentlyDisposed, let metalLayer else { return }
+        releasedCanvasTextureSizeForTesting = nil
+        releasedCanvasClearColorForTesting = nil
+        // Closed/detached canvases need no presentation. Their owner releases
+        // the backing layer; a live empty canvas must replace its old surface.
+        guard window?.isVisible == true, !isHiddenOrHasHiddenAncestor else {
+            releasedCanvasOutcomeForTesting = .skippedDetached
+            return
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            releasedCanvasOutcomeForTesting = .commandBufferUnavailable
+            return
+        }
+        // One acquisition, with CAMetalLayer's normal drawable timeout. Never
+        // retry or clear a full-size fallback if its pool cannot supply 1 × 1.
+        releasedCanvasAcquisitionAttemptsForTesting &+= 1
+        guard !failsReleasedCanvasAcquisitionForTesting, let drawable = metalLayer.nextDrawable() else {
+            releasedCanvasOutcomeForTesting = .drawableUnavailable
+            ShrikeSignposts.navigation.event("releaseEmptyFrameUnavailable")
+            return
+        }
+        releasedCanvasAcquisitionsForTesting &+= 1
+        let texture = drawable.texture
+        releasedCanvasTextureSizeForTesting = CGSize(width: texture.width, height: texture.height)
+        guard texture.width == 1, texture.height == 1 else {
+            releasedCanvasOutcomeForTesting = .unexpectedDrawableSize(width: texture.width, height: texture.height)
+            ShrikeSignposts.navigation.event("releaseEmptyFrameWrongSize")
+            return
+        }
+        commandBuffer.label = "Shrike released canvas"
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = texture
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+            releasedCanvasOutcomeForTesting = .encoderUnavailable
+            return
+        }
+        encoder.label = "Shrike opaque empty canvas"
+        encoder.endEncoding() // Clear only: no shader, image, quad or launch/teaching callback.
+        releasedCanvasClearColorForTesting = SIMD4<Double>(0, 0, 0, 1)
+        // Commit on the photo queue before returning: prior photo → tiny blank
+        // → any fresh Undo photo. No delayed callback can erase the new photo.
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+        releasedCanvasSubmissionsForTesting &+= 1
+        releasedCanvasOutcomeForTesting = .submitted
+        ShrikeSignposts.navigation.event("releaseEmptyFrameSubmitted", "1x1 opaque black")
+    }
 
     /// Test seam: true while a texture is on screen.
     internal var hasTextureForTesting: Bool { currentDisplay != nil }
@@ -208,8 +347,8 @@ public final class MetalImageView: NSView {
     internal var currentEncodingForTesting: DisplayTextureEncoding? { currentDisplay?.encoding }
 
     /// Test seam: the drawable pixel format in use.
-    internal var layerPixelFormatForTesting: MTLPixelFormat { metalLayer.pixelFormat }
-    internal var maximumDrawableCountForTesting: Int { metalLayer.maximumDrawableCount }
+    internal var layerPixelFormatForTesting: MTLPixelFormat { metalLayer?.pixelFormat ?? .invalid }
+    internal var maximumDrawableCountForTesting: Int { metalLayer?.maximumDrawableCount ?? 0 }
 
     /// Test seam: forces Reduce Motion on or off (nil = the system
     /// setting). The one shared source (`ReduceMotion`).
@@ -285,6 +424,7 @@ public final class MetalImageView: NSView {
 
     public var allowsHDR: Bool = false {
         didSet {
+            guard !isPermanentlyDisposed, let metalLayer else { return }
             metalLayer.wantsExtendedDynamicRangeContent = allowsHDR
             applyLayerFormat()
         }
@@ -310,6 +450,7 @@ public final class MetalImageView: NSView {
 
     public override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        guard !isPermanentlyDisposed else { return }
         resolvedClear = nil
         needsDisplay = true
     }
@@ -350,7 +491,7 @@ public final class MetalImageView: NSView {
     /// Screen pixels per image pixel for one unit of `zoom`
     /// (texels per point).
     private var pixelsPerZoomUnit: Double {
-        let backing = Double(window?.backingScaleFactor ?? metalLayer.contentsScale)
+        let backing = Double(window?.backingScaleFactor ?? metalLayer?.contentsScale ?? 1)
         guard let texture = currentTexture,
               let src = sourcePixelSize, src.width > 0, src.height > 0 else {
             return backing
@@ -368,7 +509,7 @@ public final class MetalImageView: NSView {
     /// The display texture (and its image) shown before a full-resolution
     /// swap, kept for the way back to Fit. The decode cache holds the same
     /// objects, so keeping them costs no memory.
-    private var preFullResolution: (display: DisplayTexture, image: CGImage)?
+    private var preFullResolution: (display: DisplayTexture, image: CGImage, lease: ImageResourceLease?, lazy: Bool)?
     /// True while `image` is set by a resolution swap (keeps
     /// `preFullResolution` and the zoom badge quiet).
     private var swappingResolution = false
@@ -396,7 +537,7 @@ public final class MetalImageView: NSView {
         let texLong = Double(max(t.width, t.height))
         let srcLong = Double(max(src.width, src.height))
         guard texLong + 1 < srcLong, !isAtFit else { return false }
-        let backing = Double(window?.backingScaleFactor ?? metalLayer.contentsScale)
+        let backing = Double(window?.backingScaleFactor ?? metalLayer?.contentsScale ?? 1)
         return zoomLevel * backing > 1.0 + 1e-3
     }
 
@@ -405,11 +546,12 @@ public final class MetalImageView: NSView {
     /// when the photo changed meanwhile (the texture is then dropped).
     @discardableResult
     public func swapInFullResolution(_ full: CGImage, prepared: DisplayTexture?,
-                                     sourceID: String?) -> Bool {
-        guard sourceID == self.sourceID, !isShowingFullResolution,
+                                     resourceLease: ImageResourceLease? = nil, imageIsLazy: Bool = false, sourceID: String?) -> Bool {
+        guard !isPermanentlyDisposed, sourceID == self.sourceID, !isShowingFullResolution,
               let display = currentDisplay, let shown = image else { return false }
-        guard swapTextureKeepingRect(full, prepared: prepared) else { return false }
-        preFullResolution = (display, shown)
+        let priorLease = imageResourceLease; let priorLazy = self.imageIsLazy
+        guard swapTextureKeepingRect(full, prepared: prepared, resourceLease: resourceLease, imageIsLazy: imageIsLazy) else { return false }
+        preFullResolution = (display, shown, priorLease, priorLazy)
         return true
     }
 
@@ -430,14 +572,14 @@ public final class MetalImageView: NSView {
     /// one Fit comes back to. False when another photo is shown.
     @discardableResult
     public func swapInLargerDisplayTexture(_ newImage: CGImage, prepared: DisplayTexture?,
-                                           sourceID: String?) -> Bool {
-        guard sourceID != nil, sourceID == self.sourceID, !isCurrentImagePlaceholder else { return false }
+                                           resourceLease: ImageResourceLease? = nil, imageIsLazy: Bool = false, sourceID: String?) -> Bool {
+        guard !isPermanentlyDisposed, sourceID != nil, sourceID == self.sourceID, !isCurrentImagePlaceholder else { return false }
         if preFullResolution != nil {
             guard let prepared else { return false }
-            preFullResolution = (prepared, newImage)
+            preFullResolution = (prepared, newImage, resourceLease ?? resources.retain(image: newImage, owner: resourceOwner, category: .displayCache, isLazy: imageIsLazy), imageIsLazy)
             return true
         }
-        return swapTextureKeepingRect(newImage, prepared: prepared)
+        return swapTextureKeepingRect(newImage, prepared: prepared, resourceLease: resourceLease, imageIsLazy: imageIsLazy)
     }
 
     /// Back to the display texture (return to Fit): the full-resolution
@@ -445,12 +587,15 @@ public final class MetalImageView: NSView {
     public func dropFullResolution() {
         guard let pre = preFullResolution else { return }
         preFullResolution = nil
-        _ = swapTextureKeepingRect(pre.image, prepared: pre.display)
+        _ = swapTextureKeepingRect(pre.image, prepared: pre.display, resourceLease: pre.lease, imageIsLazy: pre.lazy)
     }
 
     /// Replaces the texture, keeping the on-screen rect: zoom is rescaled
     /// by the texel ratio, pan (view points) is kept, Fit stays Fit.
-    private func swapTextureKeepingRect(_ newImage: CGImage, prepared: DisplayTexture?) -> Bool {
+    private func swapTextureKeepingRect(_ newImage: CGImage, prepared: DisplayTexture?, resourceLease: ImageResourceLease? = nil, imageIsLazy: Bool = false) -> Bool {
+        guard !isPermanentlyDisposed else { return false }
+        pendingImageLease = resourceLease; pendingImageIsLazy = imageIsLazy
+        defer { pendingImageLease = nil; pendingImageIsLazy = false }
         guard let oldSize = rotatedTextureSize else { return false }
         let oldLong = Double(max(oldSize.width, oldSize.height))
         let oldZoom = zoomLevel
@@ -652,7 +797,9 @@ public final class MetalImageView: NSView {
     private let commandQueue: any MTLCommandQueue
     /// Pipeline for the `rgba16Float` drawable (linear extended P3).
     /// Pipeline for the `bgra8Unorm_srgb` drawable (Display P3, SDR).
-    private let metalLayer: CAMetalLayer
+    private var metalLayer: CAMetalLayer?
+    private var isPermanentlyDisposed = false
+    private let presentationIsLive = OSAllocatedUnfairLock(initialState: true)
 
     /// Pre-uploaded vertex buffer for a unit quad [-1, 1] with UVs.
     private let quadBuffer: any MTLBuffer
@@ -663,20 +810,26 @@ public final class MetalImageView: NSView {
     /// Last texture handed to a presented drawable — `imageFrame`
     /// signposts fire only when this changes.
     private weak var lastPresentedTexture: (any MTLTexture)?
+    private nonisolated static let firstPlaceholderFrameFired = OSAllocatedUnfairLock(initialState: false)
     private nonisolated static let firstRealImageFrameFired = OSAllocatedUnfairLock(initialState: false)
 
     /// Fires the process-wide `launch/firstImageFrame` signpost once: the
     /// first time a full (non-placeholder) image frame reaches the glass.
     /// Called from Metal's presented-handler thread.
-    nonisolated static func noteFirstRealImageFrame() {
+    nonisolated static func noteFirstRealImageFrame(presentedUptime: Double = ProcessInfo.processInfo.systemUptime) {
         let first = firstRealImageFrameFired.withLock { fired -> Bool in
             defer { fired = true }
             return !fired
         }
-        if first { ShrikeSignposts.launch.event("firstImageFrame") }
+        if first {
+            ShrikeSignposts.launch.event("firstImageFrame")
+            NotificationCenter.default.post(name: Notification.Name("shrike.firstImagePresented"), object: nil, userInfo: ["presentedUptime": presentedUptime])
+        }
     }
     private var displayLink: CVDisplayLink?
     private var firstDrawableFired = false
+    public var onFirstImagePresented: (@MainActor () -> Void)?
+    private var firstPhotoPresented = false
 
     /// Monotonic counter incremented on every `redraw()` call. Used by
     /// the fullscreen-exit regression tests to prove that a bounds
@@ -709,7 +862,7 @@ public final class MetalImageView: NSView {
     /// photo's own pixel size (`.zero` = the thumbnail's aspect, no cap),
     /// so the full photo later lands in the same rect.
     private var standInLogicalSize: CGSize?
-    private var zoomAnimationTimer: Timer?
+    private var zoomAnimationTimer: ActiveAnimationClock?
     /// What a zoom step or pinch release draws while it animates.
     /// In pixel scale, so a full-resolution swap mid-way needs no
     /// fix-up.
@@ -921,7 +1074,7 @@ public final class MetalImageView: NSView {
         // and `contentsScale`, which AppKit doesn't touch.
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         wantsLayer = true
-        metalLayer.contentsScale =
+        layer.contentsScale =
             window?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 2.0
@@ -934,7 +1087,8 @@ public final class MetalImageView: NSView {
     /// (AppKit owns the frame contract) while letting us render via
     /// Metal. See the matching commentary in `init`.
     public override func makeBackingLayer() -> CALayer {
-        metalLayer
+        guard !isPermanentlyDisposed, let metalLayer else { return super.makeBackingLayer() }
+        return metalLayer
     }
 
     @available(*, unavailable)
@@ -956,6 +1110,7 @@ public final class MetalImageView: NSView {
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        guard !isPermanentlyDisposed else { return }
         updateDrawableSize()
         startDisplayLink()
         window?.makeFirstResponder(self)
@@ -1028,6 +1183,7 @@ public final class MetalImageView: NSView {
 
     public override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
+        guard !isPermanentlyDisposed, let metalLayer else { return }
         metalLayer.contentsScale = window?.backingScaleFactor ?? 2.0
         updateDrawableSize()
         needsDisplay = true
@@ -1035,6 +1191,7 @@ public final class MetalImageView: NSView {
 
     public override func layout() {
         super.layout()
+        guard !isPermanentlyDisposed else { return }
         updateDrawableSize()
         applyContentMode()
         // Force a repaint on every layout pass — `applyContentMode`
@@ -1047,18 +1204,21 @@ public final class MetalImageView: NSView {
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
-        if newSize != frame.size {
+        if !isPermanentlyDisposed, newSize != frame.size {
             cancelActiveSwipe()
             dropZoomPresentation()
         }
         super.setFrameSize(newSize)
+        guard !isPermanentlyDisposed else { return }
         updateDrawableSize()
         applyContentMode()
         needsDisplay = true
     }
 
     private func updateDrawableSize() {
-        drawableWasReleased = false
+        // Closing can leave geometry callbacks queued. Only a new photo may
+        // reactivate the drawable; layout must not rebuild its surface pool.
+        guard !isPermanentlyDisposed, !drawableWasReleased, let metalLayer else { return }
         let scale = metalLayer.contentsScale
         let w = max(1.0, bounds.width * scale)
         let h = max(1.0, bounds.height * scale)
@@ -1087,7 +1247,7 @@ public final class MetalImageView: NSView {
     /// assert this tracks `bounds` after the transition so a stale
     /// fullscreen-sized drawable isn't pinned into a corner of the
     /// smaller windowed view.
-    internal var metalLayerFrameForTesting: CGRect { metalLayer.frame }
+    internal var metalLayerFrameForTesting: CGRect { metalLayer?.frame ?? .zero }
 
     /// Exposed for tests only — the Metal layer's `actions` dictionary.
     /// Regression tests for the fullscreen-pulse fix assert that
@@ -1097,14 +1257,14 @@ public final class MetalImageView: NSView {
     /// CA tween layered on top of them during the multi-tick fullscreen
     /// animation.
     internal var metalLayerActionsForTesting: [String: any CAAction]? {
-        metalLayer.actions
+        metalLayer?.actions
     }
 
     /// Exposed for tests only — the Metal drawable's pixel size.
-    internal var drawableSizeForTesting: CGSize { metalLayer.drawableSize }
+    internal var drawableSizeForTesting: CGSize { metalLayer?.drawableSize ?? .zero }
 
     /// Exposed for tests only — the backing layer's `contentsScale`.
-    internal var metalLayerContentsScaleForTesting: CGFloat { metalLayer.contentsScale }
+    internal var metalLayerContentsScaleForTesting: CGFloat { metalLayer?.contentsScale ?? 0 }
 
     /// Exposed for tests only — monotonic counter incremented on every
     /// `redraw()` entry. Regression tests for fullscreen-exit assert
@@ -1137,6 +1297,7 @@ public final class MetalImageView: NSView {
     // MARK: - Image → texture
 
     private func handleImageChange(isPlaceholder: Bool = false) {
+        guard !isPermanentlyDisposed else { return }
         standInLogicalSize = nil
         guard let image else {
             currentDisplay = nil
@@ -1209,6 +1370,7 @@ public final class MetalImageView: NSView {
     /// output is allowed. Changing it only when needed keeps the
     /// drawable pool.
     private func applyLayerFormat() {
+        guard !isPermanentlyDisposed, let metalLayer else { return }
         let eightBit = (currentDisplay?.encoding.isEightBit ?? true)
             && (swipe?.neighbour?.encoding.isEightBit ?? true) && !allowsHDR
         let format: MTLPixelFormat = eightBit ? .bgra8Unorm_srgb : .rgba16Float
@@ -1465,6 +1627,8 @@ public final class MetalImageView: NSView {
     /// Frames actually drawn (tests).
     private var framesDrawn = 0
     internal var framesDrawnForTesting: Int { framesDrawn }
+    internal private(set) var frameSubmissionsForTesting = 0
+    internal private(set) var lastSubmittedDrawableSizeForTesting: CGSize?
 
     /// (launch): a redraw request no longer draws at once. All
     /// requests in one run-loop turn make ONE frame, drawn later in the
@@ -1475,6 +1639,7 @@ public final class MetalImageView: NSView {
     private var redrawScheduled = false
 
     private func redraw() {
+        guard !isPermanentlyDisposed else { return }
         redrawAttemptCount &+= 1
         guard !redrawScheduled else { return }
         redrawScheduled = true
@@ -1490,7 +1655,7 @@ public final class MetalImageView: NSView {
     }
 
     private func drawFrame() {
-        guard !skipsFramesForTesting,
+        guard !isPermanentlyDisposed, !drawableWasReleased, !skipsFramesForTesting, let metalLayer,
               metalLayer.drawableSize.width > 0, metalLayer.drawableSize.height > 0 else {
             return
         }
@@ -1551,31 +1716,42 @@ public final class MetalImageView: NSView {
             lastPresentedTexture = texture
             let info = "w=\(texture.width) h=\(texture.height)"
             if isCurrentImagePlaceholder {
-                drawable.addPresentedHandler { _ in
+                drawable.addPresentedHandler { [presentationIsLive] _ in
+                    guard presentationIsLive.withLock({ $0 }) else { return }
                     ShrikeSignposts.navigation.event("placeholderFrame", info)
+                    let first = MetalImageView.firstPlaceholderFrameFired.withLock { fired -> Bool in
+                        defer { fired = true }; return !fired
+                    }
+                    if first { NotificationCenter.default.post(name: Notification.Name("shrike.firstPlaceholderPresented"), object: nil, userInfo: ["presentedUptime": ProcessInfo.processInfo.systemUptime]) }
                 }
             } else {
-                drawable.addPresentedHandler { _ in
+                drawable.addPresentedHandler { [weak self, presentationIsLive] _ in
+                    guard presentationIsLive.withLock({ $0 }) else { return }
+                    Task { @MainActor [weak self] in
+                        guard let self, !self.isPermanentlyDisposed, !self.firstPhotoPresented else { return }
+                        self.firstPhotoPresented = true; self.onFirstImagePresented?()
+                    }
                     ShrikeSignposts.navigation.event("imageFrame", info)
-                    MetalImageView.noteFirstRealImageFrame()
+                    MetalImageView.noteFirstRealImageFrame(presentedUptime: ProcessInfo.processInfo.systemUptime)
+                }
+            }
+        }
+        if !firstDrawableFired {
+            firstDrawableFired = true
+            drawable.addPresentedHandler { [weak self, presentationIsLive] _ in
+                guard presentationIsLive.withLock({ $0 }) else { return }
+                ShrikeSignposts.launch.event("firstMetalDrawable")
+                NotificationCenter.default.post(name: Notification.Name("shrike.firstMetalDrawable"), object: nil)
+                Task { @MainActor [weak self] in
+                    guard let self, !self.isPermanentlyDisposed else { return }
+                    self.delegate?.metalImageViewDidPresentFirstDrawable(self)
                 }
             }
         }
         commandBuffer.present(drawable)
         commandBuffer.commit()
-
-        if !firstDrawableFired {
-            firstDrawableFired = true
-            ShrikeSignposts.launch.event("firstMetalDrawable")
-            delegate?.metalImageViewDidPresentFirstDrawable(self)
-            // Post by raw name: the app target owns the typed `Notification.Name`
-            // constant (ShrikeRendering can't import the app target). Name must
-            // match `AppDelegate.shrikeFirstMetalDrawable`.
-            NotificationCenter.default.post(
-                name: Notification.Name("shrike.firstMetalDrawable"),
-                object: nil
-            )
-        }
+        frameSubmissionsForTesting &+= 1
+        lastSubmittedDrawableSizeForTesting = CGSize(width: drawable.texture.width, height: drawable.texture.height)
     }
 
     /// Fragment uniforms; layout matches `FragUniforms` in the shader
@@ -1622,6 +1798,7 @@ public final class MetalImageView: NSView {
     }
 
     public override func mouseDown(with event: NSEvent) {
+        guard !isPermanentlyDisposed else { return }
         finishZoomAnimation()
         // Clear any stale start point first: only this down may arm a drag.
         lastDragPoint = nil
@@ -1644,6 +1821,7 @@ public final class MetalImageView: NSView {
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        guard !isPermanentlyDisposed else { return }
         // At Fit (or with ⌥ at any zoom) a move of 4 pt
         // starts a file drag of the displayed file; zoomed in, it pans.
         if fileDragEnabled, let url = dragSourceURL,
@@ -1665,6 +1843,7 @@ public final class MetalImageView: NSView {
     }
 
     public override func mouseUp(with event: NSEvent) {
+        guard !isPermanentlyDisposed else { return }
         lastDragPoint = nil
         dragStartPoint = nil
     }
@@ -1814,6 +1993,7 @@ public final class MetalImageView: NSView {
     public var isPinching: Bool { pinch != nil }
 
     public override func magnify(with event: NSEvent) {
+        guard !isPermanentlyDisposed else { return }
         handleMagnify(magnification: Double(event.magnification), phase: event.phase,
                       anchor: convert(event.locationInWindow, from: nil))
     }
@@ -1843,6 +2023,7 @@ public final class MetalImageView: NSView {
     }
 
     public override func smartMagnify(with event: NSEvent) {
+        guard !isPermanentlyDisposed else { return }
         toggleZoom(at: convert(event.locationInWindow, from: nil))
     }
 
@@ -1855,6 +2036,7 @@ public final class MetalImageView: NSView {
     public var canvasIsEmptyBehindCard = false
 
     public override func scrollWheel(with event: NSEvent) {
+        guard !isPermanentlyDisposed else { return }
         // No photo (a folder whose first photos cannot be opened, 0.2.10 audit
         // item 7): only changing the image makes sense, so the wheel still does
         // that. Zoom, pan and swipe need a texture.
@@ -1962,6 +2144,7 @@ public final class MetalImageView: NSView {
     /// AppKit sends one event per gesture, with no tracking. The photo
     /// changes at once, with no slide; fingers left = next.
     public override func swipe(with event: NSEvent) {
+        guard !isPermanentlyDisposed else { return }
         guard fileDragEnabled, currentTexture != nil, isAtFit,
               let forward = SwipeMapping.threeFingerForward(deltaX: Double(event.deltaX)) else { return }
         finishActiveSwipe()
@@ -1970,6 +2153,7 @@ public final class MetalImageView: NSView {
 
     /// Starts the swipe state (tests call it before scripting amounts).
     func beginSwipe(isDirectionInverted: Bool, hasNext: Bool, hasPrevious: Bool) {
+        guard !isPermanentlyDisposed else { return }
         swipeGeneration &+= 1
         swipe = SwipeState(isDirectionInverted: isDirectionInverted,
                            hasNext: hasNext, hasPrevious: hasPrevious,
@@ -1990,6 +2174,7 @@ public final class MetalImageView: NSView {
     /// Never waits: it only updates state and asks for one redraw.
     @discardableResult
     func handleSwipe(amount: Double, phase: NSEvent.Phase, isComplete: Bool) -> Bool {
+        guard !isPermanentlyDisposed else { return true }
         guard var state = swipe, !state.stopRequested else {
             return true
         }
@@ -2058,6 +2243,7 @@ public final class MetalImageView: NSView {
     /// stand-in. Ignored when the swipe moved on or ended.
     public func setSwipeNeighbour(_ display: DisplayTexture?, forward: Bool,
                                   isStandIn: Bool = false, logicalSize: CGSize? = nil) {
+        guard !isPermanentlyDisposed else { return }
         guard var state = swipe, state.neighbourForward == forward else { return }
         if isStandIn, state.neighbour != nil, !state.neighbourIsStandIn { return }
         state.neighbour = display
@@ -2228,6 +2414,7 @@ public final class MetalImageView: NSView {
                                   leadFrame: Bool = false,
                                   finish: @escaping @MainActor () -> Void,
                                   step: @escaping @MainActor (Double) -> Void) {
+        guard !isPermanentlyDisposed else { return }
         let frame = 1.0 / 120.0
         let start = CACurrentMediaTime() - (leadFrame ? frame : 0)
         lastZoomAnimationDurationForTesting = duration
@@ -2236,22 +2423,14 @@ public final class MetalImageView: NSView {
             step(min(1, frame / duration))
             needsDisplay = true
         }
-        zoomAnimationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120.0, repeats: true) { [weak self] timer in
-            let done = MainActor.assumeIsolated { () -> Bool in
-                guard let self else { return true }
-                let t = min(1, (CACurrentMediaTime() - start) / duration)
-                if t >= 1 {
-                    self.finishZoomAnimation()
-                    return true
-                }
-                step(t)
-                self.needsDisplay = true
-                return false
-            }
-            if done { timer.invalidate() }
+        zoomAnimationTimer = ActiveAnimationClock(view: self) { [weak self] now in
+            guard let self, !self.isPermanentlyDisposed else { return false }
+            let t = min(1, (now - start) / duration)
+            if t >= 1 { self.finishZoomAnimation(); return false }
+            step(t)
+            self.needsDisplay = true
+            return true
         }
-        // Also runs while AppKit tracks a gesture or a menu.
-        if let timer = zoomAnimationTimer { RunLoop.main.add(timer, forMode: .common) }
     }
 
     /// `change` moves the zoom and pan (the model) to the
@@ -2261,6 +2440,7 @@ public final class MetalImageView: NSView {
     /// Reduce Motion. A new step during the animation starts from the
     /// target of the last one and from the picture on screen.
     private func animateZoomChange(duration: TimeInterval, anchor: CGPoint?, _ change: () -> Void) {
+        guard !isPermanentlyDisposed else { return }
         let shownBefore = shownZoomAndPan
         finishZoomAnimation()
         change()

@@ -210,6 +210,34 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
         ratingOverflowMenu.autoenablesItems = false
     }
 
+    /// Only the actual, visible toolbar control can own the teaching arrow.
+    /// A cached item may be removed, in the customization palette or overflow.
+    var returnAnchor: NSView? {
+        guard toolbar.isVisible, let item = built[ID.showInBrowser],
+              toolbar.items.contains(where: { $0 === item }),
+              toolbar.visibleItems?.contains(where: { $0 === item }) == true,
+              let button = item.view as? NSButton, button.window?.isVisible == true,
+              button.isEnabled, !button.isHiddenOrHasHiddenAncestor,
+              !button.bounds.isEmpty, !button.visibleRect.isEmpty else { return nil }
+        return button
+    }
+    private var returnFolderName: String?
+    @discardableResult
+    func updateReturnTitle(_ folder: String?) -> Bool {
+        let changed = returnFolderName != folder
+        returnFolderName = folder
+        if let item = built[ID.showInBrowser] { applyReturnContext(to: item) }
+        return changed
+    }
+    private func applyReturnContext(to item: NSToolbarItem) {
+        let title = returnFolderName.map { "Back to \($0)" } ?? "Show in Browser"
+        item.label = title; item.paletteLabel = title
+        item.toolTip = title + " · " + ShortcutTable.displayString(for: .showInBrowser, context: .viewer, preset: Prefs.shortcutPreset)
+        item.menuFormRepresentation?.title = title
+        item.view?.toolTip = item.toolTip
+        item.view?.setAccessibilityLabel(title)
+    }
+
     // MARK: NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -350,6 +378,22 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
             let all = Self.defaultButtons + Self.optionalButtons
             guard let (_, name, label, command) = all.first(where: { $0.0 == id }) else { return nil }
             let item = NSToolbarItem(itemIdentifier: id)
+            if id == ID.showInBrowser {
+                let button = NSButton(image: symbol(name, label), target: self, action: #selector(returnButton(_:)))
+                button.setButtonType(.momentaryPushIn)
+                button.bezelStyle = .toolbar
+                button.isBordered = true
+                button.title = ""
+                button.imagePosition = .imageOnly
+                button.imageScaling = .scaleNone
+                // The native customization palette can also use the item image.
+                item.image = button.image
+                item.view = button
+                item.menuFormRepresentation = commandRow(command, title: label, symbol: name)
+                item.autovalidates = false
+                applyReturnContext(to: item)
+                return item
+            }
             if Self.toggleCommands[id] != nil {
                 let button = ToolbarToggleButton(command: command, image: symbol(name, label), label: label)
                 button.target = self
@@ -380,6 +424,7 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
             item.action = #selector(buttonItem(_:))
             item.isBordered = true
             item.autovalidates = false
+            if id == ID.showInBrowser { applyReturnContext(to: item) }
             return item
         }
     }
@@ -398,6 +443,11 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
         let all = Self.defaultButtons + Self.optionalButtons
         guard let command = all.first(where: { $0.0 == sender.itemIdentifier })?.3 else { return }
         host?.perform(command)
+    }
+
+    @objc private func returnButton(_ sender: NSButton) {
+        guard sender.isEnabled, host?.canPerform(.showInBrowser) == true else { return }
+        host?.perform(.showInBrowser)
     }
 
     @objc private func toggleButton(_ sender: ToolbarToggleButton) {
@@ -474,6 +524,10 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
                 let all = Self.defaultButtons + Self.optionalButtons
                 if let command = all.first(where: { $0.0 == item.itemIdentifier })?.3 {
                     item.isEnabled = host.canPerform(command)
+                    if item.itemIdentifier == ID.showInBrowser {
+                        (item.view as? NSButton)?.isEnabled = item.isEnabled
+                        item.menuFormRepresentation?.isEnabled = item.isEnabled
+                    }
                 }
             }
         }

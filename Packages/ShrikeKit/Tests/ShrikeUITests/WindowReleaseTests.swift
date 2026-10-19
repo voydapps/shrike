@@ -16,6 +16,7 @@
 
 import XCTest
 import AppKit
+import QuartzCore
 import AVFoundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -205,6 +206,63 @@ final class WindowReleaseTests: XCTestCase {
 
     // MARK: Viewer
 
+    /// Exercises the actual final close path with a live CAMetalLayer. This
+    /// proves a one-pixel command submission while attached, not compositor
+    /// display or an idle-RAM improvement.
+    func testFinalViewerCloseSubmitsTheReleasedCanvasBeforeOrderingOut() async throws {
+        let coordinator = WindowCoordinator()
+        let viewer = try await openViewer(coordinator, groups: plainGroups(), services: services())
+        defer { viewer.close() }
+        let view = viewer.imageViewForTesting
+        let drew = await waitUntil { view.frameSubmissionsForTesting > 0 }
+        XCTAssertTrue(drew, "A real photo drawable must have been submitted before final close")
+        XCTAssertTrue(viewer.isVisible)
+        XCTAssertTrue(view.window === viewer)
+        XCTAssertEqual(view.releasedCanvasAcquisitionAttemptsForTesting, 0)
+
+        viewer.performClose(nil)
+
+        XCTAssertTrue(viewer.didTearDown)
+        XCTAssertFalse(viewer.isVisible)
+        XCTAssertTrue(coordinator.viewers.isEmpty)
+        XCTAssertEqual(view.releasedCanvasOutcomeForTesting, .submitted,
+                       "Final close must retire the drawable before the window becomes invisible")
+        XCTAssertEqual(view.releasedCanvasAcquisitionAttemptsForTesting, 1)
+        XCTAssertEqual(view.releasedCanvasSubmissionsForTesting, 1)
+        XCTAssertEqual(view.releasedCanvasTextureSizeForTesting, CGSize(width: 1, height: 1))
+        XCTAssertEqual(view.releasedCanvasClearColorForTesting, SIMD4<Double>(0, 0, 0, 1))
+        XCTAssertNil(view.image)
+        XCTAssertFalse(view.hasTextureForTesting)
+        viewer.close()
+        XCTAssertEqual(view.releasedCanvasAcquisitionAttemptsForTesting, 1, "Final teardown remains idempotent")
+        XCTAssertEqual(view.releasedCanvasSubmissionsForTesting, 1)
+    }
+
+    func testFinalCloseDetachesTheGraphicsLayerEvenWhenItsViewIsRetained() async throws {
+        let coordinator = WindowCoordinator()
+        let viewer = try await openViewer(coordinator, groups: plainGroups(), services: services())
+        let retainedView = viewer.imageViewForTesting
+        let oldLayer = Weak(retainedView.layer)
+        XCTAssertNotNil(oldLayer.value)
+        viewer.performClose(nil)
+        XCTAssertTrue(viewer.didTearDown)
+        XCTAssertTrue(coordinator.viewers.isEmpty)
+        XCTAssertNil(retainedView.layer, "A retained closed view must not keep its drawable pool")
+        let layerFreed = await waitUntil { oldLayer.value == nil }
+        XCTAssertTrue(layerFreed, "The closed view must release both NSView and configured-layer ownership")
+        let submissions = retainedView.frameSubmissionsForTesting
+        retainedView.image = SaveFlowTests.image()
+        retainedView.setFrameSize(NSSize(width: 1200, height: 800))
+        retainedView.layoutSubtreeIfNeeded()
+        retainedView.viewDidChangeBackingProperties()
+        retainedView.needsDisplay = true
+        XCTAssertNil(retainedView.image)
+        XCTAssertFalse(retainedView.hasTextureForTesting)
+        XCTAssertFalse(retainedView.makeBackingLayer() is CAMetalLayer)
+        XCTAssertEqual(retainedView.frameSubmissionsForTesting, submissions)
+        viewer.close()
+    }
+
     func testViewerIsFreedAfterPerformClose() async throws {
         let coordinator = WindowCoordinator()
         let services = try services()
@@ -293,6 +351,8 @@ final class WindowReleaseTests: XCTestCase {
         var r: ViewerRefs?
         do {
             let viewer = try await openViewer(coordinator, groups: groups, services: services)
+            let canEdit = await waitUntil { viewer.canPerform(.editImage) }
+            XCTAssertTrue(canEdit, "The accepted photo enables editing before entering the session")
             viewer.enterEditMode(landOn: .crop)
             await viewer.waitForEditLoad()
             XCTAssertTrue(viewer.contentRootForTesting.isEditModeActive)

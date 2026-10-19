@@ -28,14 +28,35 @@ import os
 public enum OutputDecoder {
 
     /// Decodes `url` for output. See the file header for the contract.
-    public static func decode(url: URL) async throws -> CGImage {
+    public static func decode(url: URL, resources: ImageResourceBudget = .shared,
+                              resourceOwner: ImageResourceOwner = .init()) async throws -> CGImage {
         try Task.checkCancellation()
+        let estimate = try await DecodeQueue.workingSet(for: FileImageSource(url: url), target: nil)
+        let reservation = try await resources.reserve(bytes: estimate, owner: resourceOwner, category: .exportWork,
+                                                      priority: .visible, policy: .oneOversizedOperation)
+        return try await decodeReserved(url: url, reservation: reservation)
+    }
+
+    public static func decodeLeased(url: URL, resources: ImageResourceBudget = .shared,
+                                    resourceOwner: ImageResourceOwner = .init()) async throws -> DecodedImage {
+        let estimate = try await DecodeQueue.workingSet(for: FileImageSource(url: url), target: nil)
+        let reservation = try await resources.reserve(bytes: estimate, owner: resourceOwner, category: .exportWork,
+                                                      priority: .visible, policy: .oneOversizedOperation)
+        let image = try await decodeReserved(url: url, reservation: reservation)
+        return withExtendedLifetime(reservation) {
+            DecodedImage(sourceID: url.standardizedFileURL.path, image: image,
+                resourceLease: resources.retain(image: image, owner: resourceOwner, category: .editOriginal))
+        }
+    }
+
+    private static func decodeReserved(url: URL, reservation: ImageWorkReservation) async throws -> CGImage {
         let cancelled = OSAllocatedUnfairLock(initialState: false)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<CGImage, any Error>) in
                 queue.addOperation {
+                    defer { withExtendedLifetime(reservation) {} }
                     cont.resume(with: Result {
-                        try decodeSync(url: url, isCancelled: { cancelled.withLock { $0 } })
+                        try decodeSync(url: url, isCancelled: { cancelled.withLock { $0 } }, resourceContext: reservation)
                     })
                 }
             }
@@ -46,7 +67,8 @@ public enum OutputDecoder {
 
     /// Blocking form, for callers already on a background thread (the
     /// pasteboard's data provider). `isCancelled` is polled between steps.
-    public static func decodeSync(url: URL, isCancelled: () -> Bool = { false }) throws -> CGImage {
+    public static func decodeSync(url: URL, isCancelled: () -> Bool = { false },
+                                  resourceContext: ImageWorkReservation? = nil) throws -> CGImage {
         decodeHook?(url)
         guard let src = CGImageSourceCreateWithURL(url as CFURL,
                                                    [kCGImageSourceShouldCache: false] as CFDictionary)
@@ -57,6 +79,21 @@ public enum OutputDecoder {
         }
         guard CGImageSourceGetCount(src) > 0 else { throw ImageSourceError.unsupported }
         let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
+        let reservation: ImageWorkReservation
+        if let resourceContext { reservation = resourceContext }
+        else {
+            guard let w = props?[kCGImagePropertyPixelWidth] as? Int,
+                  let h = props?[kCGImagePropertyPixelHeight] as? Int else { throw ImageSourceError.corrupt }
+            let estimate = try ImageWorkingSetEstimate(width: w, height: h,
+                bitsPerComponent: props?[kCGImagePropertyDepth] as? Int ?? 8,
+                floatingPoint: props?[kCGImagePropertyIsFloat] as? Bool ?? false)
+            guard let token = ImageResourceBudget.shared.tryReserve(bytes: estimate.totalBytes, owner: .init(),
+                category: .exportWork, priority: .visible, policy: .oneOversizedOperation) else {
+                throw DecodeQueueError.memoryBudgetExceeded
+            }
+            reservation = token
+        }
+        defer { withExtendedLifetime(reservation) {} }
         let orientation = (props?[kCGImagePropertyOrientation] as? UInt32) ?? 1
         if isCancelled() { throw CancellationError() }
 

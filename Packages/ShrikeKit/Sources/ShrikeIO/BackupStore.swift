@@ -103,6 +103,13 @@ public enum BackupState: String, Sendable, Hashable {
     case reverted
 }
 
+public struct BackupAvailability: Sendable {
+    public let canRevert: Bool
+    public let originalDate: Date?
+    public let latestDate: Date?
+    public let originalRecord: BackupRecord?
+}
+
 /// What one `reap` pass did.
 public struct ReapReport: Sendable, Equatable {
     /// Backup folders deleted.
@@ -346,6 +353,18 @@ public actor BackupStore {
     public func latest(for url: URL) -> BackupRecord? {
         prepare()
         return chain(for: url).last
+    }
+
+    /// Live path and backup availability, rather than an unconditional
+    /// promise derived from an old badge/index entry.
+    public func availability(for url: URL) -> BackupAvailability {
+        prepare()
+        let records = chain(for: url)
+        let original = records.first
+        let exists = original.map { FileManager.default.isReadableFile(atPath: $0.backupPath) } ?? false
+        return BackupAvailability(canRevert: exists && FileManager.default.fileExists(atPath: url.path),
+                                  originalDate: exists ? original?.createdAt : nil,
+                                  latestDate: records.last?.createdAt, originalRecord: exists ? original : nil)
     }
 
     /// Every readable record in the store, unordered.

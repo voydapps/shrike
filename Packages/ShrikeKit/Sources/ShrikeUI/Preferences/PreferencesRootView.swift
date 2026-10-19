@@ -59,7 +59,7 @@ struct PreferencesRootView: View {
             case .thumbnails:
                 ThumbnailsTab(thumbnailCache: thumbnailCache)
             case .performance:
-                PerformanceTab()
+                AdvancedTab()
             case .externalEditors:
                 ExternalEditorsTab()
             case .advanced:

@@ -186,7 +186,7 @@ final class HistogramPlotView: NSView {
         let plot = bounds.insetBy(dx: plotInset, dy: plotInset)
         if state.noData {
             let text = NSAttributedString(string: "No data", attributes: [
-                .font: NSFont.systemFont(ofSize: 11),
+                .font: ChromeTypography.font(11),
                 .foregroundColor: NSColor.tertiaryLabelColor,
             ])
             let size = text.size()
@@ -330,7 +330,7 @@ final class HistogramOverlayView: HUDSurfaceView {
         setAccessibilityIdentifier("viewer.histogram")
 
         modeChip.isBordered = false
-        modeChip.font = .systemFont(ofSize: 11, weight: .semibold)
+        modeChip.font = ChromeTypography.font(11, weight: .semibold)
         modeChip.contentTintColor = .labelColor
         modeChip.target = self
         modeChip.action = #selector(chipClicked(_:))

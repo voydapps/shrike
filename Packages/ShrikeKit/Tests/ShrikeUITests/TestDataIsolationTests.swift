@@ -42,6 +42,20 @@ final class TestDataIsolationTests: XCTestCase {
         assertOutsideUserLibrary(BackupStore.shared.root, "BackupStore.shared")
     }
 
+    func test_defaultFactoryFallbackPaths_arePrivateWithoutOpeningThem() {
+        let paths = ShrikeServices.StoragePaths.defaults
+        assertOutsideUserLibrary(paths.metadataFallback, "metadata fallback")
+        assertOutsideUserLibrary(paths.thumbnailFallback, "thumbnail fallback")
+        XCTAssertEqual(paths.metadataFallback.lastPathComponent, "shrike-metadata-fallback.sqlite")
+        XCTAssertEqual(paths.thumbnailFallback.lastPathComponent, "shrike-thumbs-fallback")
+        let support = ShrikeDataPaths.applicationSupport.standardizedFileURL.path + "/"
+        let caches = ShrikeDataPaths.caches.standardizedFileURL.path + "/"
+        for url in [paths.metadataFallback, paths.thumbnailFallback] {
+            XCTAssertFalse(url.standardizedFileURL.path.hasPrefix(support))
+            XCTAssertFalse(url.standardizedFileURL.path.hasPrefix(caches))
+        }
+    }
+
     func test_makeDefault_underTests_opensDatabaseAndCacheInTestRoot() async throws {
         let services = ShrikeServices.makeDefault()
 

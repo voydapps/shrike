@@ -32,20 +32,15 @@ struct AdvancedTab: View {
 
     var body: some View {
         Form {
-            Section {
-                Toggle("Background is always pure black",
-                       isOn: store.viewerBackgroundAlwaysBlack)
-                    .accessibilityHint(
-                        "When off, the viewer background follows the system light/dark theme."
-                    )
-
-                Toggle("Position overlay auto-hides after idle",
-                       isOn: store.viewerPositionOverlayAutoHides)
-                    .accessibilityHint(
-                        "On (default): the bottom-left filename pill fades after 2 s. Off keeps it always visible."
-                    )
-            } header: {
-                Text("Viewer").font(.headline)
+            Section("Performance") {
+                Picker("Browsing Preview Resolution", selection: store.maxDisplayLongEdge) {
+                    ForEach(SettingsChoices.including(store.maxDisplayLongEdge.wrappedValue, in: PerformanceTab.longEdgeOptions), id: \.self) { px in
+                        Text(verbatim: "\(px) px").tag(px)
+                    }
+                }
+                Text("Limits the preview prepared for browsing. Larger previews use more memory. Shrike loads the original detail when you zoom in.")
+                    .font(.system(size: ChromeTypography.size(12))).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section {
@@ -60,7 +55,7 @@ struct AdvancedTab: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(Self.configurationLabel)
                         Text(Self.configurationDetail)
-                            .font(.system(size: 12))
+                            .font(.system(size: ChromeTypography.size(12)))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -77,19 +72,26 @@ struct AdvancedTab: View {
             }
         }
         .formStyle(.grouped)
+        .preferencesResetFooter("Reset Advanced to Defaults", tab: .advanced)
         .confirmationDialog(
             "Reset All Preferences?",
             isPresented: $showResetAllConfirmation,
             titleVisibility: .visible
         ) {
             Button("Reset", role: .destructive) {
-                store.notifyAndMutate {
-                    Prefs.resetAll()
-                }
+                Self.resetAllPreferences(using: store)
             }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text(Self.configurationDetail)
         }
     }
+    /// Apply the confirmed Reset All action through the Settings mutation route.
+    @MainActor
+    static func resetAllPreferences(using store: PreferencesStore) {
+        store.notifyAndMutate {
+            PreferencesTab.resetAllToDefaults()
+        }
+    }
+
 }

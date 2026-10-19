@@ -83,6 +83,9 @@ public enum BatchOutput: Sendable, Hashable {
 }
 
 public struct BatchPlan: Sendable {
+    var resumePhases: [ImageGroup: Set<BatchPhase>] = [:]
+    var retryDestinations: [ImageGroup: URL] = [:]
+    var previousChanges: BatchResult?
     /// Counter order = list order.
     public var items: [ImageGroup]
     public var convert: ConvertOptions?
@@ -120,6 +123,7 @@ public struct BatchPlan: Sendable {
     /// Validation line, or nil when the plan can run.
     public var validationError: BatchValidationError? {
         if !reencodes && quarters == 0 && rename == nil { return .noOperation }
+        if let resize, resize.value <= 0 { return .invalidResizeValue }
         if convert != nil || resize != nil {
             guard case .folder(let folder) = output else { return .outputFolderRequired }
             var isDir: ObjCBool = false
@@ -136,11 +140,13 @@ public struct BatchPlan: Sendable {
 
 public enum BatchValidationError: Error, Sendable, Hashable {
     case noOperation
+    case invalidResizeValue
     case outputFolderRequired
 
     public var message: String {
         switch self {
         case .noOperation: return "Choose at least one operation."
+        case .invalidResizeValue: return "Resize size must be greater than zero."
         case .outputFolderRequired: return "Choose an output folder."
         }
     }
@@ -192,9 +198,44 @@ public enum BatchItemOutcome: Sendable {
     case failed(any Error)
 }
 
+public enum BatchPhase: String, Sendable, Hashable { case rotate, rename, export }
+
+/// A replaced destination remains recoverable even when automatic rollback
+/// fails (for example, its volume disconnected). Keep the actual receipt.
+public struct BatchRecoveryRequiredError: LocalizedError, Sendable {
+    public let record: BackupRecord
+    public let operationError: any Error
+    public let recoveryError: any Error
+    public var errorDescription: String? {
+        "Rename failed: \(operationError.localizedDescription) The replaced file could not be restored: \(recoveryError.localizedDescription) Its backup is retained; restore it with Undo when the destination is available."
+    }
+}
+
 public struct BatchItemResult: Sendable {
     public let source: ImageGroup
     public let outcome: BatchItemOutcome
+    public let completedPhases: [BatchPhase]
+    public let finalURL: URL?
+    public let destinationURL: URL?
+    /// The first resolved job name, including outcomes that never wrote a
+    /// file. Recovery keeps this naming identity while applying its current
+    /// output folder/conflict policy. This is provenance, not an actual file
+    /// location; use finalURL / .done for the item that exists on disk.
+    public let plannedDestinationURL: URL?
+    public let failurePhase: BatchPhase?
+    public let recoveryRequired: BackupRecord?
+    public var isPartial: Bool { recoveryRequired != nil || (!completedPhases.isEmpty && !isDone) }
+    public init(source: ImageGroup, outcome: BatchItemOutcome, completedPhases: [BatchPhase] = [],
+                finalURL: URL? = nil, destinationURL: URL? = nil, failurePhase: BatchPhase? = nil,
+                recoveryRequired: BackupRecord? = nil, plannedDestinationURL: URL? = nil) {
+        self.source = source; self.outcome = outcome; self.completedPhases = completedPhases
+        if let finalURL { self.finalURL = finalURL }
+        else if case .done(let url) = outcome { self.finalURL = url }
+        else { self.finalURL = source.primary }
+        self.destinationURL = destinationURL; self.failurePhase = failurePhase
+        self.recoveryRequired = recoveryRequired
+        self.plannedDestinationURL = plannedDestinationURL ?? destinationURL
+    }
 }
 
 public struct BatchResult: Sendable {
@@ -207,6 +248,8 @@ public struct BatchResult: Sendable {
 
     public var doneCount: Int { items.filter { if case .done = $0.outcome { return true }; return false }.count }
     public var skippedCount: Int { items.count - doneCount }
+    public var failedCount: Int { items.filter { if case .failed = $0.outcome { return true }; return $0.isPartial }.count }
+    public var cancelledCount: Int { items.filter { if case .skipped(.cancelled) = $0.outcome { return true }; return false }.count }
     /// Only in-place work can be undone.
     public var canUndo: Bool { !renames.isEmpty || !rotations.isEmpty || !replacedOriginals.isEmpty }
 }
@@ -219,6 +262,11 @@ public struct BatchProgress: Sendable {
     public let item: BatchItemResult?
     /// Set on the last event only.
     public let result: BatchResult?
+    public let phase: BatchPhase?
+    public init(completed: Int, total: Int, currentName: String?, item: BatchItemResult?, result: BatchResult?, phase: BatchPhase? = nil) {
+        self.completed = completed; self.total = total; self.currentName = currentName
+        self.item = item; self.result = result; self.phase = phase
+    }
 }
 
 // MARK: - Runner
@@ -228,20 +276,24 @@ public struct BatchRunner: Sendable {
     private let fileOps: FileOps
     private let backups: BackupStore
     private let metadata: MetadataStore?
+    private let phaseCheckpoint: (@Sendable (BatchPhase, URL) async throws -> Void)?
+    public enum RenameCheckpoint: Sendable { case beforeMove, beforeRollback }
+    private let renameCheckpoint: (@Sendable (RenameCheckpoint, URL) async throws -> Void)?
 
-    public init(fileOps: FileOps, backups: BackupStore = .shared, metadata: MetadataStore? = nil) {
+    public init(fileOps: FileOps, backups: BackupStore = .shared, metadata: MetadataStore? = nil,
+                phaseCheckpoint: (@Sendable (BatchPhase, URL) async throws -> Void)? = nil,
+                renameCheckpoint: (@Sendable (RenameCheckpoint, URL) async throws -> Void)? = nil) {
         self.fileOps = fileOps
         self.backups = backups
         self.metadata = metadata
+        self.phaseCheckpoint = phaseCheckpoint
+        self.renameCheckpoint = renameCheckpoint
     }
 
     /// Worker count: `max(2, min(activeProcessorCount − 1, 6))`.
     public static var workerCount: Int {
         max(2, min(ProcessInfo.processInfo.activeProcessorCount - 1, 6))
     }
-    /// Sources above this many pixels count against `maxBigDecodes`.
-    static let bigPixelCount = 40_000_000
-    static let maxBigDecodes = 4
 
     // MARK: Preview
 
@@ -250,6 +302,35 @@ public struct BatchRunner: Sendable {
     public func preview(_ plan: BatchPlan, limit: Int = 200) async -> [BatchPreviewRow] {
         let items = Array(plan.items.prefix(max(0, limit)))
         return Self.resolve(plan, items: items).map(\.row)
+    }
+
+    /// Continue only unfinished items/phases. Receipt history follows the
+    /// retry so Undo still reverses a rotate committed in the earlier run.
+    public func retryPlan(for result: BatchResult, original: BatchPlan, includingIntentionalSkips: Bool = false,
+                          selectedIntentionalSkips: Set<URL> = []) -> BatchPlan {
+        var plan = original
+        let unfinished = result.items.filter { item in
+            switch item.outcome {
+            case .done: return false
+            case .failed: return true
+            case .skipped(let reason): return includingIntentionalSkips || selectedIntentionalSkips.contains(item.source.primary)
+                || reason == .cancelled || reason == .unreadable || reason == .diskFull || item.isPartial
+            }
+        }
+        // Results arrive in worker-completion order. Recovery is still the
+        // same job: retain its original relative item/counter order.
+        let bySource = Dictionary(unfinished.map { ($0.source, $0) }, uniquingKeysWith: { first, _ in first })
+        let retry = original.items.compactMap { bySource[$0] }
+        plan.items = retry.map(\.source)
+        plan.resumePhases = Dictionary(uniqueKeysWithValues: retry.map {
+            ($0.source, (original.resumePhases[$0.source] ?? []).union($0.completedPhases))
+        })
+        plan.retryDestinations = Dictionary(uniqueKeysWithValues: retry.compactMap { item in
+            (original.retryDestinations[item.source] ?? item.plannedDestinationURL ?? item.destinationURL)
+                .map { (item.source, $0) }
+        })
+        plan.previousChanges = result
+        return plan
     }
 
     // MARK: Run
@@ -265,13 +346,20 @@ public struct BatchRunner: Sendable {
     /// stops the work, but that last event is lost.
     public func run(_ plan: BatchPlan, stop: BatchStop) -> AsyncThrowingStream<BatchProgress, any Error> {
         AsyncThrowingStream { continuation in
+            stop.prepareRun()
             let work = Task {
+                let resizeScope = ResizeTool.beginBatchProcessing()
+                defer { resizeScope.finish(); stop.markSettled() }
                 do {
                     let result = try await self.execute(plan) { continuation.yield($0) }
+                    // execute has joined every child. Concurrent batches and
+                    // actual edit renders still hold their own context scopes.
+                    resizeScope.finish()
                     continuation.yield(BatchProgress(completed: result.items.count, total: plan.items.count,
                                                      currentName: nil, item: nil, result: result))
                     continuation.finish()
                 } catch {
+                    resizeScope.finish()
                     continuation.finish(throwing: error)
                 }
             }
@@ -314,7 +402,11 @@ public struct BatchRunner: Sendable {
 
     static func resolve(_ plan: BatchPlan, items: [ImageGroup]) -> [Resolved] {
         let stems: [String]
-        if let template = plan.rename {
+        if items.allSatisfy({ plan.retryDestinations[$0] != nil }) {
+            // Every real recovery result carries its first resolved name.
+            // Do not re-read mutable metadata to create a different name.
+            stems = items.map { plan.retryDestinations[$0]!.deletingPathExtension().lastPathComponent }
+        } else if let template = plan.rename {
             stems = template.plan(for: items.map(\.primary)).map { ($0.newName as NSString).deletingPathExtension }
         } else {
             stems = items.map { stem(of: $0) }
@@ -347,7 +439,7 @@ public struct BatchRunner: Sendable {
                     skip = .cannotRotateLosslessly
                 }
             }
-            var stem = stems[i]
+            var stem = plan.retryDestinations[group]?.deletingPathExtension().lastPathComponent ?? stems[i]
             if stem.isEmpty, skip == nil { skip = .emptyName }
             if stem.isEmpty { stem = Self.stem(of: group) }
 
@@ -396,12 +488,30 @@ public struct BatchRunner: Sendable {
 
     // MARK: - Execution
 
+    /// Record resolution at the execution boundary, so early skips, active
+    /// cancellation and never-started work retain the same provenance as
+    /// successful/partially completed items. Existing actual-file fields and
+    /// recovery receipts are copied without inventing a successful write.
+    private static func recordingResolution(_ item: BatchItemResult, resolved: Resolved,
+                                            plan: BatchPlan) -> BatchItemResult {
+        let phases = (plan.resumePhases[item.source] ?? []).union(item.completedPhases)
+        return BatchItemResult(source: item.source, outcome: item.outcome,
+            completedPhases: [BatchPhase.rotate, .export, .rename].filter { phases.contains($0) },
+            finalURL: item.finalURL, destinationURL: item.destinationURL,
+            failurePhase: item.failurePhase, recoveryRequired: item.recoveryRequired,
+            plannedDestinationURL: plan.retryDestinations[item.source] ?? item.plannedDestinationURL ?? resolved.row.destination)
+    }
+
     private func execute(_ plan: BatchPlan,
                          emit: @escaping @Sendable (BatchProgress) -> Void) async throws -> BatchResult {
         if let error = plan.validationError { throw error }
         let resolved = Self.resolve(plan, items: plan.items)
         let total = resolved.count
         var result = BatchResult()
+        if let previous = plan.previousChanges {
+            result.renames = previous.renames; result.rotations = previous.rotations
+            result.replacedOriginals = previous.replacedOriginals
+        }
         emit(BatchProgress(completed: 0, total: total, currentName: resolved.first?.row.source.primary.lastPathComponent,
                            item: nil, result: nil))
 
@@ -413,7 +523,7 @@ public struct BatchRunner: Sendable {
         // earlier items); everything else runs on the worker pool.
         if !plan.reencodes && plan.quarters == 0 {
             for r in resolved {
-                let item = await renameItem(r, plan: plan, result: &result)
+                let item = Self.recordingResolution(await renameItem(r, plan: plan, result: &result), resolved: r, plan: plan)
                 result.items.append(item)
                 emit(BatchProgress(completed: result.items.count, total: total,
                                    currentName: r.row.source.primary.lastPathComponent, item: item, result: nil))
@@ -421,7 +531,7 @@ public struct BatchRunner: Sendable {
             return result
         }
 
-        let gate = BigDecodeGate(limit: Self.maxBigDecodes)
+        let postRename = plan.rename != nil && (!plan.reencodes || { if case .inPlace = plan.output { return true }; return false }())
         try await withThrowingTaskGroup(of: (BatchItemResult, Change).self) { group in
             var next = 0
             func startNext() {
@@ -429,12 +539,15 @@ public struct BatchRunner: Sendable {
                 let r = resolved[next]
                 next += 1
                 group.addTask {
-                    if Task.isCancelled { return (BatchItemResult(source: r.row.source, outcome: .skipped(.cancelled)), .none) }
-                    let big = r.pixelCount > Self.bigPixelCount
-                    if big { await gate.acquire() }
-                    let out = await self.processItem(r, plan: plan)
-                    if big { await gate.release() }
-                    return out
+                    if Task.isCancelled {
+                        return (Self.recordingResolution(BatchItemResult(source: r.row.source, outcome: .skipped(.cancelled)),
+                                                         resolved: r, plan: plan), .none)
+                    }
+                    // ImageExporter admits the entire pixel pipeline by
+                    // bytes before entering a decode lane. No count gate
+                    // or nested reservation can deadlock its workers.
+                    let (item, change) = await self.processItem(r, plan: plan)
+                    return (Self.recordingResolution(item, resolved: r, plan: plan), change)
                 }
             }
             for _ in 0..<Self.workerCount { startNext() }
@@ -445,23 +558,36 @@ public struct BatchRunner: Sendable {
                 case .rotated(let rotation): result.rotations.append(rotation)
                 case .replaced(let record): result.replacedOriginals.append(record)
                 }
-                emit(BatchProgress(completed: result.items.count, total: total,
-                                   currentName: item.source.primary.lastPathComponent, item: item, result: nil))
+                let settled = postRename ? result.items.filter { !$0.isDone }.count : result.items.count
+                emit(BatchProgress(completed: settled, total: total,
+                    currentName: item.source.primary.lastPathComponent, item: item, result: nil, phase: plan.reencodes ? .export : .rotate))
                 if !Task.isCancelled { startNext() }
             }
         }
         // Items never started because of a Stop.
         let finished = Set(result.items.map(\.source))
         for r in resolved where !finished.contains(r.row.source) {
-            result.items.append(BatchItemResult(source: r.row.source, outcome: .skipped(.cancelled)))
+            result.items.append(Self.recordingResolution(
+                BatchItemResult(source: r.row.source, outcome: .skipped(.cancelled)), resolved: r, plan: plan))
         }
         // In-place rename after a lossless rotate (Rotate + Rename).
-        if !plan.reencodes, plan.rename != nil {
+        if postRename {
             var renamed = BatchResult()
-            for r in resolved where result.items.contains(where: { $0.source == r.row.source && $0.isDone }) {
-                _ = await renameItem(r, plan: plan, result: &renamed)
+            var settled = result.items.filter { !$0.isDone }.count
+            for r in resolved {
+                guard let index = result.items.firstIndex(where: { $0.source == r.row.source && $0.isDone }) else { continue }
+                let prior = result.items[index]
+                let next = await renameItem(r, plan: plan, result: &renamed)
+                result.items[index] = Self.recordingResolution(BatchItemResult(source: next.source, outcome: next.outcome,
+                    completedPhases: Array(Set(prior.completedPhases + next.completedPhases)), finalURL: next.finalURL,
+                    destinationURL: r.row.destination, failurePhase: next.isDone ? nil : .rename,
+                    recoveryRequired: next.recoveryRequired, plannedDestinationURL: prior.plannedDestinationURL), resolved: r, plan: plan)
+                settled += 1
+                emit(BatchProgress(completed: settled, total: total, currentName: next.finalURL?.lastPathComponent,
+                                   item: result.items[index], result: nil, phase: .rename))
             }
-            result.renames = renamed.renames
+            result.renames.append(contentsOf: renamed.renames)
+            result.replacedOriginals.append(contentsOf: renamed.replacedOriginals)
         }
         return result
     }
@@ -479,14 +605,38 @@ public struct BatchRunner: Sendable {
         if r.row.outputName == group.primary.lastPathComponent {
             return BatchItemResult(source: group, outcome: .done(group.primary))
         }
+        var replaced: BackupRecord?
         do {
-            if let victim = r.replaceTarget { _ = try await fileOps.trash([ImageGroup(primary: victim)]) }
+            try await phaseCheckpoint?(.rename, group.primary)
+            try Task.checkCancellation()
+            // Renaming begins its commit only after a recoverable victim
+            // copy exists. Failure rolls the destination path back.
+            if let victim = r.replaceTarget {
+                replaced = try await backups.backup(victim, reason: .replace)
+                try Task.checkCancellation()
+                _ = try await fileOps.trash([ImageGroup(primary: victim)])
+            } else { try Task.checkCancellation() }
+            try await renameCheckpoint?(.beforeMove, group.primary)
             let newStem = (r.row.outputName as NSString).deletingPathExtension
             let renamed = try await fileOps.rename(group, toStem: newStem)
             result.renames.append((group, renamed))
-            return BatchItemResult(source: group, outcome: .done(renamed.primary))
-        } catch {
-            return BatchItemResult(source: group, outcome: Self.outcome(for: error))
+            if let replaced { result.replacedOriginals.append(replaced) }
+            return BatchItemResult(source: group, outcome: .done(renamed.primary), completedPhases: [.rename],
+                                   finalURL: renamed.primary, destinationURL: r.row.destination)
+        } catch let operationError {
+            if let replaced, !FileManager.default.fileExists(atPath: replaced.originalPath) {
+                do {
+                    try await renameCheckpoint?(.beforeRollback, replaced.originalURL)
+                    _ = try await backups.restore(replaced)
+                } catch let recoveryError {
+                    result.replacedOriginals.append(replaced)
+                    let failure = BatchRecoveryRequiredError(record: replaced, operationError: operationError,
+                                                             recoveryError: recoveryError)
+                    return BatchItemResult(source: group, outcome: .failed(failure), destinationURL: r.row.destination,
+                                           failurePhase: .rename, recoveryRequired: replaced)
+                }
+            }
+            return BatchItemResult(source: group, outcome: Self.outcome(for: operationError), destinationURL: r.row.destination, failurePhase: .rename)
         }
     }
 
@@ -497,8 +647,16 @@ public struct BatchRunner: Sendable {
         do {
             // Lossless in-place rotate (no re-encode).
             if !plan.reencodes {
+                if plan.resumePhases[group]?.contains(.rotate) == true {
+                    return (BatchItemResult(source: group, outcome: .done(src), completedPhases: [.rotate], destinationURL: r.row.destination), .none)
+                }
+                try await phaseCheckpoint?(.rotate, src)
+                try Task.checkCancellation()
                 let rotation = try await LosslessRotator(backupStore: backups).rotate(url: src, quarters: plan.quarters)
-                return (BatchItemResult(source: group, outcome: .done(src)), .rotated(rotation))
+                return (BatchItemResult(source: group, outcome: .done(src), completedPhases: [.rotate], destinationURL: r.row.destination), .rotated(rotation))
+            }
+            if plan.resumePhases[group]?.contains(.export) == true {
+                return (BatchItemResult(source: group, outcome: .done(src), completedPhases: [.export], destinationURL: r.row.destination), .none)
             }
             var ops: [EditOperation] = plan.recipe ?? []
             if plan.quarters != 0 { ops.append(.rotate90(quarters: plan.quarters)) }
@@ -507,25 +665,27 @@ public struct BatchRunner: Sendable {
                                               interpolation: .lanczos, preventUpscale: resize.dontEnlarge)))
             }
             let format = r.format ?? .jpeg
+            try await phaseCheckpoint?(.export, src)
             let convert = plan.convert
             let quality = convert?.quality ?? ImageExporter.defaultQuality
             if Task.isCancelled { return (BatchItemResult(source: group, outcome: .skipped(.cancelled)), .none) }
 
             if case .folder = plan.output {
-                if let victim = r.replaceTarget { _ = try await fileOps.trash([ImageGroup(primary: victim)]) }
-                try await ImageExporter(backupStore: nil, metadataStore: metadata).export(
+                let record = try await ImageExporter(backupStore: backups, metadataStore: metadata).export(
                     recipe: EditRecipe(operations: ops), from: src, to: r.row.destination, format: format,
                     quality: quality, preserveEXIF: convert?.keepMetadata ?? true,
-                    stripGPS: convert?.removeLocation ?? false)
-                return (BatchItemResult(source: group, outcome: .done(r.row.destination)), .none)
+                    stripGPS: convert?.removeLocation ?? false, backupReason: .replace, resourceCategory: .batchWork)
+                return (BatchItemResult(source: group, outcome: .done(r.row.destination), completedPhases: [.export],
+                                        destinationURL: r.row.destination), record.map(Change.replaced) ?? .none)
             }
-            // In place: `.batch` backup first; no backup, no overwrite.
-            let record = try await backups.backup(src, reason: .batch)
-            try await ImageExporter(backupStore: nil, metadataStore: metadata).export(
-                recipe: EditRecipe(operations: ops), from: src, to: src, format: format, quality: quality)
-            return (BatchItemResult(source: group, outcome: .done(src)), .replaced(record))
+            let record = try await ImageExporter(backupStore: backups, metadataStore: metadata).export(
+                recipe: EditRecipe(operations: ops), from: src, to: src, format: format, quality: quality,
+                backupReason: .batch, resourceCategory: .batchWork)
+            return (BatchItemResult(source: group, outcome: .done(src), completedPhases: [.export], destinationURL: r.row.destination),
+                    record.map(Change.replaced) ?? .none)
         } catch {
-            return (BatchItemResult(source: group, outcome: Self.outcome(for: error)), .none)
+            return (BatchItemResult(source: group, outcome: Self.outcome(for: error), destinationURL: r.row.destination,
+                                    failurePhase: plan.reencodes ? .export : .rotate), .none)
         }
     }
 
@@ -570,6 +730,7 @@ extension BatchItemResult {
 public final class BatchStop: Sendable {
     private struct State: Sendable {
         var stopped = false
+        var settled = false
         var work: Task<Void, Never>?
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -577,6 +738,7 @@ public final class BatchStop: Sendable {
     public init() {}
 
     public var isStopped: Bool { state.withLock { $0.stopped } }
+    public var isSettled: Bool { state.withLock { $0.settled } }
 
     public func stop() {
         let work = state.withLock { s -> Task<Void, Never>? in
@@ -588,24 +750,11 @@ public final class BatchStop: Sendable {
 
     func attach(_ work: Task<Void, Never>) {
         let stopped = state.withLock { s -> Bool in
-            s.work = work
+            if !s.settled { s.work = work }
             return s.stopped
         }
         if stopped { work.cancel() }
     }
-}
-
-/// At most `limit` very large decodes at once (4 over 40 MP).
-private actor BigDecodeGate {
-    private let limit: Int
-    private var active = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-    init(limit: Int) { self.limit = limit }
-    func acquire() async {
-        if active < limit { active += 1; return }
-        await withCheckedContinuation { waiters.append($0) }
-    }
-    func release() {
-        if waiters.isEmpty { active -= 1 } else { waiters.removeFirst().resume() }
-    }
+    fileprivate func prepareRun() { state.withLock { $0.settled = false } }
+    fileprivate func markSettled() { state.withLock { $0.settled = true; $0.work = nil } }
 }

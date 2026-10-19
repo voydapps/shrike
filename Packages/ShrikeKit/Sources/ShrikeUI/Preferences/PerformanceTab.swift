@@ -35,12 +35,6 @@ struct PerformanceTab: View {
             }
         }
         .formStyle(.grouped)
-        .safeAreaInset(edge: .bottom) {
-            PreferencesResetFooter(
-                label: "Reset Performance to Defaults",
-                tab: .performance
-            )
-            .environmentObject(store)
-        }
+        .preferencesResetFooter("Reset Performance to Defaults", tab: .performance)
     }
 }

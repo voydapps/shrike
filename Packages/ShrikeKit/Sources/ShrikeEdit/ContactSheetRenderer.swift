@@ -213,6 +213,32 @@ public enum ContactSheetError: Error, Sendable, Equatable {
 
 public enum ContactSheetRenderer {
 
+    /// Small cancellable first-page preview. Uses only the thumbnail
+    /// loader and the same layout/caption drawing as the final PDF.
+    @concurrent
+    public static func firstPagePreview(_ groups: [ImageGroup], options: ContactSheetOptions,
+        thumbnails: ThumbnailCache, maxLongEdge: Int = 640) async throws -> CGImage {
+        try Task.checkCancellation()
+        let layout = ContactSheetLayout(options: options)
+        let edge = max(64, min(2048, maxLongEdge))
+        let scale = CGFloat(edge) / max(layout.pageSize.width, layout.pageSize.height)
+        let width = min(edge, max(1, Int((layout.pageSize.width * scale).rounded(.up))))
+        let height = min(edge, max(1, Int((layout.pageSize.height * scale).rounded(.up))))
+        let content = await loadPage(Array(groups.prefix(layout.perPage)),
+            pixelSize: min(layout.thumbnailPixelSize, max(32, Int(layout.cell * scale * 2))),
+            caption: options.caption, thumbnails: thumbnails)
+        try Task.checkCancellation()
+        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ContactSheetError.cannotWrite }
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        ctx.scaleBy(x: scale, y: scale)
+        draw(page: 0, of: layout.pageCount(for: groups.count), content: content, layout: layout,
+             title: options.title, in: ctx, pdfPage: false)
+        guard let image = ctx.makeImage() else { throw ContactSheetError.cannotWrite }
+        return image
+    }
+
     /// Renders `groups` (their primaries) to a PDF at `url`. Yields progress
     /// 0…1 and finishes after the file is in place. Cancel by cancelling
     /// the consuming task: no file is left.
@@ -337,8 +363,8 @@ public enum ContactSheetRenderer {
     // MARK: Drawing
 
     private static func draw(page: Int, of pages: Int, content: PageContent, layout: ContactSheetLayout,
-                             title: String, in ctx: CGContext) {
-        ctx.beginPDFPage(nil)
+                             title: String, in ctx: CGContext, pdfPage: Bool = true) {
+        if pdfPage { ctx.beginPDFPage(nil) }
         let size = layout.pageSize
         let top = size.height - ContactSheetLayout.margin
         let left = ContactSheetLayout.margin, right = size.width - ContactSheetLayout.margin
@@ -383,7 +409,7 @@ public enum ContactSheetRenderer {
                 CTLineDraw(captionLine, ctx)
             }
         }
-        ctx.endPDFPage()
+        if pdfPage { ctx.endPDFPage() }
     }
 
     private static func line(_ text: String, font: CTFont, color: CGColor) -> CTLine {

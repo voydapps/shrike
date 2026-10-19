@@ -40,7 +40,7 @@ extension ViewerWindow {
         contentRoot.setImage(
             entry.image, index: index, total: list.count,
             sourceID: intent.sourceAt(index)?.id,
-            prepared: entry.prepared as? DisplayTexture
+            prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy
         )
         markDisplayed(index)
         ShrikeSignposts.launch.end("readyPhotoSetImage", set)
@@ -74,7 +74,7 @@ extension ViewerWindow {
         let set = ShrikeSignposts.launch.begin("readyPhotoSetImage")
         contentRoot.setImage(
             entry.image, index: index, total: list.count,
-            sourceID: sourceID, prepared: entry.prepared as? DisplayTexture
+            sourceID: sourceID, prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy
         )
         markDisplayed(index)
         ShrikeSignposts.launch.end("readyPhotoSetImage", set)
@@ -233,7 +233,7 @@ extension ViewerWindow {
         textureLongEdgeForTesting = px
         let navigation = self.navigation
         Task { @MainActor [weak self] in
-            let queue = await navigation.decodeQueue
+            let queue = navigation.decodeQueue
             await queue.setMaxLongEdge(px)
             self?.refetchDisplayedIfTextureSmall(than: px)
         }
@@ -241,7 +241,7 @@ extension ViewerWindow {
 
     func refetchDisplayedIfTextureSmall(than px: Int) {
         let view = contentRoot.imageView
-        guard let item = displayedItem, !contentRoot.isEditModeActive,
+        guard !didTearDown, let item = displayedItem, !contentRoot.isEditModeActive,
               let shown = view.displayTextureLongEdge else { return }
         // A texture made for full screen is swapped
         // for a canvas-sized one when the window is small again (25 %
@@ -259,11 +259,11 @@ extension ViewerWindow {
         textureRefetchTask?.cancel()
         textureRefetchTask = Task { @MainActor [weak self] in
             guard let entry = try? await navigation.jumpEntry(to: index), !Task.isCancelled,
-                  let self, self.displayedItem?.group.primary == url,
+                  let self, !self.didTearDown, self.displayedItem?.group.primary == url,
                   !self.contentRoot.isEditModeActive,
                   tooBig ? max(entry.image.width, entry.image.height) < shown
                          : max(entry.image.width, entry.image.height) > shown else { return }
-            if view.swapInLargerDisplayTexture(entry.image, prepared: entry.prepared as? DisplayTexture,
+            if view.swapInLargerDisplayTexture(entry.image, prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy,
                                                sourceID: entry.sourceID) {
                 self.textureRefetchCount &+= 1
                 // A texture-size change can supersede the

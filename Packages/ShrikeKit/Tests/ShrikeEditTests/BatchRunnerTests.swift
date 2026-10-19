@@ -227,6 +227,225 @@ final class BatchRunnerTests: XCTestCase {
         XCTAssertGreaterThan(maxDiff(saved, doubled), 5, "a is not applied under b")
     }
 
+    func testRetryRestoresPlanOrderAfterControlledParallelFailures() async throws {
+        let urls = try [image("GPS.jpg"), image("Coast.jpg"), image("Gardener.jpg")]
+        let items = groups(urls), gate = BatchRetryOrderGate(blocked: urls[0])
+        let controlled = BatchRunner(fileOps: FileOps(metadata: nil, backups: backups, watchers: nil),
+                                     backups: backups, phaseCheckpoint: { _, source in
+            await gate.enter(source)
+            throw CocoaError(.fileWriteNoPermission)
+        })
+        let plan = BatchPlan(items: items, convert: .init(format: .png),
+                             rename: try RenameTemplate(parsing: "{counter:000}_{name}", counterStart: 7),
+                             output: .folder(root.appendingPathComponent("out")))
+        // This is a bounded gate watchdog, not a delay used to order work.
+        let watchdog = Task {
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            await gate.release(timedOut: true)
+        }
+        var final: BatchResult?
+        for try await progress in controlled.run(plan) {
+            if let item = progress.item { await gate.finished(item.source.primary) }
+            if let result = progress.result { final = result }
+        }
+        await gate.release(); watchdog.cancel(); await watchdog.value
+        let result = try XCTUnwrap(final), expired = await gate.timedOut
+        XCTAssertFalse(expired, "the gate must be released by the other two actual completion events")
+        XCTAssertEqual(result.items.last?.source.primary, urls[0])
+        XCTAssertEqual(Set(result.items.prefix(2).map(\.source.primary)), Set(urls.suffix(2)))
+        XCTAssertEqual(result.failedCount, 3)
+        let retry = runner.retryPlan(for: result, original: plan)
+        XCTAssertEqual(retry.items, items, "result completion order must never replace job counter order")
+        let preview = await runner.preview(retry)
+        XCTAssertEqual(preview.map(\.outputName), ["007_GPS.png", "008_Coast.png", "009_Gardener.png"])
+    }
+
+    func testIntentionalSkipSubsetAndRepeatedRetryKeepOriginalCounterIdentities() async throws {
+        let urls = try [image("GPS.jpg"), image("Coast.jpg"), image("Gardener.jpg")]
+        let before = try urls.map { try Data(contentsOf: $0) }, items = groups(urls)
+        let out = root.appendingPathComponent("out")
+        var plan = BatchPlan(items: items, convert: .init(format: .png),
+                             rename: try RenameTemplate(parsing: "{counter:000}_{name}", counterStart: 7),
+                             output: .folder(out))
+        let first = try await drain(runner.run(plan))
+        XCTAssertEqual(first.doneCount, 3)
+        let originalNames = ["007_GPS.png", "008_Coast.png", "009_Gardener.png"]
+        let oldOutputs = try originalNames.map { try Data(contentsOf: out.appendingPathComponent($0)) }
+        plan.onConflict = .skip
+        let skipped = try await drain(runner.run(plan))
+        XCTAssertEqual(skipped.doneCount, 0); XCTAssertEqual(skipped.skippedCount, 3)
+        let selected = Set([urls[0], urls[2]])
+        let retry = runner.retryPlan(for: skipped, original: plan, selectedIntentionalSkips: selected)
+        XCTAssertEqual(retry.items, [items[0], items[2]])
+        var preview = await runner.preview(retry)
+        XCTAssertEqual(preview.map(\.outputName), ["007_GPS.png", "009_Gardener.png"])
+        let skippedAgain = try await drain(runner.run(retry))
+        XCTAssertEqual(skippedAgain.skippedCount, 2)
+        var finalPlan = runner.retryPlan(for: skippedAgain, original: retry, selectedIntentionalSkips: selected)
+        finalPlan.onConflict = .keepBoth
+        preview = await runner.preview(finalPlan)
+        XCTAssertEqual(preview.map(\.outputName), ["007_GPS 2.png", "009_Gardener 2.png"])
+        let final = try await drain(runner.run(finalPlan))
+        XCTAssertEqual(final.doneCount, 2)
+        for row in preview {
+            let item = try XCTUnwrap(final.items.first { $0.source == row.source })
+            XCTAssertEqual(item.finalURL, row.destination)
+            XCTAssertEqual(item.destinationURL, row.destination)
+            let originalName = row.source == items[0] ? "007_GPS.png" : "009_Gardener.png"
+            XCTAssertEqual(item.plannedDestinationURL, out.appendingPathComponent(originalName),
+                           "Keep Both changes the current output, not the original job's name identity")
+            XCTAssertNotNil(pixelSize(row.destination))
+        }
+        for i in urls.indices {
+            XCTAssertEqual(try Data(contentsOf: urls[i]), before[i])
+            XCTAssertEqual(try Data(contentsOf: out.appendingPathComponent(originalNames[i])), oldOutputs[i])
+        }
+    }
+
+    func testUnreadableMiddleRetryKeepsNameAcrossMetadataChangeAndNewFolderWithUndoReceipts() async throws {
+        let a = try image("GPS.jpg"), c = try image("Gardener.jpg")
+        let b = a.deletingLastPathComponent().appendingPathComponent("Coast.jpg")
+        try Data("not an image".utf8).write(to: b)
+        let urls = [a, b, c]
+        for url in urls { FileAttributes.setRating(1, at: url); XCTAssertEqual(FileAttributes.rating(at: url), 1) }
+        let counts = BatchRetryPhaseCounts()
+        let counted = BatchRunner(fileOps: FileOps(metadata: nil, backups: backups, watchers: nil),
+                                  backups: backups, phaseCheckpoint: { phase, url in await counts.record(phase, url) })
+        let out = root.appendingPathComponent("out")
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let firstNames = ["007_GPS_1.png", "009_Gardener_1.png"]
+        let victims = firstNames.map { out.appendingPathComponent($0) }
+        let victimBytes = Data("original output victim".utf8)
+        for victim in victims { try victimBytes.write(to: victim) }
+        let plan = BatchPlan(items: groups(urls), convert: .init(format: .png),
+                             rename: try RenameTemplate(parsing: "{counter:000}_{name}_{rating}", counterStart: 7),
+                             output: .folder(out), onConflict: .replace)
+        let first = try await drain(counted.run(plan))
+        XCTAssertEqual(first.doneCount, 2); XCTAssertEqual(first.replacedOriginals.count, 2)
+        guard case .skipped(.unreadable)? = first.items.first(where: { $0.source.primary == b })?.outcome
+        else { return XCTFail("middle input must be a real unreadable skip") }
+        let completedBytes = try victims.map { try Data(contentsOf: $0) }
+        _ = try image("Coast.jpg") // Deliberately repair only the failed input.
+        FileAttributes.setRating(5, at: b); XCTAssertEqual(FileAttributes.rating(at: b), 5)
+        let sourceBytes = try urls.map { try Data(contentsOf: $0) }
+        let newOut = root.appendingPathComponent("new-output")
+        try FileManager.default.createDirectory(at: newOut, withIntermediateDirectories: true)
+        let retryVictim = newOut.appendingPathComponent("008_Coast_1.png")
+        let retryVictimBytes = Data("new folder's previous output".utf8)
+        try retryVictimBytes.write(to: retryVictim)
+        var retry = counted.retryPlan(for: first, original: plan)
+        retry.output = .folder(newOut); retry.onConflict = .replace
+        XCTAssertEqual(retry.items, [ImageGroup(primary: b)])
+        let rows = await counted.preview(retry)
+        XCTAssertEqual(rows.map(\.outputName), ["008_Coast_1.png"], "counter and metadata identity belong to the original resolution")
+        XCTAssertEqual(rows.first?.destination, retryVictim)
+        let final = try await drain(counted.run(retry))
+        XCTAssertEqual(final.doneCount, 1); XCTAssertEqual(final.replacedOriginals.count, 3)
+        XCTAssertEqual(final.items.first?.finalURL, retryVictim)
+        let exports = await counts.exports
+        XCTAssertEqual(exports, Dictionary(uniqueKeysWithValues: urls.map { ($0, 1) }), "completed neighbors must not run again")
+        for i in victims.indices { XCTAssertEqual(try Data(contentsOf: victims[i]), completedBytes[i]) }
+        for i in urls.indices { XCTAssertEqual(try Data(contentsOf: urls[i]), sourceBytes[i]) }
+        try await counted.undo(final)
+        for victim in victims { XCTAssertEqual(try Data(contentsOf: victim), victimBytes) }
+        XCTAssertEqual(try Data(contentsOf: retryVictim), retryVictimBytes)
+    }
+
+    func testStoppedNeverStartedItemsRetainOriginalNamesWhenRetryIsFiltered() async throws {
+        let urls = try (0..<(BatchRunner.workerCount + 2)).map { try image("photo\($0).jpg") }
+        let bytes = try urls.map { try Data(contentsOf: $0) }, items = groups(urls)
+        let gate = BatchRetryStopGate(), stop = BatchStop()
+        let held = BatchRunner(fileOps: FileOps(metadata: nil, backups: backups, watchers: nil),
+                               backups: backups, phaseCheckpoint: { _, _ in await gate.enter() })
+        let plan = BatchPlan(items: items, rotate: 1,
+                             rename: try RenameTemplate(parsing: "{counter:000}_{name}", counterStart: 7), output: .inPlace)
+        let watchdog = Task {
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            stop.stop(); await gate.release(timedOut: true)
+        }
+        let stream = held.run(plan, stop: stop) // Attach Stop before its controller can release a worker.
+        let requestStop = Task { await gate.waitForEntry(); stop.stop(); await gate.release() }
+        let result = try await drain(stream)
+        await requestStop.value; watchdog.cancel(); await watchdog.value
+        let expired = await gate.timedOut
+        XCTAssertFalse(expired); XCTAssertEqual(result.cancelledCount, urls.count)
+        XCTAssertEqual(result.rotations.count, 0)
+        XCTAssertTrue(result.items.allSatisfy { $0.plannedDestinationURL != nil })
+        XCTAssertTrue(result.items.allSatisfy { $0.finalURL == $0.source.primary },
+                      "cancelled work must not claim its planned rename actually happened")
+        XCTAssertGreaterThanOrEqual(result.items.filter { $0.destinationURL == nil }.count, 2,
+                                    "the never-started tail keeps its existing nil actual/attempt destination field")
+        var retry = runner.retryPlan(for: result, original: plan)
+        XCTAssertEqual(retry.items, items)
+        retry.items = [try XCTUnwrap(items.last)]
+        let rows = await runner.preview(retry)
+        XCTAssertEqual(rows.first?.outputName, String(format: "%03d_photo%d.jpg", 7 + urls.count - 1, urls.count - 1))
+        for i in urls.indices { XCTAssertEqual(try Data(contentsOf: urls[i]), bytes[i]) }
+    }
+
+    func testNamingProvenanceDoesNotClaimEarlySkippedDestinationsWereWritten() async throws {
+        let source = try image("source.jpg"), sourceBytes = try Data(contentsOf: source)
+        let victim = try image("blocked.jpg"), victimBytes = try Data(contentsOf: victim)
+        let rename = BatchPlan(items: groups([source]), rename: try RenameTemplate(parsing: "blocked"),
+                               output: .inPlace, onConflict: .skip)
+        let skipped = try await drain(runner.run(rename))
+        let item = try XCTUnwrap(skipped.items.first)
+        guard case .skipped(.nameExists) = item.outcome else { return XCTFail("actual rename conflict must skip") }
+        XCTAssertEqual(item.plannedDestinationURL, victim)
+        XCTAssertNil(item.destinationURL); XCTAssertEqual(item.finalURL, source)
+        XCTAssertTrue(item.completedPhases.isEmpty); XCTAssertFalse(skipped.canUndo)
+        XCTAssertEqual(try Data(contentsOf: source), sourceBytes)
+        XCTAssertEqual(try Data(contentsOf: victim), victimBytes)
+
+        let corrupt = source.deletingLastPathComponent().appendingPathComponent("corrupt.jpg")
+        try Data("unreadable fixture".utf8).write(to: corrupt)
+        let out = root.appendingPathComponent("out")
+        let export = BatchPlan(items: groups([corrupt]), convert: .init(format: .png),
+                               rename: try RenameTemplate(parsing: "{counter:000}_{name}", counterStart: 7),
+                               output: .folder(out))
+        let result = try await drain(runner.run(export)), unreadable = try XCTUnwrap(result.items.first)
+        let planned = out.appendingPathComponent("007_corrupt.png")
+        guard case .skipped(.unreadable) = unreadable.outcome else { return XCTFail("actual unreadable input must skip") }
+        XCTAssertEqual(unreadable.plannedDestinationURL, planned)
+        XCTAssertNil(unreadable.destinationURL); XCTAssertEqual(unreadable.finalURL, corrupt)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: planned.path))
+    }
+
+    func testRepeatedRetrySkipPreservesCommittedRotationAndOriginalUndoReceipts() async throws {
+        let a = try image("a.jpg"), b = try image("b.jpg")
+        let beforeA = try Data(contentsOf: a), beforeB = try Data(contentsOf: b)
+        let partialRunner = BatchRunner(fileOps: FileOps(metadata: nil, backups: backups, watchers: nil),
+                                        backups: backups, phaseCheckpoint: { phase, source in
+            if phase == .rename && source == b { throw CocoaError(.fileWriteNoPermission) }
+        })
+        let plan = BatchPlan(items: groups([a, b]), rotate: 1,
+                             rename: try RenameTemplate(parsing: "{name}_{counter:00}"), output: .inPlace)
+        let first = try await drain(partialRunner.run(plan))
+        XCTAssertEqual(first.rotations.count, 2)
+        var retry = runner.retryPlan(for: first, original: plan)
+        let victim = b.deletingLastPathComponent().appendingPathComponent("b_02.jpg")
+        let victimBytes = Data("owned conflict fixture".utf8); try victimBytes.write(to: victim)
+        retry.onConflict = .skip
+        let second = try await drain(runner.run(retry)), partial = try XCTUnwrap(second.items.first)
+        XCTAssertEqual(partial.completedPhases, [.rotate]); XCTAssertTrue(partial.isPartial)
+        XCTAssertEqual(second.rotations.count, 2)
+        var lastPlan = runner.retryPlan(for: second, original: retry)
+        XCTAssertEqual(lastPlan.items, groups([b]), "a committed phase keeps the early skip eligible for recovery")
+        lastPlan.onConflict = .keepBoth
+        let preview = await runner.preview(lastPlan)
+        XCTAssertEqual(preview.first?.outputName, "b_02 2.jpg")
+        let final = try await drain(runner.run(lastPlan))
+        XCTAssertEqual(final.doneCount, 1); XCTAssertEqual(final.rotations.count, 2, "never rotate the partial item twice")
+        XCTAssertEqual(final.items.first?.finalURL, preview.first?.destination)
+        let destination = try XCTUnwrap(preview.first?.destination)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(destination as CFURL, nil))
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        XCTAssertEqual(props?[kCGImagePropertyOrientation] as? Int, 6)
+        try await runner.undo(final)
+        XCTAssertEqual(try Data(contentsOf: a), beforeA); XCTAssertEqual(try Data(contentsOf: b), beforeB)
+        XCTAssertEqual(try Data(contentsOf: victim), victimBytes)
+    }
+
     func testValidation() {
         let a = URL(fileURLWithPath: "/tmp/x.jpg")
         XCTAssertEqual(BatchPlan(items: groups([a]), output: .inPlace).validationError, .noOperation)
@@ -237,5 +456,72 @@ final class BatchRunnerTests: XCTestCase {
                        CGSize(width: 200, height: 150))
         XCTAssertEqual(ResizeOptions(mode: .width, value: 800).targetSize(for: CGSize(width: 400, height: 300)),
                        CGSize(width: 400, height: 300), "don't enlarge")
+    }
+
+    func testResizePlanRejectsNonpositiveValuesForEveryModeAndAcceptsOne() {
+        let item = ImageGroup(primary: URL(fileURLWithPath: "/tmp/x.jpg"))
+        let output = BatchOutput.folder(URL(fileURLWithPath: "/tmp"))
+        let sourceSize = CGSize(width: 400, height: 300)
+
+        for mode in ResizeOptions.Mode.allCases {
+            let invalid = BatchPlan(items: [item], resize: ResizeOptions(mode: mode, value: 0), output: output)
+            XCTAssertEqual(invalid.validationError, .invalidResizeValue, "zero (mode) must be rejected")
+
+            let valid = BatchPlan(items: [item], resize: ResizeOptions(mode: mode, value: 1), output: output)
+            XCTAssertNil(valid.validationError, "one (mode) must be accepted")
+            let expected: CGSize = mode == .percent ? CGSize(width: 4, height: 3) : CGSize(width: 1, height: 1)
+            XCTAssertEqual(ResizeOptions(mode: mode, value: 1).targetSize(for: sourceSize), expected,
+                           "one (mode) produces expected target dimensions")
+        }
+    }
+}
+
+private actor BatchRetryOrderGate {
+    let blocked: URL
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var completed = Set<URL>()
+    private var released = false
+    private(set) var timedOut = false
+    init(blocked: URL) { self.blocked = blocked }
+    func enter(_ source: URL) async {
+        guard source == blocked, !released else { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+    func finished(_ source: URL) {
+        if source != blocked { completed.insert(source) }
+        if completed.count == 2 { release() }
+    }
+    func release(timedOut: Bool = false) {
+        self.timedOut = self.timedOut || timedOut; released = true
+        waiter?.resume(); waiter = nil
+    }
+}
+
+private actor BatchRetryPhaseCounts {
+    private(set) var exports: [URL: Int] = [:]
+    func record(_ phase: BatchPhase, _ source: URL) {
+        if phase == .export { exports[source, default: 0] += 1 }
+    }
+}
+
+private actor BatchRetryStopGate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var entered = false
+    private var released = false
+    private(set) var timedOut = false
+    func waitForEntry() async {
+        guard !entered, !released else { return }
+        await withCheckedContinuation { entryWaiter = $0 }
+    }
+    func enter() async {
+        entered = true; entryWaiter?.resume(); entryWaiter = nil
+        guard !released else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func release(timedOut: Bool = false) {
+        self.timedOut = self.timedOut || timedOut; released = true
+        entryWaiter?.resume(); entryWaiter = nil
+        for waiter in waiters { waiter.resume() }; waiters = []
     }
 }

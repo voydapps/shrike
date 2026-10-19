@@ -173,6 +173,9 @@ public enum EditOperation: Sendable, Codable, Equatable, Hashable {
     case crop(CropRect)
     /// Free rotate, degrees in `-45…+45`
     case rotate(degrees: Double)
+    /// Free rotate with blank corners removed. The legacy degrees-only case
+    /// retains its expanded-canvas meaning when decoding existing recipes.
+    case rotateAutoCrop(degrees: Double)
     /// Snapped rotation in quarter-turns. `+1` = CW 90°, `+2` = 180°,
     /// `-1` = CCW 90°. Value is normalised mod 4 at apply time.
     case rotate90(quarters: Int)
@@ -182,11 +185,20 @@ public enum EditOperation: Sendable, Codable, Equatable, Hashable {
     /// after the effective `.colorAdjust`, wherever it sits in the list.
     case levels(LevelsParams)
 
+    /// The immutable free-rotation parameters, shared by panel readback and replay.
+    public var freeRotation: (degrees: Double, autoCrop: Bool)? {
+        switch self {
+        case .rotate(let degrees): return (degrees, false)
+        case .rotateAutoCrop(let degrees): return (degrees, true)
+        default: return nil
+        }
+    }
+
     /// True for the ops that change the image's shape or size: `crop`,
     /// `rotate`, `rotate90`, `resize`. These replay in list order.
     public var isGeometry: Bool {
         switch self {
-        case .crop, .rotate, .rotate90, .resize: return true
+        case .crop, .rotate, .rotateAutoCrop, .rotate90, .resize: return true
         case .colorAdjust, .levels: return false
         }
     }
@@ -196,7 +208,8 @@ public enum EditOperation: Sendable, Codable, Equatable, Hashable {
 
 /// Ordered list of `EditOperation` values plus an undo/redo pair of stacks.
 ///
-/// The list is the undo history, not the render list. Colour and levels
+/// Operations are the ordered replay list. Undo history additionally records
+/// owned parameter revisions without accumulating their geometry. Colour and levels
 /// ops are whole-state: the last `.colorAdjust` and the last `.levels`
 /// win, and earlier ones of the same kind only matter again after an
 /// undo. Renderers replay `effectiveOperations(_:)`; panels read their
@@ -207,65 +220,180 @@ public enum EditOperation: Sendable, Codable, Equatable, Hashable {
 /// recipe through `await` hops.
 public actor EditRecipe {
 
+    /// An in-memory point in the recipe's complete undo/redo timeline.
+    /// Tool transitions use it to discard only the current tool's changes
+    /// while retaining edits and redo steps accepted before that tool opened.
+    /// It contains parameter values and ephemeral owners only; no source images.
+    public struct Checkpoint: Sendable, Equatable {
+        fileprivate let operations: [EditOperation]
+        fileprivate let owners: [GeometryOwner?]
+        fileprivate let editableOwner: GeometryOwner?
+        fileprivate let knownOwners: Set<GeometryOwner>
+        fileprivate let undoHistory: [HistoryEntry]
+        fileprivate let redoHistory: [HistoryEntry]
+    }
+
+    /// Ephemeral ownership of one editable free-rotation segment. It is not
+    /// serialized into the recipe and never retains images or UI objects.
+    public struct GeometryOwner: Sendable, Hashable {
+        private let id = UUID()
+        public init() {}
+    }
+
+    fileprivate struct TailState: Sendable, Equatable {
+        var operations: [EditOperation]
+        var owners: [GeometryOwner?]
+        var editableOwner: GeometryOwner?
+    }
+    /// Only the changed tail is retained. Ordinary appends/revisions cost a
+    /// constant number of parameter values, rather than copying every prefix.
+    fileprivate struct HistoryEntry: Sendable, Equatable {
+        var prefixCount: Int
+        var before: TailState
+        var after: TailState
+        var operation: EditOperation? { after.operations.last ?? before.operations.last }
+    }
+
     public private(set) var operations: [EditOperation] = []
-    /// Redo stack. `undo()` pops from `operations` and pushes here;
-    /// `redo()` pops from here and pushes back onto `operations`; any
-    /// `append` or `replaceLast` clears this stack (standard redo
-    /// semantics).
-    public private(set) var undoneOperations: [EditOperation] = []
+    private var owners: [GeometryOwner?] = []
+    private var editableOwner: GeometryOwner?
+    private var knownOwners: Set<GeometryOwner> = []
+    private var undoHistory: [HistoryEntry] = []
+    private var redoHistory: [HistoryEntry] = []
+    /// Legacy operation view of the redo stack. History depths also count
+    /// replacements/removals whose replay list does not grow.
+    public var undoneOperations: [EditOperation] { redoHistory.compactMap(\.operation) }
+    public var undoDepth: Int { undoHistory.count }
+    public var redoDepth: Int { redoHistory.count }
 
     public init(operations: [EditOperation] = []) {
         self.operations = operations
+        owners = Array(repeating: nil, count: operations.count)
+        undoHistory = operations.enumerated().map { index, operation in
+            HistoryEntry(prefixCount: index,
+                         before: TailState(operations: [], owners: [], editableOwner: nil),
+                         after: TailState(operations: [operation], owners: [nil], editableOwner: nil))
+        }
     }
 
     // MARK: Mutation
 
-    /// Append a new op. Clears the redo stack — once the user forks the
-    /// timeline, the old future is unreachable.
     public func append(_ op: EditOperation) {
-        operations.append(op)
-        undoneOperations.removeAll(keepingCapacity: true)
+        let prefix = operations.count
+        let before = tail(from: prefix)
+        _ = change(prefix: prefix, before: before,
+                   after: TailState(operations: [op], owners: [nil], editableOwner: nil), recordUndo: true)
     }
 
-    /// Replace the tail of the operations list with `op`, preserving undo
-    /// depth. Used for slider-drag coalescing: while a continuous
-    /// drag is in progress, successive `.colorAdjust` frames overwrite
-    /// the last op rather than piling new ones up.
-    ///
-    /// If the list is empty this is equivalent to `append`.
+    /// A continuous frame replaces its current history transaction, preserving
+    /// the existing no-new-gesture semantics for Color Adjust and Levels.
     public func replaceLast(_ op: EditOperation) {
-        if operations.isEmpty {
-            operations.append(op)
-        } else {
-            operations[operations.count - 1] = op
-        }
-        undoneOperations.removeAll(keepingCapacity: true)
+        guard !operations.isEmpty else { append(op); return }
+        let prefix = operations.count - 1
+        _ = change(prefix: prefix, before: tail(from: prefix),
+                   after: TailState(operations: [op], owners: [nil], editableOwner: nil), recordUndo: false)
+        redoHistory.removeAll(keepingCapacity: true)
     }
 
-    /// Pop the last op onto the redo stack. Returns the popped op so
-    /// callers can emit a targeted signal (toast / UI focus). Returns
-    /// `nil` when the stack is empty.
+    /// Atomically refine one owned absolute free rotation. A new gesture keeps
+    /// the previous parameters for Undo without replaying both geometries.
+    /// Nil removes only this segment's tail, retaining identity ownership.
+    @discardableResult
+    public func setOwnedFreeRotation(_ op: EditOperation?, owner: GeometryOwner,
+                                     beginsUndoStep: Bool) -> Bool {
+        guard op == nil || op?.freeRotation != nil else { return false }
+        let ownsTail = (owners.last ?? nil) == owner
+        // Current state atomically proves the unchanged segment prefix/tail.
+        // A previously used owner cannot append after an unrelated boundary.
+        if knownOwners.contains(owner), editableOwner != owner { return false }
+        if owners.contains(owner), !ownsTail { return false }
+        guard ownsTail || op != nil else { return false }
+        let prefix = ownsTail ? operations.count - 1 : operations.count
+        let after = TailState(operations: op.map { [$0] } ?? [],
+                              owners: op.map { _ in [Optional(owner)] } ?? [], editableOwner: owner)
+        let changed = change(prefix: prefix, before: tail(from: prefix), after: after,
+                             recordUndo: beginsUndoStep || undoHistory.last?.after.editableOwner != owner)
+        if changed { knownOwners.insert(owner) }
+        return changed
+    }
+
+    /// Includes a meaningful identity segment after its angle returned to0.
+    public func ownedFreeRotation() -> (owner: GeometryOwner, operation: EditOperation?)? {
+        guard let editableOwner else { return nil }
+        return (editableOwner, (owners.last ?? nil) == editableOwner ? operations.last : nil)
+    }
+
+    private func tail(from prefix: Int) -> TailState {
+        TailState(operations: Array(operations.dropFirst(prefix)), owners: Array(owners.dropFirst(prefix)),
+                  editableOwner: editableOwner)
+    }
+
+    private func apply(_ tail: TailState, from prefix: Int) {
+        operations.replaceSubrange(prefix..., with: tail.operations)
+        owners.replaceSubrange(prefix..., with: tail.owners)
+        editableOwner = tail.editableOwner
+    }
+
+    @discardableResult
+    private func change(prefix: Int, before: TailState, after: TailState, recordUndo: Bool) -> Bool {
+        guard before != after else { return false }
+        if recordUndo || undoHistory.isEmpty {
+            undoHistory.append(HistoryEntry(prefixCount: prefix, before: before, after: after))
+        } else {
+            // Widen only when a legacy replaceLast edits a prefix preceding
+            // the newest transaction (for example after a tail removal).
+            var last = undoHistory.removeLast()
+            let mergedPrefix = min(prefix, last.prefixCount)
+            let unchangedOps = Array(operations[mergedPrefix..<last.prefixCount])
+            let unchangedOwners = Array(owners[mergedPrefix..<last.prefixCount])
+            last.before.operations = unchangedOps + last.before.operations
+            last.before.owners = unchangedOwners + last.before.owners
+            last.prefixCount = mergedPrefix
+            apply(after, from: prefix)
+            last.after = tail(from: mergedPrefix)
+            if last.before.operations != last.after.operations || last.before.owners != last.after.owners {
+                undoHistory.append(last)
+            }
+            redoHistory.removeAll(keepingCapacity: true)
+            return true
+        }
+        apply(after, from: prefix)
+        redoHistory.removeAll(keepingCapacity: true)
+        return true
+    }
+
     @discardableResult
     public func undo() -> EditOperation? {
-        guard let last = operations.popLast() else { return nil }
-        undoneOperations.append(last)
-        return last
+        guard let entry = undoHistory.popLast() else { return nil }
+        apply(entry.before, from: entry.prefixCount)
+        redoHistory.append(entry)
+        return entry.operation
     }
 
-    /// Pop the last op off the redo stack back onto the operations list.
-    /// Returns the re-applied op, or `nil` when the redo stack is empty.
     @discardableResult
     public func redo() -> EditOperation? {
-        guard let last = undoneOperations.popLast() else { return nil }
-        operations.append(last)
-        return last
+        guard let entry = redoHistory.popLast() else { return nil }
+        apply(entry.after, from: entry.prefixCount)
+        undoHistory.append(entry)
+        return entry.operation
     }
 
-    /// Wipe both stacks. Called on save and on explicit
-    /// "Reset" of the whole recipe.
     public func reset() {
         operations.removeAll(keepingCapacity: true)
-        undoneOperations.removeAll(keepingCapacity: true)
+        owners.removeAll(keepingCapacity: true)
+        editableOwner = nil
+        knownOwners.removeAll(keepingCapacity: true)
+        undoHistory.removeAll(keepingCapacity: true)
+        redoHistory.removeAll(keepingCapacity: true)
+    }
+
+    public func restore(_ checkpoint: Checkpoint) {
+        operations = checkpoint.operations
+        owners = checkpoint.owners
+        editableOwner = checkpoint.editableOwner
+        knownOwners = checkpoint.knownOwners
+        undoHistory = checkpoint.undoHistory
+        redoHistory = checkpoint.redoHistory
     }
 
     // MARK: Read
@@ -278,12 +406,38 @@ public actor EditRecipe {
     /// The exit-modal flow consumes this property to decide
     /// whether to prompt "Discard / Cancel / Save As / Save".
     public var isDirty: Bool {
-        !operations.isEmpty || !undoneOperations.isEmpty
+        !operations.isEmpty || !undoHistory.isEmpty || !redoHistory.isEmpty
     }
 
     /// Snapshot of the current ops list. Cheap copy (value type).
     public func snapshot() -> [EditOperation] {
         operations
+    }
+
+    /// Capture the applied steps and the exact order of the redo stack.
+    public func checkpoint() -> Checkpoint {
+        Checkpoint(operations: operations, owners: owners, editableOwner: editableOwner, knownOwners: knownOwners,
+                   undoHistory: undoHistory, redoHistory: redoHistory)
+    }
+
+    /// Whether the effective replay has changed since the checkpoint.
+    /// Redo-only differences and superseded whole-state steps do not change
+    /// the image. Known renderer identity geometry is ignored here only;
+    /// the stored history and global effective replay remain unchanged.
+    /// This compares replay values, without rendering pixels.
+    public func hasContentChanges(since checkpoint: Checkpoint) -> Bool {
+        Self.contentOperations(operations) != Self.contentOperations(checkpoint.operations)
+    }
+
+    private static func contentOperations(_ operations: [EditOperation]) -> [EditOperation] {
+        effectiveOperations(operations).filter { operation in
+            switch operation {
+            case .rotate(let degrees), .rotateAutoCrop(let degrees): return !RotateTool.isIdentity(degrees: degrees)
+            case .rotate90(let quarters): return quarters % 4 != 0
+            case .crop(let crop): return !CropTool.isIdentity(crop)
+            case .resize, .colorAdjust, .levels: return true
+            }
+        }
     }
 }
 
@@ -313,7 +467,7 @@ extension EditRecipe {
         var levels: LevelsParams?
         for op in ops {
             switch op {
-            case .crop, .rotate, .rotate90, .resize:
+            case .crop, .rotate, .rotateAutoCrop, .rotate90, .resize:
                 out.append(op)
             case .colorAdjust(let p):
                 color = p

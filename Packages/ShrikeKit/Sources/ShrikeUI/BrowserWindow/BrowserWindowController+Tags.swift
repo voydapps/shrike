@@ -63,7 +63,9 @@ extension BrowserWindowController {
     func refreshTags(for urls: [URL]) {
         var values: [URL: [FinderTag]] = [:]
         for url in urls { values[url] = FinderTags.readWithColors(url) }
+        let previousCount = contentController.visibleItems.count
         contentController.applyTags(values)
         updateInspectorFromSelection()
+        if previousCount != contentController.visibleItems.count { updateSubtitle(); refreshStatusBar() }
     }
 }

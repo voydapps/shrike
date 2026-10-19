@@ -41,13 +41,53 @@ final class EditParameterPanel: HUDSurfaceView {
     /// The panel is as tall as its content (priority below the owner's
     /// "stay inside the band" limits).
     private var heightConstraint: NSLayoutConstraint?
+    private var installedWidthConstraint: NSLayoutConstraint?
+    private var scrollingContentHeightConstraint: NSLayoutConstraint?
+    private var chromeObservation: ChromeTextObservation?
     private var scrollWrapper: NSScrollView?
     /// Content height of the installed view (tests).
     private(set) var contentHeight: CGFloat = 0
     var isScrolling: Bool { scrollWrapper != nil }
 
+    private var needsKeyViewLoopRefresh = false
+    private var refreshingKeyViewLoop = false
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        needsKeyViewLoopRefresh = window != nil
+        if window != nil { needsLayout = true }
+    }
+
+    public override func layout() {
+        super.layout()
+        if needsKeyViewLoopRefresh { refreshKeyViewLoop(afterLayout: true) }
+    }
+
+    /// Dynamic tool controls must join the owning window's natural traversal
+    /// order after their final hierarchy and frames exist, including attachment.
+    private func refreshKeyViewLoop(afterLayout: Bool = false) {
+        guard let owner = window, !refreshingKeyViewLoop else { return }
+        refreshingKeyViewLoop = true
+        needsKeyViewLoopRefresh = false
+        defer { refreshingKeyViewLoop = false }
+        if !afterLayout { owner.contentView?.layoutSubtreeIfNeeded() }
+        contentHost.layoutSubtreeIfNeeded()
+        installed?.layoutSubtreeIfNeeded()
+        owner.recalculateKeyViewLoop()
+    }
+
     /// Replace the installed panel with `view`. Pass `nil` to clear.
     func install(_ view: NSView?) {
+        if chromeObservation == nil {
+            chromeObservation = ChromeTextObservation(root: self) { [weak self] in
+                guard let self, let installed = self.installed else { return }
+                self.refreshContentLayout(installed)
+            }
+        }
+        defer {
+            needsKeyViewLoopRefresh = true
+            refreshKeyViewLoop()
+        }
         // The empty card's constraint is only a large wish (see below): the animation
         // to a picked tool's height starts from the band it was filling.
         let previousHeight = wasFillingBand ? bandHeightProvider?() : heightConstraint?.constant
@@ -56,10 +96,19 @@ final class EditParameterPanel: HUDSurfaceView {
         scrollWrapper = nil
         heightConstraint?.isActive = false
         heightConstraint = nil
+        installedWidthConstraint?.isActive = false
+        installedWidthConstraint = nil
+        scrollingContentHeightConstraint?.isActive = false
+        scrollingContentHeightConstraint = nil
         installed = view
         guard let view else { return }
+        // Tool subtrees are created after the owner's typography observation.
+        // Capture their current-scale baseline before any future preference update.
+        ChromeTypography.register(view)
         view.translatesAutoresizingMaskIntoConstraints = false
-        view.widthAnchor.constraint(equalToConstant: Self.panelWidth).isActive = true
+        let width = view.widthAnchor.constraint(equalToConstant: Self.panelWidth)
+        width.isActive = true
+        installedWidthConstraint = width
         let content = ceil(view.fittingSize.height)
         contentHeight = content
         let band = bandHeightProvider?() ?? 0
@@ -68,7 +117,7 @@ final class EditParameterPanel: HUDSurfaceView {
         let fillsBand = view is ChooseToolPanel
         wasFillingBand = fillsBand
         let height = fillsBand ? Self.bandWish : content
-        if !fillsBand, band > 0, content > band {
+        if band > 0, content > band {
             let scroll = NSScrollView()
             scroll.translatesAutoresizingMaskIntoConstraints = false
             scroll.drawsBackground = false
@@ -78,6 +127,8 @@ final class EditParameterPanel: HUDSurfaceView {
             scroll.scrollerStyle = .overlay
             addSubview(scroll)
             scroll.documentView = view
+            let documentHeight = view.heightAnchor.constraint(equalToConstant: content)
+            scrollingContentHeightConstraint = documentHeight
             NSLayoutConstraint.activate([
                 scroll.topAnchor.constraint(equalTo: topAnchor),
                 scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -86,7 +137,7 @@ final class EditParameterPanel: HUDSurfaceView {
                 view.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
                 view.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
                 view.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
-                view.heightAnchor.constraint(equalToConstant: height),
+                documentHeight,
             ])
             scrollWrapper = scroll
         } else {
@@ -118,6 +169,31 @@ final class EditParameterPanel: HUDSurfaceView {
                 constraint.animator().constant = height
             }
         }
+    }
+
+    /// Keep a focused editor mounted when the current presentation still fits.
+    /// Rebuild the wrapper only if a font change crosses the scrolling boundary.
+    private func refreshContentLayout(_ view: NSView) {
+        guard !(view is ChooseToolPanel) else { return }
+        // An old explicit document/card height is an output of measurement,
+        // never an input to the next font-size measurement.
+        let oldCardActive = heightConstraint?.isActive == true
+        let oldDocumentActive = scrollingContentHeightConstraint?.isActive == true
+        heightConstraint?.isActive = false
+        scrollingContentHeightConstraint?.isActive = false
+        let content = ceil(view.fittingSize.height)
+        heightConstraint?.isActive = oldCardActive
+        scrollingContentHeightConstraint?.isActive = oldDocumentActive
+        let band = bandHeightProvider?() ?? 0
+        let needsScroll = band > 0 && content > band
+        if needsScroll != isScrolling {
+            install(view)
+            return
+        }
+        contentHeight = content
+        heightConstraint?.constant = content
+        scrollingContentHeightConstraint?.constant = content
+        needsLayout = true
     }
 
     /// True while the empty card spans the whole band.
@@ -152,22 +228,33 @@ final class ChooseToolPanel: NSView {
         didSet { bodyLabel.stringValue = Self.body(inFullScreen: inFullScreen) }
     }
 
-    init(inFullScreen: Bool = false) {
+    init(inFullScreen: Bool = false, onSelect: ((EditTool) -> Void)? = nil) {
         self.inFullScreen = inFullScreen
         bodyLabel = NSTextField(wrappingLabelWithString: Self.body(inFullScreen: inFullScreen))
         super.init(frame: .zero)
         // The tool-title style (the Levels panel header).
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.font = ChromeTypography.font(13, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.alignment = .center
-        bodyLabel.font = .systemFont(ofSize: 13)
+        bodyLabel.font = ChromeTypography.font(13)
         bodyLabel.textColor = .secondaryLabelColor
         bodyLabel.isSelectable = false
         bodyLabel.alignment = .center
-        let stack = NSStackView(views: [titleLabel, bodyLabel])
+        let tools = EditChromeTools.order.map { tool -> NSButton in
+            let button = NSButton(title: EditChromeTools.tooltip(tool), image: EditChromeTools.image(tool), target: nil, action: nil)
+            ChromeTypography.initializeNativeFont(button)
+            button.bezelStyle = .rounded
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: ChromeTypography.targetHeight).isActive = true
+            button.setAccessibilityLabel(EditChromeTools.name(tool))
+            let target = ToolEntryAction { onSelect?(tool) }
+            button.target = target; button.action = #selector(ToolEntryAction.runTool)
+            entryActions.append(target)
+            return button
+        }
+        let stack = NSStackView(views: [titleLabel] + tools + [bodyLabel])
         stack.orientation = .vertical
         stack.alignment = .centerX
-        stack.spacing = 6
+        stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         // Title and body sit in the middle of the card, text at most 232 pt wide.
@@ -183,6 +270,13 @@ final class ChooseToolPanel: NSView {
             titleLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             bodyLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
+    }
+
+    private var entryActions: [ToolEntryAction] = []
+    private final class ToolEntryAction: NSObject {
+        let body: () -> Void
+        init(_ body: @escaping () -> Void) { self.body = body }
+        @objc func runTool() { body() }
     }
 
     @available(*, unavailable)

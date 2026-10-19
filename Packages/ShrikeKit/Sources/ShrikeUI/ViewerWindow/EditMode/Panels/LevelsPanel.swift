@@ -123,6 +123,14 @@ enum LevelsStatus {
 
 enum LevelsRules {
 
+    /// Shared by field commitment and caption-only draft projection.
+    static func number(in text: String) -> Double? {
+        let normalized = text.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value.isFinite else { return nil }
+        return value
+    }
+
     /// `channel` with `kind` set to `value`, clamped to the valid ranges:
     /// input black 0 … white − 2, input white black + 2 … 255, gamma
     /// 0.10 … 9.99 (2 decimals), output 0 … 255 each.
@@ -131,18 +139,20 @@ enum LevelsRules {
         guard value.isFinite else { return c }
         switch kind {
         case .inBlack:
-            let v = Int(value.rounded())
+            let v = Int(min(max(value, 0), 255).rounded())
             c.inBlack = UInt8(clamping: min(max(v, 0), Int(c.inWhite) - 2))
         case .inWhite:
-            let v = Int(value.rounded())
+            let v = Int(min(max(value, 0), 255).rounded())
             c.inWhite = UInt8(clamping: min(max(v, Int(c.inBlack) + 2), 255))
         case .gamma:
             let range = LevelsChannel.gammaRange
             c.gamma = (min(max(value, range.lowerBound), range.upperBound) * 100).rounded() / 100
         case .outBlack:
-            c.outBlack = UInt8(clamping: min(max(Int(value.rounded()), 0), 255))
+            let v = Int(min(max(value, 0), 255).rounded())
+            c.outBlack = UInt8(clamping: min(max(v, 0), 255))
         case .outWhite:
-            c.outWhite = UInt8(clamping: min(max(Int(value.rounded()), 0), 255))
+            let v = Int(min(max(value, 0), 255).rounded())
+            c.outWhite = UInt8(clamping: min(max(v, 0), 255))
         }
         return c
     }
@@ -373,11 +383,71 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
     var onEditEnded: ((LevelsParams) -> Void)?
     /// Auto Contrast / Auto Color was pressed.
     var onAuto: ((LevelsAutoKind) -> Void)?
+    /// Focused text changed; no recipe write or render is implied.
+    var onDraftChanged: (() -> Void)?
 
     // MARK: State
 
     private(set) var params = LevelsParams.identity
     private(set) var channel: LevelsPanelChannel = .rgb
+    private var editedField: (kind: LevelsHandleKind, channel: LevelsPanelChannel)?
+    private var draftRevision: UInt64 = 0
+    private var hostIsClosing = false
+
+    /// Whole-channel state as the focused field would commit it. Identity can
+    /// be meaningful when it reverses an earlier nonidentity channel value.
+    var projectedParams: LevelsParams? {
+        guard let draft = editedField, draft.channel == channel,
+              let field = fields[draft.kind],
+              let value = LevelsRules.number(in: field.stringValue) else { return nil }
+        var projected = params
+        projected[draft.channel] = LevelsRules.setting(draft.kind, to: value, in: params[draft.channel])
+        return projected == params ? nil : projected
+    }
+
+    func controlTextDidBeginEditing(_ notification: Notification) { trackDraft(notification) }
+    func controlTextDidChange(_ notification: Notification) { trackDraft(notification) }
+    func controlTextDidEndEditing(_ notification: Notification) {
+        draftRevision &+= 1
+        editedField = nil
+        onDraftChanged?()
+    }
+    private func trackDraft(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField,
+              let kind = fields.first(where: { $0.value === field })?.key else { return }
+        draftRevision &+= 1
+        editedField = (kind, channel)
+        onDraftChanged?()
+    }
+
+    /// Consume the first numeric Return before NSTextField's Return completion
+    /// can fall through to the toolbar/capsule primary's key equivalent.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)),
+              let field = control as? PanelTextField,
+              let kind = fields.first(where: { $0.value === field })?.key,
+              let window = field.window, self.window === window, !hostIsClosing,
+              field.currentEditor() === textView, window.firstResponder === textView,
+              textView.delegate === field, field.delegate === self, field.target === self,
+              let action = field.action, !textView.hasMarkedText() else { return false }
+        let revision = draftRevision, owningChannel = channel
+        DispatchQueue.main.async { [weak self, weak window, weak field, weak textView] in
+            guard let self, let window, let field, let textView,
+                  !self.hostIsClosing, self.draftRevision == revision, self.channel == owningChannel,
+                  self.window === window, field.window === window, self.fields[kind] === field,
+                  field.delegate === self, field.target === self, field.action == action,
+                  field.currentEditor() === textView, window.firstResponder === textView,
+                  textView.delegate === field else { return }
+            // Ordinary focus resignation validates and may already send the
+            // field action. The explicit action is idempotent after normalization.
+            guard window.makeFirstResponder(nil), !self.hostIsClosing,
+                  self.window === window, field.window === window, self.fields[kind] === field,
+                  self.channel == owningChannel, field.delegate === self,
+                  field.target === self, field.action == action else { return }
+            _ = field.sendAction(action, to: field.target)
+        }
+        return true
+    }
 
     static let contentWidth: CGFloat = 248
     static let fieldWidth: CGFloat = 48
@@ -414,9 +484,10 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
     // MARK: Build
 
     private func build() {
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        channelLabel.font = .systemFont(ofSize: 12)
-        outputLabel.font = .systemFont(ofSize: 12)
+        for control in [channelPopup] { ChromeTypography.initializeNativeFont(control) }
+        titleLabel.font = ChromeTypography.font(13, weight: .semibold)
+        channelLabel.font = ChromeTypography.font(12)
+        outputLabel.font = ChromeTypography.font(12)
 
         for c in LevelsPanelChannel.allCases { channelPopup.addItem(withTitle: c.title) }
         channelPopup.target = self
@@ -451,7 +522,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
             let f = PanelTextField(string: "")
             f.translatesAutoresizingMaskIntoConstraints = false
             f.alignment = .center
-            f.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+            f.font = .monospacedDigitSystemFont(ofSize: ChromeTypography.size(12), weight: .regular)
             f.controlSize = .small
             f.target = self
             f.action = #selector(fieldCommitted(_:))
@@ -465,7 +536,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
         for b in [autoContrastButton, autoColorButton, resetButton] {
             b.bezelStyle = .push
             b.controlSize = .regular
-            b.font = .systemFont(ofSize: 13)
+            b.font = ChromeTypography.font(13)
             b.target = self
             b.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -485,7 +556,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
         autoColorButton.setAccessibilityIdentifier("levels.autoColor")
         resetButton.setAccessibilityIdentifier("levels.reset")
 
-        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.font = ChromeTypography.font(11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -590,6 +661,12 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let window {
+            hostIsClosing = false
+            NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(hostWillClose(_:)),
+                name: NSWindow.willCloseNotification, object: window)
+        }
         if window != nil, flagsMonitor == nil {
             flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 let option = event.modifierFlags.contains(.option)
@@ -601,11 +678,21 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
+        if newWindow !== window {
+            draftRevision &+= 1
+            editedField = nil
+            NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: window)
+        }
         if newWindow == nil, let monitor = flagsMonitor {
             NSEvent.removeMonitor(monitor)
             flagsMonitor = nil
             setOptionHeld(false)
         }
+    }
+
+    @objc private func hostWillClose(_ notification: Notification) {
+        hostIsClosing = true
+        draftRevision &+= 1
     }
 
     /// "Reset Channel" while ⌥ is held.
@@ -623,6 +710,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
     func setParams(_ p: LevelsParams) {
         params = p
         refreshAll()
+        onDraftChanged?()
     }
 
     func setChannel(_ c: LevelsPanelChannel) {
@@ -630,6 +718,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
         channelPopup.selectItem(at: c.rawValue)
         histogramView.soloChannel = c.soloHistogramChannel
         refreshAll()
+        onDraftChanged?()
     }
 
     /// The histogram of the image as it enters Levels.
@@ -653,6 +742,8 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
     // MARK: Refresh
 
     private func refreshAll() {
+        draftRevision &+= 1
+        editedField = nil
         let c = params[channel]
         for kind in LevelsHandleKind.allCases {
             fields[kind]?.stringValue = LevelsRules.text(kind, of: c)
@@ -698,6 +789,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
     }
 
     private func dragHandle(_ kind: LevelsHandleKind, toTrackX x: CGFloat, on track: LevelsTrackView, ended: Bool) {
+        defer { onDraftChanged?() }
         let value = LevelsRules.value(kind, at: track.t(for: x), in: params[channel])
         let changed = set(kind, to: value)
         if ended {
@@ -710,6 +802,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
     /// Arrow keys (visual: → moves the handle right, so the midtones
     /// value goes down) and VoiceOver / ↑↓ (value up or down).
     private func stepHandle(_ kind: LevelsHandleKind, direction: Double, big: Bool, visual: Bool) {
+        defer { onDraftChanged?() }
         // `direction` is ±1, or ±10 for ⇧↑ / ⇧↓.
         let sign: Double = direction < 0 ? -1 : 1
         var delta = sign * kind.step(big: big || abs(direction) >= 10)
@@ -720,9 +813,8 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
 
     @objc private func fieldCommitted(_ sender: NSTextField) {
         guard let kind = fields.first(where: { $0.value === sender })?.key else { return }
-        let text = sender.stringValue.trimmingCharacters(in: .whitespaces)
-            .replacingOccurrences(of: ",", with: ".")
-        guard let value = Double(text) else {
+        defer { onDraftChanged?() }
+        guard let value = LevelsRules.number(in: sender.stringValue) else {
             refreshAll()   // not a number: show the current value again
             return
         }
@@ -760,6 +852,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
         params = next
         refreshAll()
         onEditEnded?(next)
+        onDraftChanged?()
     }
 
     // MARK: Test seams

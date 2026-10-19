@@ -29,6 +29,7 @@ import ShrikeEdit
 
 @MainActor
 final class CropOverlayView: NSView {
+    var acceptsGeometryInput = true
 
     // MARK: - Inputs
 
@@ -275,6 +276,7 @@ final class CropOverlayView: NSView {
     // MARK: - Mouse handling
 
     override func mouseDown(with event: NSEvent) {
+        guard acceptsGeometryInput else { return }
         let pt = convert(event.locationInWindow, from: nil)
         activeGrab = hitTestHandle(at: pt)
         dragAnchor = pt
@@ -283,6 +285,7 @@ final class CropOverlayView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard acceptsGeometryInput else { return }
         guard let anchor = dragAnchor,
               let origin = dragOriginRect,
               let grab = activeGrab else { return }
@@ -304,6 +307,7 @@ final class CropOverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        guard acceptsGeometryInput else { return }
         dragAnchor = nil
         dragOriginRect = nil
         activeGrab = nil
@@ -312,6 +316,7 @@ final class CropOverlayView: NSView {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        guard acceptsGeometryInput else { return }
         // A hidden frame (another tool) never eats the arrows: they go
         // on to the window, which navigates.
         guard !isHiddenOrHasHiddenAncestor,

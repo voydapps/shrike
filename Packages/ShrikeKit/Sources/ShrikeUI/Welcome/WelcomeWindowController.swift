@@ -34,7 +34,7 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
     /// Items found dead and pruned in this window: never shown again.
     private(set) var prunedRecents: Set<URL> = []
 
-    let openButton = NSButton(title: "Open…", target: nil, action: nil)
+    let openButton = NSButton(title: "Open Photo…", target: nil, action: nil)
     let openFolderButton = NSButton(title: "Open Folder…", target: nil, action: nil)
     let dropZone = WelcomeDropZone(frame: .zero)
     let emptyLabel = NSTextField(labelWithString: "No recent items")
@@ -166,10 +166,10 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
     /// move inside it), back to Open….
     private func linkKeyViews() {
         window?.autorecalculatesKeyViewLoop = false
-        openButton.nextKeyView = openFolderButton
-        openFolderButton.nextKeyView = recentRows.first ?? openButton
+        openFolderButton.nextKeyView = openButton
+        openButton.nextKeyView = recentRows.first ?? openFolderButton
         for (index, row) in recentRows.enumerated() {
-            row.nextKeyView = openButton
+            row.nextKeyView = openFolderButton
             row.previousRow = index > 0 ? recentRows[index - 1] : nil
             row.nextRow = index + 1 < recentRows.count ? recentRows[index + 1] : nil
         }
@@ -208,12 +208,12 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byTruncatingMiddle
         let title = NSMutableAttributedString(string: url.lastPathComponent, attributes: [
-            .font: NSFont.systemFont(ofSize: 13),
+            .font: ChromeTypography.font(13),
             .foregroundColor: NSColor.labelColor,
             .paragraphStyle: style,
         ])
         title.append(NSAttributedString(string: "\n" + (available ? abbreviatedPath(url) : "Not available"), attributes: [
-            .font: NSFont.systemFont(ofSize: 11),
+            .font: ChromeTypography.font(11),
             .foregroundColor: NSColor.secondaryLabelColor,
             .paragraphStyle: style,
         ]))
@@ -241,7 +241,7 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
         let title = NSTextField(labelWithString: "Shrike")
         title.font = .systemFont(ofSize: 22, weight: .semibold)
         let subtitle = NSTextField(labelWithString: "Open a photo or a folder to start.")
-        subtitle.font = .systemFont(ofSize: 13)
+        subtitle.font = ChromeTypography.font(13)
         subtitle.textColor = .secondaryLabelColor
         let titleText = NSStackView(views: [title, subtitle])
         titleText.orientation = .vertical
@@ -265,9 +265,11 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
         // Spec 27 P3-11: "Open Folder…" is the primary (accent default button,
         // Return); "Open…" stays the plain bordered button.
         openButton.bezelStyle = .push
-        openFolderButton.useAccentFill()
+        openFolderButton.bezelStyle = .rounded
+        openFolderButton.isBordered = true
         openFolderButton.keyEquivalent = "\r"
-        let buttons = NSStackView(views: [openButton, openFolderButton])
+        openFolderButton.bezelColor = ShrikeAccent.mark
+        let buttons = NSStackView(views: [openFolderButton, openButton])
         buttons.orientation = .horizontal
         buttons.spacing = 12
 
@@ -278,7 +280,7 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
 
         // Recent column.
         let header = NSTextField(labelWithString: "Recent")
-        header.font = .systemFont(ofSize: 11, weight: .semibold)
+        header.font = ChromeTypography.font(11, weight: .semibold)
         header.textColor = .secondaryLabelColor
         header.setAccessibilityRole(.staticText)
         recentStack.orientation = .vertical
@@ -287,9 +289,9 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
         recentStack.setAccessibilityElement(true)
         recentStack.setAccessibilityRole(.list)
         recentStack.setAccessibilityLabel("Recent")
-        emptyLabel.font = .systemFont(ofSize: 13)
-        emptyLabel.textColor = .tertiaryLabelColor
-        messageLabel.font = .systemFont(ofSize: 11)
+        emptyLabel.font = ChromeTypography.font(13)
+        emptyLabel.textColor = .secondaryLabelColor
+        messageLabel.font = ChromeTypography.font(11)
         messageLabel.textColor = .secondaryLabelColor
         messageLabel.isHidden = true
         messageLabel.preferredMaxLayoutWidth = Self.recentColumnWidth

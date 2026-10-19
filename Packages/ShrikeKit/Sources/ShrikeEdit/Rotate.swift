@@ -38,18 +38,23 @@ public struct RotateTool: Sendable {
     /// `quarters` is normalised mod 4: `+1` = CW 90°, `+2` = 180°,
     /// `-1` / `+3` = CCW 90°. `0` returns the input unchanged.
     public static func apply90(quarters: Int, to image: CGImage) -> CGImage {
+        guard let radians = quarterTurnRadians(quarters) else { return image }
+        return rotated(image, radians: radians)
+    }
+
+    private static func quarterTurnRadians(_ quarters: Int) -> Double? {
         let q = ((quarters % 4) + 4) % 4
         switch q {
         case 0:
-            return image
+            return nil
         case 1:
-            return rotated(image, radians: -.pi / 2)
+            return -.pi / 2
         case 2:
-            return rotated(image, radians: .pi)
+            return .pi
         case 3:
-            return rotated(image, radians: .pi / 2)
+            return .pi / 2
         default:
-            return image
+            return nil
         }
     }
 
@@ -64,19 +69,11 @@ public struct RotateTool: Sendable {
     /// accepts any angle. It normalises into `-180…180` first so a
     /// drag-around slider can't produce degenerate rotations.
     public static func apply(degrees: Double, to image: CGImage, autocrop: Bool) -> CGImage {
-        let normalised = degrees.truncatingRemainder(dividingBy: 360)
-        let wrapped: Double
-        if normalised > 180 {
-            wrapped = normalised - 360
-        } else if normalised < -180 {
-            wrapped = normalised + 360
-        } else {
-            wrapped = normalised
-        }
+        let wrapped = normalisedDegrees(degrees)
 
         // Zero-degree fast path — preserves byte identity for the no-op
         // case that the recipe's coalescer can produce at slider origin.
-        if abs(wrapped) < 1e-6 {
+        if isIdentity(degrees: degrees) {
             return image
         }
 
@@ -91,6 +88,52 @@ public struct RotateTool: Sendable {
         )
     }
 
+    private static func normalisedDegrees(_ degrees: Double) -> Double {
+        let normalised = degrees.truncatingRemainder(dividingBy: 360)
+        if normalised > 180 {
+            return normalised - 360
+        } else if normalised < -180 {
+            return normalised + 360
+        } else {
+            return normalised
+        }
+    }
+
+    static func isIdentity(degrees: Double) -> Bool {
+        abs(normalisedDegrees(degrees)) < 1e-6
+    }
+
+    static func outputPixelSize(from size: CGSize, degrees: Double, autocrop: Bool = false) -> CGSize? {
+        let wrapped = normalisedDegrees(degrees)
+        guard wrapped.isFinite else { return nil }
+        if isIdentity(degrees: degrees) { return size }
+        guard let expanded = outputPixelSize(from: size, radians: -wrapped * .pi / 180.0) else { return nil }
+        guard autocrop, let rect = autocropRect(rotatedSize: expanded, originalSize: size, degrees: wrapped) else {
+            return expanded
+        }
+        return rect.size
+    }
+
+    static func outputPixelSize(from size: CGSize, quarters: Int) -> CGSize? {
+        guard let radians = quarterTurnRadians(quarters) else { return size }
+        return outputPixelSize(from: size, radians: radians)
+    }
+
+    /// A constant-color CI graph carries extent metadata only. Reading it
+    /// does not construct a context, render pixels, or allocate a bitmap.
+    private static func outputPixelSize(from size: CGSize, radians: Double) -> CGSize? {
+        let source = CIImage(color: .clear).cropped(to: CGRect(origin: .zero, size: size))
+        let extent = transformed(source, radians: radians).extent
+        guard extent.width > 0, extent.height > 0,
+              extent.width.isFinite, extent.height.isFinite else { return nil }
+        // CIContext.createCGImage integralizes its requested source rect.
+        return extent.integral.size
+    }
+
+    private static func transformed(_ image: CIImage, radians: Double) -> CIImage {
+        image.transformed(by: CGAffineTransform(rotationAngle: CGFloat(radians)))
+    }
+
     // MARK: - Internal
 
     /// Produce a new `CGImage` of the source rotated by `radians`,
@@ -98,8 +141,7 @@ public struct RotateTool: Sendable {
     /// `CoreImage.CIAffineTransform` via the shared `CIContext`.
     private static func rotated(_ image: CGImage, radians: Double) -> CGImage {
         let ci = CIImage(cgImage: image)
-        let transform = CGAffineTransform(rotationAngle: CGFloat(radians))
-        let rotatedCI = ci.transformed(by: transform)
+        let rotatedCI = transformed(ci, radians: radians)
         let extent = rotatedCI.extent
         guard extent.width > 0, extent.height > 0,
               extent.width.isFinite, extent.height.isFinite
@@ -150,8 +192,19 @@ public struct RotateTool: Sendable {
         originalHeight h: Double,
         degrees: Double
     ) -> CGImage {
+        guard let rect = autocropRect(
+            rotatedSize: CGSize(width: rotated.width, height: rotated.height),
+            originalSize: CGSize(width: w, height: h), degrees: degrees
+        ) else { return rotated }
+        return rotated.cropping(to: rect) ?? rotated
+    }
+
+    /// Both header-only sizing and bitmap cropping use these exact rounded
+    /// bounds, so replay, preview and export cannot disagree by a pixel.
+    private static func autocropRect(rotatedSize: CGSize, originalSize: CGSize, degrees: Double) -> CGRect? {
+        let w = Double(originalSize.width), h = Double(originalSize.height)
         let theta = abs(degrees) * .pi / 180.0
-        guard theta > 1e-6 else { return rotated }
+        guard theta > 1e-6 else { return nil }
 
         let cosA = abs(cos(theta))
         let sinA = abs(sin(theta))
@@ -180,10 +233,10 @@ public struct RotateTool: Sendable {
             bboxH = (h * cosA - w * sinA) / cos2
         }
 
-        guard bboxW > 1, bboxH > 1 else { return rotated }
+        guard bboxW > 1, bboxH > 1 else { return nil }
 
-        let rw = Double(rotated.width)
-        let rh = Double(rotated.height)
+        let rw = Double(rotatedSize.width)
+        let rh = Double(rotatedSize.height)
         let cx = rw / 2
         let cy = rh / 2
         let x = max(0.0, cx - bboxW / 2)
@@ -191,12 +244,8 @@ public struct RotateTool: Sendable {
         let cw = min(rw - x, bboxW)
         let ch = min(rh - y, bboxH)
 
-        let rect = CGRect(
-            x: Int(x.rounded()),
-            y: Int(y.rounded()),
-            width: max(1, Int(cw.rounded())),
-            height: max(1, Int(ch.rounded()))
-        )
-        return rotated.cropping(to: rect) ?? rotated
+        guard let pixelX = Int(exactly: x.rounded()), let pixelY = Int(exactly: y.rounded()),
+              let pixelWidth = Int(exactly: cw.rounded()), let pixelHeight = Int(exactly: ch.rounded()) else { return nil }
+        return CGRect(x: pixelX, y: pixelY, width: max(1, pixelWidth), height: max(1, pixelHeight))
     }
 }

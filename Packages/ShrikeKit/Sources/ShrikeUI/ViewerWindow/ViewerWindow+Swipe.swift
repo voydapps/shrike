@@ -17,6 +17,7 @@ extension ViewerWindow {
 
     /// Answers `wantsSwipeNeighbour`, never waiting on the main thread.
     func supplySwipeNeighbour(forward: Bool) {
+        reviewDecisionSerial &+= 1
         let index = intent.currentIndex + (forward ? 1 : -1)
         guard index >= 0, index < list.count else { return }
         let nav = navigation

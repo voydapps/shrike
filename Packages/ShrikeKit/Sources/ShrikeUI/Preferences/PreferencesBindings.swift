@@ -37,7 +37,19 @@ final class PreferencesStore: ObservableObject {
     }
 
     var showHiddenFiles: Binding<Bool> {
-        binding(get: { Prefs.showHiddenFiles }, set: { Prefs.showHiddenFiles = $0 })
+        binding(get: { Prefs.showHiddenFiles }, set: { value in
+            guard Prefs.showHiddenFiles != value else { return }
+            Prefs.showHiddenFiles = value
+            // This existing Browser-only signal re-evaluates its listing rules.
+            // Bindings can write off-main; selectors must still run on main.
+            if Thread.isMainThread {
+                NotificationCenter.default.post(name: .shrikeGroupingDidChange, object: nil)
+            } else {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: .shrikeGroupingDidChange, object: nil)
+                }
+            }
+        })
     }
 
     /// RAW+JPEG pairs: true = "Show as one item".
@@ -113,6 +125,19 @@ final class PreferencesStore: ObservableObject {
             get: { Prefs.viewerPositionOverlayAutoHides },
             set: { Prefs.viewerPositionOverlayAutoHides = $0 }
         )
+    }
+
+    var largerChrome: Binding<Bool> {
+        binding(get: { Prefs.largerChrome }, set: { Prefs.largerChrome = $0
+            NotificationCenter.default.post(name: .shrikeChromePreferencesChanged, object: nil) })
+    }
+    var reviewControlsVisible: Binding<Bool> {
+        binding(get: { Prefs.reviewControlsVisible }, set: { Prefs.reviewControlsVisible = $0
+            NotificationCenter.default.post(name: .shrikeChromePreferencesChanged, object: nil) })
+    }
+    var advanceAfterRating: Binding<Bool> {
+        binding(get: { Prefs.advanceAfterRating }, set: { Prefs.advanceAfterRating = $0
+            NotificationCenter.default.post(name: .shrikeChromePreferencesChanged, object: nil) })
     }
 
     // MARK: - Mutation helpers

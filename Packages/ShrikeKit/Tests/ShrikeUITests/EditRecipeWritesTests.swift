@@ -23,6 +23,13 @@ import XCTest
 @MainActor
 final class EditRecipeWritesTests: XCTestCase {
 
+    override func setUp() async throws {
+        EditToolTransitionModal.responderForTesting = { _ in .keep }
+    }
+    override func tearDown() async throws {
+        EditToolTransitionModal.responderForTesting = nil
+    }
+
     // MARK: Helpers
 
     /// Left half red, right half blue.
@@ -79,6 +86,365 @@ final class EditRecipeWritesTests: XCTestCase {
 
     // MARK:
 
+    private func applyHalfSize(_ c: EditModeController) throws -> ResizePanel {
+        let panel = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        panel._widthField.stringValue = "200"
+        _ = panel._widthField.sendAction(panel._widthField.action, to: panel._widthField.target)
+        panel.onApply?(try XCTUnwrap(panel.pendingSpec))
+        return panel
+    }
+
+    func testAppliedResizeUndoDoesNotReapplyOnSwitchOrDone() async throws {
+        for (settleHistory, switchTool) in [(true, false), (true, true), (false, false), (false, true)] {
+            let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .resize)
+            let panel = try applyHalfSize(c)
+            await c.settleForTesting()
+            c.performUndo()
+            if settleHistory {
+                await c.settleForTesting()
+                XCTAssertEqual(c.currentPixelSize, CGSize(width: 400, height: 300))
+                XCTAssertNil(panel.pendingSpec)
+                XCTAssertEqual(panel._widthField.integerValue, 400)
+                XCTAssertEqual(panel._heightField.integerValue, 300)
+            }
+            let recipe = try XCTUnwrap(c.recipe)
+            var saves = 0, exited = false
+            c.onSaveRequested = { saves += 1 }
+            c.onExitOutcome = { exited = $0 == .exited }
+            if switchTool { c.selectTool(.color); await c.settleForTesting() }
+            c.done()
+            for _ in 0..<200 where !exited && saves == 0 { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertTrue(exited)
+            XCTAssertEqual(saves, 0, "Undo must not be silently undone when finishing")
+            let operations = await recipe.snapshot()
+            XCTAssertTrue(operations.isEmpty)
+        }
+    }
+
+    func testAppliedResizeResetDoesNotReapplyOnSwitchOrDone() async throws {
+        for (settleHistory, switchTool) in [(true, false), (true, true), (false, false), (false, true)] {
+            let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .resize)
+            let panel = try applyHalfSize(c)
+            await c.settleForTesting()
+            c.revertPendingEdits()
+            if settleHistory {
+                await c.settleForTesting()
+                XCTAssertNil(panel.pendingSpec)
+                XCTAssertEqual(panel._widthField.integerValue, 400)
+                XCTAssertEqual(panel._heightField.integerValue, 300)
+            }
+            let recipe = try XCTUnwrap(c.recipe)
+            var saves = 0, exited = false
+            c.onSaveRequested = { saves += 1 }
+            c.onExitOutcome = { exited = $0 == .exited }
+            if switchTool { c.selectTool(.color); await c.settleForTesting() }
+            c.done()
+            for _ in 0..<200 where !exited && saves == 0 { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertTrue(exited)
+            XCTAssertEqual(saves, 0)
+            let operations = await recipe.snapshot()
+            XCTAssertTrue(operations.isEmpty)
+        }
+    }
+
+    func testResetDiscardsUnappliedResizeWithoutGeometryChange() async throws {
+        let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .resize)
+        let panel = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        panel._widthField.stringValue = "200"
+        _ = panel._widthField.sendAction(panel._widthField.action, to: panel._widthField.target)
+        XCTAssertNotNil(panel.pendingSpec)
+        c.revertPendingEdits()
+        await c.settleForTesting()
+        XCTAssertNil(panel.pendingSpec)
+        XCTAssertEqual(panel._widthField.integerValue, 400)
+        c.selectTool(.color)
+        await c.settleForTesting()
+        let prepared = await c.prepareForSave()
+        XCTAssertTrue(prepared)
+        let operations = await c.recipe!.snapshot()
+        XCTAssertTrue(operations.isEmpty)
+    }
+
+    func testAppliedResizeRedoRestoresControlsWithoutAddingAnotherResize() async throws {
+        let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .resize)
+        let panel = try applyHalfSize(c)
+        await c.settleForTesting()
+        c.performUndo()
+        await c.settleForTesting()
+        c.performRedo()
+        await c.settleForTesting()
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 200, height: 150))
+        XCTAssertEqual(panel._widthField.integerValue, 200)
+        XCTAssertEqual(panel._heightField.integerValue, 150)
+        XCTAssertNil(panel.pendingSpec)
+        c.selectTool(.color)
+        await c.settleForTesting()
+        var saves = 0
+        c.onSaveRequested = { saves += 1 }
+        c.done()
+        for _ in 0..<200 where saves == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(saves, 1)
+        let operations = await c.recipe!.snapshot()
+        XCTAssertEqual(operations.count, 1, "Redo restores one resize, with no implicit duplicate")
+    }
+
+    func testDelayedAppliedResizeRenderPreservesNewTypedTarget() async throws {
+        let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .resize)
+        let renderer = EditRenderer()
+        var gate: CheckedContinuation<Void, Never>?
+        var first = true
+        c.renderOverrideForTesting = { recipe, original, hint in
+            let snapshot = await recipe.snapshot()
+            if first {
+                first = false
+                await withCheckedContinuation { gate = $0 }
+            }
+            return await renderer.render(recipe: EditRecipe(operations: snapshot), from: original, qualityHint: hint)
+        }
+        let panel = try applyHalfSize(c)
+        for _ in 0..<200 where gate == nil { try await Task.sleep(for: .milliseconds(10)) }
+        panel._widthField.stringValue = "100"
+        _ = panel._widthField.sendAction(panel._widthField.action, to: panel._widthField.target)
+        gate?.resume()
+        await c.settleForTesting()
+        XCTAssertEqual(panel.pendingSpec?.width, 100)
+        XCTAssertEqual(panel.pendingSpec?.height, 75)
+        c.selectTool(.color)
+        await c.settleForTesting()
+        let prepared = await c.prepareForSave()
+        XCTAssertTrue(prepared)
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 100, height: 75))
+        let operations = await c.recipe!.snapshot()
+        XCTAssertEqual(operations.count, 2)
+    }
+
+    func testResetClearsPendingCropAfterColorWithoutReapplyingOnSwitchOrDone() async throws {
+        for switchTool in [false, true] {
+            let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .color)
+            let color = try colourPanel(c)
+            drag(color._brightnessSlider, in: color, to: [0.2])
+            await c.settleForTesting()
+            c.selectTool(.crop)
+            await c.settleForTesting()
+            c.cropOverlay.imageFrame = CGRect(x: 0, y: 0, width: 400, height: 300)
+            c.cropOverlay.setRectFromImageSpace(CGRect(x: 0, y: 0, width: 200, height: 150))
+            XCTAssertNotNil(c.pendingCropRect())
+            let recipe = try XCTUnwrap(c.recipe)
+            c.revertPendingEdits()
+            XCTAssertNil(c.pendingCropRect(), "Reset consumes the current unapplied crop synchronously")
+            var saves = 0, exited = false
+            c.onSaveRequested = { saves += 1 }
+            c.onExitOutcome = { exited = $0 == .exited }
+            if switchTool { c.selectTool(.color); await c.settleForTesting() }
+            c.done()
+            for _ in 0..<200 where !exited && saves == 0 { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertTrue(exited)
+            XCTAssertEqual(saves, 0)
+            let operations = await recipe.snapshot()
+            XCTAssertTrue(operations.isEmpty)
+        }
+    }
+
+    func testCropDrawnAfterResetBeginsSurvivesItsDelayedRender() async throws {
+        let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .color)
+        let color = try colourPanel(c)
+        drag(color._brightnessSlider, in: color, to: [0.2])
+        await c.settleForTesting()
+        c.selectTool(.crop)
+        await c.settleForTesting()
+        c.cropOverlay.imageFrame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        c.cropOverlay.setRectFromImageSpace(CGRect(x: 0, y: 0, width: 200, height: 150))
+        let renderer = EditRenderer()
+        var gate: CheckedContinuation<Void, Never>?
+        var first = true
+        c.renderOverrideForTesting = { recipe, original, hint in
+            let snapshot = await recipe.snapshot()
+            if first {
+                first = false
+                await withCheckedContinuation { gate = $0 }
+            }
+            return await renderer.render(recipe: EditRecipe(operations: snapshot), from: original, qualityHint: hint)
+        }
+        c.revertPendingEdits()
+        for _ in 0..<200 where gate == nil { try await Task.sleep(for: .milliseconds(10)) }
+        c.cropOverlay.setRectFromImageSpace(CGRect(x: 0, y: 0, width: 100, height: 75))
+        gate?.resume()
+        await c.settleForTesting()
+        XCTAssertEqual(c.pendingCropRect()?.width ?? 0, 0.25, accuracy: 0.0001)
+        XCTAssertEqual(c.pendingCropRect()?.height ?? 0, 0.25, accuracy: 0.0001)
+        c.selectTool(.color)
+        await c.settleForTesting()
+        let prepared = await c.prepareForSave()
+        XCTAssertTrue(prepared)
+        let operations = await c.recipe!.snapshot()
+        XCTAssertEqual(operations.count, 1)
+        guard case .crop = operations.first else { return XCTFail("Only the new crop remains after Reset") }
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 100, height: 75))
+    }
+
+    func testResetCancelsCurrentColorPanelsDeferredCommit() async throws {
+        let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .color)
+        let color = try colourPanel(c)
+        color._brightnessSlider.doubleValue = 0.2
+        _ = color._brightnessSlider.sendAction(color._brightnessSlider.action, to: color._brightnessSlider.target)
+        let pending = try XCTUnwrap(color.pendingCommitForTesting)
+        c.revertPendingEdits()
+        await pending.value
+        await c.settleForTesting()
+        let operations = await c.recipe!.snapshot()
+        XCTAssertTrue(operations.isEmpty)
+    }
+
+    func testToolSwitchAndResetCancelRemovedRotatePanelsDeferredCommit() async throws {
+        let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .rotate)
+        let rotate = try XCTUnwrap(c._installedToolForTesting as? RotatePanel)
+        rotate._angleSlider.doubleValue = 10
+        _ = rotate._angleSlider.sendAction(rotate._angleSlider.action, to: rotate._angleSlider.target)
+        let pending = try XCTUnwrap(rotate.pendingCommitForTesting)
+        c.selectTool(.crop)
+        await c.settleForTesting()
+        c.revertPendingEdits()
+        await pending.value
+        await c.settleForTesting()
+        let operations = await c.recipe!.snapshot()
+        XCTAssertTrue(operations.isEmpty)
+    }
+
+    func testSavePreparationCancelsDeferredRotateCommitWithoutDuplicatingPreview() async throws {
+        let autoCrop = Prefs.editAutoCropOnFreeRotate
+        defer { Prefs.editAutoCropOnFreeRotate = autoCrop }
+        Prefs.editAutoCropOnFreeRotate = false
+        let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .rotate)
+        let rotate = try XCTUnwrap(c._installedToolForTesting as? RotatePanel)
+        rotate._angleSlider.doubleValue = 10
+        _ = rotate._angleSlider.sendAction(rotate._angleSlider.action, to: rotate._angleSlider.target)
+        let pending = try XCTUnwrap(rotate.pendingCommitForTesting)
+        let prepared = await c.prepareForSave()
+        XCTAssertTrue(prepared)
+        await pending.value
+        await c.settleForTesting()
+        let operations = await c.recipe!.snapshot()
+        XCTAssertEqual(operations.count, 1)
+        guard case .rotate(let angle) = operations.first else { return XCTFail("Latest preview must remain in the recipe") }
+        XCTAssertEqual(angle, 10)
+    }
+
+    func testImmediateRotateUndoAndRedoDoNotReappendDeferredSliderState() async throws {
+        for redo in [false, true] {
+            let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .rotate)
+            let rotate = try XCTUnwrap(c._installedToolForTesting as? RotatePanel)
+            rotate._angleSlider.doubleValue = 10
+            _ = rotate._angleSlider.sendAction(rotate._angleSlider.action, to: rotate._angleSlider.target)
+            let pending = try XCTUnwrap(rotate.pendingCommitForTesting)
+            c.performUndo()
+            if redo { c.performRedo() }
+            await pending.value
+            await c.settleForTesting()
+            let operations = await c.recipe!.snapshot()
+            XCTAssertEqual(operations.count, redo ? 1 : 0)
+        }
+    }
+
+    func testUnappliedCropSurvivesToolRoundTripAndDone() async throws {
+        let (c, output) = controller(image: Self.grey(width: 400, height: 300), tool: .crop)
+        c.cropOverlay.imageFrame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        c.cropOverlay.setRectFromImageSpace(CGRect(x: 0, y: 0, width: 200, height: 150))
+        var saves = 0
+        c.onSaveRequested = { saves += 1 }
+        c.selectTool(.color)
+        await c.settleForTesting()
+        c.selectTool(.crop)
+        await c.settleForTesting()
+        c.selectTool(.crop)
+        await c.settleForTesting()
+        c.done()
+        for _ in 0..<200 where saves == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(saves, 1)
+        let ops = await c.recipe!.snapshot()
+        XCTAssertEqual(ops.count, 1)
+        XCTAssertEqual(output()?.width, 200)
+        XCTAssertEqual(output()?.height, 150)
+        c.performUndo()
+        await c.settleForTesting()
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 400, height: 300))
+        c.performRedo()
+        await c.settleForTesting()
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 200, height: 150))
+        c.revertPendingEdits()
+        await c.settleForTesting()
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 400, height: 300))
+    }
+
+    func testApplyCropThenImmediateSwitchDoesNotApplyTwice() async throws {
+        let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .crop)
+        c.cropOverlay.imageFrame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        c.cropOverlay.setRectFromImageSpace(CGRect(x: 0, y: 0, width: 200, height: 150))
+        (c._installedToolForTesting as? CropPanel)?._applyButton.performClick(nil)
+        c.selectTool(.color)
+        await c.settleForTesting()
+        let prepared = await c.prepareForSave()
+        XCTAssertTrue(prepared)
+        let ops = await c.recipe!.snapshot()
+        XCTAssertEqual(ops.count, 1)
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 200, height: 150))
+    }
+
+    func testCropToResizeUsesLogicalSizeBeforeRenderAndPreservesPendingResize() async throws {
+        let (c, output) = controller(image: Self.grey(width: 400, height: 300), tool: .crop)
+        c.cropOverlay.imageFrame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        c.cropOverlay.setRectFromImageSpace(CGRect(x: 0, y: 0, width: 200, height: 150))
+        c.selectTool(.resize)
+        await c.settleForTesting()
+        let panel = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        XCTAssertEqual(panel.sourcePixelSize, CGSize(width: 200, height: 150))
+        panel._widthField.stringValue = "100"
+        _ = panel._widthField.sendAction(panel._widthField.action, to: panel._widthField.target)
+        c.selectTool(.color)
+        await c.settleForTesting()
+        let prepared = await c.prepareForSave()
+        XCTAssertTrue(prepared)
+        let ops = await c.recipe!.snapshot()
+        XCTAssertEqual(ops.count, 2)
+        XCTAssertEqual(output()?.width, 100)
+        XCTAssertEqual(output()?.height, 75)
+    }
+
+    func testDelayedGeometryRenderPreservesNewCropAndLogicalResizeSize() async throws {
+        let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .crop)
+        let renderer = EditRenderer()
+        var gate: CheckedContinuation<Void, Never>?
+        var first = true
+        c.renderOverrideForTesting = { recipe, original, hint in
+            let snapshot = await recipe.snapshot()
+            if first {
+                first = false
+                await withCheckedContinuation { gate = $0 }
+            }
+            return await renderer.render(recipe: EditRecipe(operations: snapshot), from: original, qualityHint: hint)
+        }
+        c.onPresentImage = { image in
+            c.cropOverlay.imageFrame = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        }
+        c.cropOverlay.imageFrame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        c.cropOverlay.setRectFromImageSpace(CGRect(x: 0, y: 0, width: 200, height: 300))
+        c.selectTool(.resize)
+        await c.waitForToolTransitionForTesting()
+        let resize = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        XCTAssertEqual(resize.sourcePixelSize, CGSize(width: 200, height: 300))
+        for _ in 0..<200 where gate == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(gate)
+        c.selectTool(.crop)
+        c.cropOverlay.setRectFromImageSpace(CGRect(x: 0, y: 0, width: 100, height: 150))
+        gate?.resume()
+        await c.settleForTesting()
+        XCTAssertEqual(c.pendingCropRect()?.width ?? 0, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(c.pendingCropRect()?.height ?? 0, 0.5, accuracy: 0.0001)
+        let prepared = await c.prepareForSave()
+        XCTAssertTrue(prepared)
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 100, height: 150))
+        c.onPresentImage = nil
+    }
+
     func testCropThenColourDragKeepsTheCrop() async throws {
         let (c, _) = controller(image: Self.grey(width: 400, height: 300), tool: .crop)
         let overlay = c.cropOverlay
@@ -90,6 +456,7 @@ final class EditRecipeWritesTests: XCTestCase {
         await c.settleForTesting()
 
         c.selectTool(.color)
+        await c.settleForTesting()
         let panel = try colourPanel(c)
         drag(panel._brightnessSlider, in: panel, to: [0.1, 0.2, 0.3])
         await c.settleForTesting()
@@ -156,11 +523,17 @@ final class EditRecipeWritesTests: XCTestCase {
     }
 
     func testFreeRotateReplacesOnlyItsOwnOp() async throws {
+        // This existing case asserts the legacy expanded-canvas operation;
+        // make its intended checkbox state independent of user preferences.
+        let autoCrop = Prefs.editAutoCropOnFreeRotate
+        defer { Prefs.editAutoCropOnFreeRotate = autoCrop }
+        Prefs.editAutoCropOnFreeRotate = false
         let (c, _) = controller(image: Self.grey(), tool: .color)
         let panel = try colourPanel(c)
         drag(panel._brightnessSlider, in: panel, to: [0.3])
         await c.settleForTesting()
         c.selectTool(.rotate)
+        await c.settleForTesting()
         let rotate = try XCTUnwrap(c._installedToolForTesting as? RotatePanel)
         rotate.onAngleChanged?(2)
         rotate.onAngleChanged?(4)
@@ -238,15 +611,22 @@ final class EditRecipeWritesTests: XCTestCase {
         let viewer = ViewerWindow(groups: [ImageGroup(primary: url)], startIndex: 0, services: services)
         defer { viewer.close() }
         viewer.setContentSize(NSSize(width: 900, height: 700))
-        viewer.markDisplayedForTesting(0)
         let content = viewer.contentRootForTesting
         let deadline = Date().addingTimeInterval(8)
-        while (content.imageView.image == nil || content.imageView.isCurrentImagePlaceholder),
-              Date() < deadline {
+        func readyForEdit() -> Bool {
+            content.imageView.image != nil && !content.imageView.isCurrentImagePlaceholder
+                && viewer.displayedItem?.listIndex == 0 && viewer.displayedItem?.group.primary == url
+                && content.imageView.sourceID == FileImageSource(url: url).id
+                && viewer.canPerform(.editImage)
+        }
+        while !readyForEdit(), Date() < deadline {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
+        XCTAssertTrue(readyForEdit(), "the actual photo is accepted before crop entry")
         viewer.enterEditMode(landOn: .crop)
         await viewer.waitForEditLoad()
+        XCTAssertTrue(content.isEditModeActive, "crop shell entered before frame measurement")
+        XCTAssertTrue(content.editModeController.isActive, "crop source finished loading")
         await content.editModeController.settleForTesting()
         viewer.contentView?.layoutSubtreeIfNeeded()
 

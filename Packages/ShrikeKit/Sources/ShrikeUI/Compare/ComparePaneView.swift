@@ -21,6 +21,16 @@ final class ComparePaneView: NSView {
     let footer = HUDSurfaceView()
     let footerLabel = NSTextField(labelWithString: "")
     let errorLabel = NSTextField(labelWithString: "")
+    var onKeep: (() -> Void)?
+    var onPrevious: (() -> Void)?
+    var onNext: (() -> Void)?
+    private let keep = NSButton(checkboxWithTitle: "Keep Photo", target: nil, action: nil)
+    private let previous = NSButton(title: "‹", target: nil, action: nil)
+    private let next = NSButton(title: "›", target: nil, action: nil)
+    private let navigationButtons = NSStackView()
+    private var reference = false
+    private var hovered = false
+    private var tracking: NSTrackingArea?
     private let focusRing = CompareFocusRingView()
 
     var isFocused = false {
@@ -28,6 +38,7 @@ final class ComparePaneView: NSView {
             focusRing.isHidden = !isFocused
             footerLabel.alphaValue = isFocused ? 1 : Self.unfocusedFooterAlpha
             setAccessibilitySelected(isFocused)
+            refreshActions()
         }
     }
 
@@ -44,25 +55,39 @@ final class ComparePaneView: NSView {
         footer.setShowsMaterial(false)
         footer.frame = NSRect(x: 0, y: 0, width: frameRect.width, height: CompareFooter.height)
         footer.autoresizingMask = [.width, .maxYMargin]
-        footerLabel.font = .systemFont(ofSize: CompareFooter.fontSize)
+        footerLabel.font = ChromeTypography.font(CompareFooter.fontSize)
         footerLabel.textColor = .labelColor
         footerLabel.lineBreakMode = .byTruncatingTail
         footerLabel.maximumNumberOfLines = 1
         footerLabel.cell?.truncatesLastVisibleLine = true
         footerLabel.translatesAutoresizingMaskIntoConstraints = false
         footer.addSubview(footerLabel)
+        keep.target = self; keep.action = #selector(keepClicked)
+        previous.target = self; previous.action = #selector(previousClicked)
+        next.target = self; next.action = #selector(nextClicked)
+        previous.setAccessibilityLabel("Previous candidate"); next.setAccessibilityLabel("Next candidate")
+        navigationButtons.orientation = .horizontal; navigationButtons.spacing = 4
+        for button in [previous, keep, next] {
+            button.font = ChromeTypography.font(12)
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: ChromeTypography.targetHeight).isActive = true
+            navigationButtons.addArrangedSubview(button)
+        }
+        footer.addSubview(navigationButtons); navigationButtons.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([navigationButtons.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -8),
+            navigationButtons.centerYAnchor.constraint(equalTo: footer.centerYAnchor)])
+        footer.frame.size.height = ChromeTypography.targetHeight + 8
+        refreshActions()
         NSLayoutConstraint.activate([
             // The outer panes' footers run into the window's rounded
             // bottom corners.
             footerLabel.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: WindowCornerInset.side),
-            footerLabel.trailingAnchor.constraint(lessThanOrEqualTo: footer.trailingAnchor,
-                                                  constant: -WindowCornerInset.side),
+            footerLabel.trailingAnchor.constraint(lessThanOrEqualTo: navigationButtons.leadingAnchor, constant: -8),
             footerLabel.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
         ])
         footerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(footer)
 
-        errorLabel.font = .systemFont(ofSize: 13)
+        errorLabel.font = ChromeTypography.font(13)
         errorLabel.textColor = .white
         errorLabel.alignment = .center
         errorLabel.lineBreakMode = .byTruncatingMiddle
@@ -106,10 +131,10 @@ final class ComparePaneView: NSView {
     /// The name is cut with `FileNameFit` so the rest of the footer stays whole.
     private func refitFooter() {
         var text = footerFullText
-        let available = footer.bounds.width - 2 * WindowCornerInset.side
+        let available = footer.bounds.width - 2 * WindowCornerInset.side - navigationButtons.fittingSize.width - 8
         if let name = footerName, !name.isEmpty, text.hasPrefix(name), available > 0 {
             let suffix = String(text.dropFirst(name.count))
-            let font = NSFont.systemFont(ofSize: CompareFooter.fontSize)
+            let font = ChromeTypography.font(CompareFooter.fontSize)
             let fitted = FileNameFit.fit(name) {
                 (($0 + suffix) as NSString).size(withAttributes: [.font: font]).width <= available
             }
@@ -124,7 +149,7 @@ final class ComparePaneView: NSView {
 
     private func applyFooterText(_ text: String) {
         let attributed = NSMutableAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: CompareFooter.fontSize),
+            .font: ChromeTypography.font(CompareFooter.fontSize),
             .foregroundColor: NSColor.labelColor,
         ])
         let ns = text as NSString
@@ -142,6 +167,28 @@ final class ComparePaneView: NSView {
         footerLabel.attributedStringValue = attributed
         setAccessibilityLabel(text)
     }
+
+    func setReference(_ reference: Bool, canPrevious: Bool, canNext: Bool) {
+        self.reference = reference; keep.state = reference ? .on : .off
+        keep.toolTip = "Keep this photo while changing candidates"
+        keep.setAccessibilityLabel(reference ? "Keep Photo, Reference" : "Keep Photo")
+        previous.isEnabled = !reference && canPrevious; next.isEnabled = !reference && canNext
+        previous.toolTip = reference ? "Unpin to change this photo" : "Previous candidate"
+        next.toolTip = reference ? "Unpin to change this photo" : "Next candidate"
+        refreshActions()
+    }
+    private func refreshActions() { navigationButtons.isHidden = !(reference || hovered || isFocused) }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect], owner: self)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; refreshActions() }
+    override func mouseExited(with event: NSEvent) { hovered = false; refreshActions() }
+    @objc private func keepClicked() { onKeep?() }
+    @objc private func previousClicked() { onPrevious?() }
+    @objc private func nextClicked() { onNext?() }
 
     var footerAlphaForTesting: CGFloat { footerLabel.alphaValue }
 

@@ -153,14 +153,25 @@ final class SlideshowTests: XCTestCase {
 
     func testScopeTitles() {
         let s = SlideshowScope(allCount: 180, folderName: "Italy 2026", selectedCount: 12)
-        XCTAssertEqual(s.allTitle, "All 180 images in “Italy 2026”")
-        XCTAssertEqual(s.selectedTitle, "The 12 selected images")
+        XCTAssertEqual(s.allTitle, "All 180 visible photos in ‘Italy 2026’")
+        XCTAssertEqual(s.selectedTitle, "12 selected photos")
         XCTAssertTrue(s.offersSelection)
         let one = SlideshowScope(allCount: 5, folderName: "x", selectedCount: 1)
+        XCTAssertEqual(one.allTitle, "All 5 visible photos in ‘x’")
+        XCTAssertEqual(one.selectedTitle, "1 selected photo")
         XCTAssertTrue(one.offersSelection, "offered from 1")
         XCTAssertFalse(one.defaultsToSelection, "but not the default")
         XCTAssertTrue(s.defaultsToSelection)
         XCTAssertFalse(SlideshowScope(allCount: 5, folderName: "x", selectedCount: 0).offersSelection)
+        let only = SlideshowScope(allCount: 1, folderName: "F", selectedCount: 1)
+        XCTAssertEqual(only.allTitle, "All 1 visible photo in ‘F’")
+        XCTAssertEqual(only.selectedTitle, "1 selected photo")
+        let empty = SlideshowScope(allCount: 0, folderName: "F", selectedCount: 0)
+        XCTAssertEqual(empty.allTitle, "All 0 visible photos in ‘F’")
+        XCTAssertEqual(empty.selectedTitle, "0 selected photos")
+        let two = SlideshowScope(allCount: 2, folderName: "F", selectedCount: 2)
+        XCTAssertEqual(two.allTitle, "All 2 visible photos in ‘F’")
+        XCTAssertEqual(two.selectedTitle, "2 selected photos")
     }
 
     // MARK: Rating in a show reaches the store
@@ -179,9 +190,13 @@ final class SlideshowTests: XCTestCase {
             await services.metadataStore.records(for: [list[1].primary])[list[1].primary]?.rating == 4
         }
         XCTAssertTrue(rated)
-        XCTAssertEqual(show.toastsForTesting.last, "★★★★")
+        await CullingUndo.waitForPendingWrites()
+        XCTAssertEqual(show.toastsForTesting.last, "Rated 4 stars")
         XCTAssertEqual(origin.undo.undoActionName, "Rating")
         show.handle(.rate(0))
+        await CullingUndo.waitForPendingWrites()
+        let clearedRating = await services.metadataStore.records(for: [list[1].primary])[list[1].primary]?.rating
+        XCTAssertEqual(clearedRating, 0)
         XCTAssertEqual(show.toastsForTesting.last, "Rating cleared")
         show.handle(.toggleFlag)
         let flagged = await waitUntil {

@@ -141,8 +141,8 @@ final class CompareWindowTests: XCTestCase {
         XCTAssertEqual(key(SpecialKey.tab)?.command, .compareFocusNext)
         XCTAssertEqual(key(SpecialKey.tab, .shift)?.command, .compareFocusPrevious)
         XCTAssertEqual(CompareFocusRingView.width, 3)
-        XCTAssertEqual(CompareWindow.subtitle(paneCount: 2), "2 images · Tab switches pane · ← → change its photo")
-        XCTAssertEqual(CompareWindow.subtitle(paneCount: 1), "1 image")
+        XCTAssertEqual(CompareWindow.subtitle(paneCount: 2), "2 photos · Tab switches pane · arrows change candidates")
+        XCTAssertEqual(CompareWindow.subtitle(paneCount: 1), "1 photo")
 
         let browser = try await browser(["a.jpg", "b.jpg", "c.jpg"])
         defer { browser.close() }
@@ -222,7 +222,7 @@ final class CompareWindowTests: XCTestCase {
         XCTAssertEqual(fs("r", []), .rotateRight)
         XCTAssertEqual(fs(SpecialKey.forwardDelete, []), .moveToTrash)
         XCTAssertNil(fs(SpecialKey.backspace, []), "bare ⌫ never trashes in FastStone")
-        XCTAssertEqual(ShortcutTable.tooltip(for: .compareLock, context: .compare), "Lock Zoom and Pan  ·  S")
+        XCTAssertEqual(ShortcutTable.tooltip(for: .compareLock, context: .compare), "Sync Zoom and Pan  ·  S")
         XCTAssertEqual(ShortcutTable.tooltip(for: .compareFitAll, context: .compare), "Fit All  ·  0")
     }
 
@@ -236,7 +236,7 @@ final class CompareWindowTests: XCTestCase {
         browser.perform(.compare)
         let window = try XCTUnwrap(CompareWindow.current)
         XCTAssertEqual(names(window), ["a.jpg", "c.jpg", "d.jpg"])
-        XCTAssertEqual(window.subtitle, "3 images · Tab switches pane · ← → change its photo")
+        XCTAssertEqual(window.subtitle, "3 photos · Tab switches pane · arrows change candidates")
         window.setContentSize(NSSize(width: 1200, height: 700))
         window.contentView?.layoutSubtreeIfNeeded()
         window.layoutPanes()
@@ -249,7 +249,7 @@ final class CompareWindowTests: XCTestCase {
         XCTAssertFalse(window.panes[1].view.isFocused)
         // Toolbar: only Lock and Fit All, with the resolver's tooltips.
         XCTAssertEqual(window.toolbarStyle, .unified)
-        XCTAssertEqual(window.lockToolbarItem?.toolTip, "Lock Zoom and Pan  ·  S")
+        XCTAssertEqual(window.lockToolbarItem?.toolTip, "Zoom and pan in all panes together. Sync Zoom and Pan  ·  S")
         XCTAssertEqual(window.fitAllToolbarItem?.toolTip, "Fit All  ·  0")
         // The panes load (a footer with the name).
         let loaded = await waitUntil { window.panes.allSatisfy { $0.view.imageView.image != nil } }
@@ -344,6 +344,51 @@ final class CompareWindowTests: XCTestCase {
         XCTAssertFalse(window.isLocked)
         lead.setPixelScale(2.0, anchor: nil)
         XCTAssertTrue(window.panes[1].view.imageView.isAtFit, "unlocked panes zoom on their own")
+    }
+
+    func testSyncToolbarAccessibleLabelTracksActualActionAndShortcut() async throws {
+        let urls = try [writeJPEG("sync-a.jpg"), writeJPEG("sync-b.jpg")]
+        let window = CompareWindow.open(CompareRequest(list: urls.map { ImageGroup(primary: $0) }, shown: [0, 1], truncated: false),
+            services: ShrikeServices.makeDefault(), origin: nil, frame: NSRect(x: 0, y: 0, width: 1000, height: 650))
+        defer { window.close() }
+        let loaded = await waitUntil { window.panes.allSatisfy { $0.view.imageView.image != nil && $0.view.imageView.sourcePixelSize != nil } }
+        XCTAssertTrue(loaded)
+        let item = try XCTUnwrap(window.lockToolbarItem), action = try XCTUnwrap(item.action)
+        XCTAssertTrue(item.target === window)
+        XCTAssertEqual(action, #selector(CompareWindow.toggleLockFromToolbar(_:)))
+        func currentAccessibleLabels() -> [String] {
+            window.contentView?.superview?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            var labels: [String] = [], visited: Set<ObjectIdentifier> = []
+            func walk(_ value: Any, depth: Int) {
+                let element = value as AnyObject
+                guard depth < 20, visited.insert(ObjectIdentifier(element)).inserted else { return }
+                if let label = element.accessibilityLabel?(), label.hasPrefix("Sync Zoom and Pan:") {
+                    labels.append(label)
+                }
+                for child in (element.accessibilityChildren?() ?? nil) ?? [] { walk(child, depth: depth + 1) }
+            }
+            if let frame = window.contentView?.superview { walk(frame, depth: 0) }
+            return labels
+        }
+        XCTAssertTrue(window.isLocked)
+        XCTAssertEqual(item.label, "Sync Zoom and Pan: On")
+        let initial = await waitUntil { currentAccessibleLabels().contains("Sync Zoom and Pan: On") }
+        XCTAssertTrue(initial, "the actual toolbar accessibility control exposes its initial state")
+        XCTAssertTrue(NSApplication.shared.sendAction(action, to: item.target, from: item))
+        XCTAssertFalse(window.isLocked)
+        XCTAssertEqual(item.label, "Sync Zoom and Pan: Off")
+        let off = await waitUntil { currentAccessibleLabels().contains("Sync Zoom and Pan: Off") }
+        XCTAssertTrue(off, "the toolbar action updates its readable current state")
+        let lead = window.panes[0].view.imageView
+        lead.setPixelScale(2, anchor: nil)
+        XCTAssertTrue(window.panes[1].view.imageView.isAtFit, "turning sync off preserves independent zoom")
+        window.perform(try XCTUnwrap(key("s")))
+        XCTAssertTrue(window.isLocked)
+        XCTAssertEqual(item.label, "Sync Zoom and Pan: On")
+        let on = await waitUntil { currentAccessibleLabels().contains("Sync Zoom and Pan: On") }
+        XCTAssertTrue(on, "the shortcut uses the same stateful toolbar control")
+        XCTAssertEqual(window.panes[1].view.imageView.pixelScale, 2, accuracy: 0.01)
+        XCTAssertTrue(item.target === window); XCTAssertEqual(item.action, action)
     }
 
     // MARK: ⌫ on pane 2 → the next image not shown; ⌘Z brings it back

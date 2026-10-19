@@ -176,7 +176,8 @@ final class BrowserFilterPopoverTests: XCTestCase {
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
         defer { browser.close() }
         let content = browser.contentController
-        _ = await waitUntil { content.visibleItems.count == 2 }
+        let ready = await waitUntil { content.visibleItems.count == 2 && !content.isHydratingMarks }
+        XCTAssertTrue(ready, "rating metadata is ready before applying a metadata-dependent filter")
         var f = BrowserFilter.none
         f.ratingChoice = .atLeast(5)
         browser.showFilterPopover(nil)
@@ -184,11 +185,15 @@ final class BrowserFilterPopoverTests: XCTestCase {
         browser.filterPopoverForTesting?.ratingChanged(browser.filterPopoverForTesting!.ratingPopup)
         XCTAssertEqual(content.visibleItems.count, 0)
         let empty = try XCTUnwrap(content.emptyStateForTesting)
-        XCTAssertEqual(empty.titleText, "No images match the filter.")
-        XCTAssertEqual(empty.buttonTitle, "Clear Filter")
+        XCTAssertEqual(empty.titleText, "No Matching Photos")
+        XCTAssertEqual(empty.buttonTitle, "Clear Filters")
         XCTAssertEqual(browser.window?.subtitle, WindowTitles.browserSubtitle(visible: 0, total: 2))
 
         browser.searchField.stringValue = "a"
+        browser.searchField.sendAction(browser.searchField.action, to: browser.searchField.target)
+        let searched = await waitUntil { browser.currentFilterForTesting.searchTerm == "a" }
+        XCTAssertTrue(searched, "the real debounced search has applied")
+        XCTAssertEqual(empty.buttonTitle, "Clear Search and Filters")
         empty.button.performClick(nil)
         XCTAssertTrue(browser.currentFilterForTesting.isEmpty, "filter and search cleared")
         XCTAssertEqual(browser.searchField.stringValue, "")

@@ -54,7 +54,7 @@ Environment: `SHRIKE_INSTALL_DIR` (default `/Applications`),
 
 ```sh
 Scripts/make-package.sh               # dist/Shrike-<version>.dmg + .sha256
-Scripts/make-package.sh 0.2.11        # same, but first checks the version
+Scripts/make-package.sh 0.2.20        # same, but first checks the version
 Scripts/make-package.sh --zip         # also dist/Shrike-<version>.zip
 Scripts/make-package.sh --force       # overwrite an existing DMG
 Scripts/make-package.sh --adhoc       # sign ad-hoc: the PUBLIC download (no name in the signature)
@@ -81,20 +81,47 @@ What it does:
 
 ## Public release (GitHub Actions)
 
-`.github/workflows/release.yml` runs on a `v*` tag (the number must equal
-`MARKETING_VERSION`, and the tag must be on `main`). It uses the `macos-26`
-runner (Apple silicon, Xcode 26.4.1 selected), runs
-`Scripts/make-package.sh --adhoc <version>`, and publishes a GitHub Release
-made by `github-actions[bot]` with two files: `Shrike.dmg` and
-`Shrike.dmg.sha256`. The stable name gives the permanent link
-`https://github.com/voydapps/shrike/releases/latest/download/Shrike.dmg`.
+`.github/workflows/release.yml` runs on a new `vMAJOR.MINOR.PATCH` tag, or
+an explicitly dispatched existing unreleased tag. The tag must match
+`MARKETING_VERSION`, point to the checked-out commit, and be an ancestor of
+`origin/main`. Existing published releases, drafts and partial releases are
+immutable: publication stops instead of replacing or adding their assets.
+Use a new version after an incomplete public release.
 
-The public DMG is signed ad-hoc on purpose: an Apple Development
-certificate writes the developer's real name into the signature.
-`verify_app` also fails the build when the binary contains the builder's
-home folder or the repo path. (Swift cannot remap `#file` strings, so
-`build_archive` puts DerivedData in a neutral `/tmp/shrike-dd.<pid>`
-folder and deletes it afterwards.)
+The `macos-26` runner requires **Xcode 26.4.1** at
+`/Applications/Xcode_26.4.1.app/Contents/Developer`; there is no toolchain
+fallback. It checks the release gate's failure boundaries, then
+`Scripts/release-gate.py` runs **three full SwiftPM suites on the exact tag
+commit**. Tracked inputs must be clean, untracked build/test inputs must be
+committed, and the revision is checked between phases. Packaging proceeds
+only after all three runs pass.
+
+The gate uses `Scripts/make-package.sh --adhoc <version>` to archive the
+exact commit, produce an optimized universal app for Apple silicon and
+Intel, enforce the **20,000,000-byte** signed-app limit, and verify the
+hardened ad-hoc signature and mounted disk image. The public app is **not
+notarized**. Ad-hoc signing keeps the developer's real name out of the
+signature. Binary checks also reject absolute builder paths.
+
+`Scripts/publish-release.py` verifies the source/tag, three suite logs,
+archive evidence, artifact checksum and provenance before creating a new
+GitHub Release as `github-actions[bot]`. Authenticated preflight requires
+push access so it can also reject existing drafts. Creation uploads assets
+and publishes through separate requests; an incomplete release is not
+resumed or overwritten.
+
+Every release has three assets:
+
+- `Shrike.dmg` — the stable download name.
+- `Shrike.dmg.sha256` — the SHA-256 checksum of that disk image.
+- `Shrike.provenance.json` — exact source commit, toolchain, three test-run
+  log hashes, archive evidence, architectures, signature policy and app size.
+
+The permanent download link is
+`https://github.com/voydapps/shrike/releases/latest/download/Shrike.dmg`.
+Workflow evidence is retained separately as `release-gate-evidence`.
+Universal compilation does not verify runtime behavior on macOS 14 or
+Intel; native runtime checks and performance acceptance are separate gates.
 
 ## Shared code
 

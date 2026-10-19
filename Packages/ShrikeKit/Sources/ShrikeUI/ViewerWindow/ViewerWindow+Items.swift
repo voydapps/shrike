@@ -83,6 +83,7 @@ extension ViewerWindow {
     /// hands pixels (preview, stand-in or full) to the Metal view, or shows
     /// the error overlay for a file.
     func markDisplayed(_ index: Int) {
+        defer { refreshReviewRecord() }
         guard let group = list[index] else { return }
         // A late paint from a list that has since changed must not label
         // the screen with the wrong file.
@@ -258,7 +259,9 @@ extension ViewerWindow {
     /// lands on the first image, Previous on the last. A paired Browser
     /// follows.
     func goToAdjacentFolder(_ direction: FolderScanner.Direction, knownTarget: URL? = nil) {
-        guard let folder = displayedFolder else { return }
+        guard let folder = displayedFolder, editExitTask == nil,
+              !contentRoot.editModeController.isTransitioning else { return }
+        let source = displayedItem?.group.primary
         endOfFolderCue = nil
         let hidden = Prefs.showHiddenFiles
         Task { @MainActor [weak self] in
@@ -275,10 +278,22 @@ extension ViewerWindow {
                 return
             }
             let groups = (try? await FolderScanner.imageGroups(in: target, showHidden: hidden)) ?? []
-            guard !groups.isEmpty else { return }
+            guard !groups.isEmpty, self.displayedItem?.group.primary == source, !self.didTearDown else { return }
             let start = direction == .next ? 0 : groups.count - 1
-            self.setGroups(groups, startIndex: start)
-            self.pairedBrowser?.follow(folder: target, selecting: groups[start].primary)
+            let windowedEdit = self.contentRoot.isEditModeActive && self.contentRoot.windowMode == .windowed
+            self.leaveEditModeThen(reason: .navigation) { [weak self] in
+                guard let self else { return }
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory),
+                      isDirectory.boolValue,
+                      FileManager.default.fileExists(atPath: groups[start].primary.path) else {
+                    self.contentRoot.toast(ToastContent("That photo is no longer available."))
+                    return
+                }
+                self.setGroups(groups, startIndex: start)
+                self.pairedBrowser?.follow(folder: target, selecting: groups[start].primary)
+                if windowedEdit { self.reenterEditModeAfterNavigation() }
+            }
         }
     }
 
@@ -444,12 +459,23 @@ extension ViewerWindow {
         pairedBrowser?.pairedViewer = nil
         pairedBrowser = browser
         browser.pairedViewer = self
+        refreshBrowserReturnContext()
+    }
+
+    /// Persistent return context follows the live paired Browser, independently
+    /// of the one-time successful-photo onboarding cue.
+    func refreshBrowserReturnContext() {
+        if toolbarController?.updateReturnTitle(pairedBrowser?.currentFolder?.lastPathComponent) == true {
+            returnHintPopover?.close(); returnHintPopover = nil
+        }
     }
 
     /// Hides the viewer (kept alive so the next Return is instant), brings
     /// the Browser forward with the displayed photo selected.
     func returnToBrowser() {
+        reviewDecisionSerial &+= 1
         guard let browser = pairedBrowser else { return }
+        returnHintPopover?.close(); returnHintPopover = nil
         let selected = displayedItem?.group.primary
         orderOut(nil)
         browser.window?.makeKeyAndOrderFront(nil)
@@ -473,8 +499,14 @@ extension ViewerWindow {
 
     /// Brings a hidden paired viewer back (Return / ⌘B in the Browser).
     public func showFromBrowser(groups: [ImageGroup], startIndex: Int) {
+        refreshBrowserReturnContext()
         hiddenTrimTask?.cancel()
         hiddenTrimTask = nil
+        if contentRoot.isEditModeActive, groups.indices.contains(startIndex),
+           groups[startIndex].primary == displayedItem?.group.primary {
+            makeKeyAndOrderFront(nil)
+            return
+        }
         guard !contentRoot.isEditModeActive else {
             // A hidden viewer still editing asks before it
             // shows another photo.

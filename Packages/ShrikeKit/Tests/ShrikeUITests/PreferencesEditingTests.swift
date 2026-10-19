@@ -28,7 +28,7 @@ final class PreferencesEditingTests: XCTestCase {
     func testTabOrder_hasEditingAndExternalEditors() {
         // External Editors sits before Advanced.
         XCTAssertEqual(PreferencesTab.allCases,
-                       [.general, .editing, .shortcuts, .thumbnails, .performance, .externalEditors, .advanced])
+                       [.general, .editing, .shortcuts, .thumbnails, .externalEditors, .advanced])
         XCTAssertEqual(PreferencesTab.editing.title, "Editing")
     }
 

@@ -64,9 +64,11 @@ final class BrowserKeyRoutingTests: XCTestCase {
         }
     }
 
-    func testWelcomeReturnOnFocusedRecentRowOpensIt() {
+    func testWelcomeReturnOnFocusedRecentRowOpensIt() throws {
         let first = FileManager.default.temporaryDirectory
-        let second = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-none")
+        let second = first.appendingPathComponent("shrike-recent-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: second) }
         let controller = WelcomeWindowController(recentURLs: { [first, second] })
         defer { controller.close() }
         var opened: [URL] = []
@@ -81,9 +83,10 @@ final class BrowserKeyRoutingTests: XCTestCase {
         // ↑ moves to the row above.
         controller.recentRows[1].keyDown(with: Self.key(SpecialKey.up, keyCode: 126))
         XCTAssertTrue(window.firstResponder === controller.recentRows[0])
-        // Tab order: Open…, Open Folder…, list, back to Open….
-        XCTAssertTrue(controller.openFolderButton.nextKeyView === controller.recentRows[0])
-        XCTAssertTrue(controller.recentRows[0].nextKeyView === controller.openButton)
+        // Primary Open Folder, secondary Open Photo, Recent list, back to primary.
+        XCTAssertTrue(controller.openFolderButton.nextKeyView === controller.openButton)
+        XCTAssertTrue(controller.openButton.nextKeyView === controller.recentRows[0])
+        XCTAssertTrue(controller.recentRows.allSatisfy { $0.nextKeyView === controller.openFolderButton })
     }
 
     func testTooltipFormatUsesPresetKey() {

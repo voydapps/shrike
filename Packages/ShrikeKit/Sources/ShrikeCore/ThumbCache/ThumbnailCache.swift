@@ -24,6 +24,7 @@ import ImageIO
 import CryptoKit
 import QuickLookThumbnailing
 import UniformTypeIdentifiers
+import os
 
 // MARK: - Stats
 
@@ -32,13 +33,20 @@ public struct ThumbStats: Sendable {
     public let diskHits: Int
     public let misses: Int
     public let diskBytesUsed: Int64
+    public let diskBytesAreApproximate: Bool
 
-    public init(memoryHits: Int, diskHits: Int, misses: Int, diskBytesUsed: Int64) {
+    public init(memoryHits: Int, diskHits: Int, misses: Int, diskBytesUsed: Int64, diskBytesAreApproximate: Bool = false) {
         self.memoryHits = memoryHits
         self.diskHits = diskHits
         self.misses = misses
         self.diskBytesUsed = diskBytesUsed
+        self.diskBytesAreApproximate = diskBytesAreApproximate
     }
+}
+
+public struct ThumbnailClearResult: Sendable {
+    public let success: Bool
+    public let errorDescription: String?
 }
 
 // MARK: - Priority
@@ -74,6 +82,14 @@ public enum ThumbnailCacheError: Error, Sendable {
 // MARK: - Actor
 
 public actor ThumbnailCache {
+    struct TestHooks: Sendable {
+        var beforeResourceReservation: (@Sendable () async throws -> Void)? = nil
+        var beforeDiskRead: (@Sendable (URL) async throws -> Void)? = nil
+        var beforeExactScan: (@Sendable () -> Void)? = nil
+        var beforeTombstoneDelete: (@Sendable () -> Void)? = nil
+    }
+    private var testHooks = TestHooks()
+    func setHooksForTesting(_ hooks: TestHooks) { testHooks = hooks }
 
     /// Default memory budget. Bounded by bytes, not count: each cached
     /// CGImage can pin IOSurfaces downstream and the system pool is finite
@@ -107,6 +123,7 @@ public actor ThumbnailCache {
         let id = UUID()
         let key: String
         var priority: ThumbnailPriority
+        let resourceDemand: ImageWorkDemand
         /// Callers currently awaiting the result.
         var interest = 0
         /// Created by `prefetch`: kept even with no caller waiting.
@@ -117,12 +134,27 @@ public actor ThumbnailCache {
         /// callers but don't cache it (it shows the old file).
         var discardResult = false
         var task: Task<CGImage, any Error>?
-        init(key: String, priority: ThumbnailPriority) {
+        let epoch: UInt64
+        let version: UInt64
+        let prefix: String
+        init(key: String, priority: ThumbnailPriority, epoch: UInt64, version: UInt64, prefix: String) {
             self.key = key
             self.priority = priority
+            self.resourceDemand = ImageWorkDemand(priority: priority == .visible ? .visible : priority == .nearby ? .nearby : .speculative,
+                policy: priority == .visible ? .oneOversizedOperation : .bounded)
+            self.epoch = epoch; self.version = version; self.prefix = prefix
         }
     }
     private var jobs: [String: Job] = [:]
+    private var cacheEpoch: UInt64 = 0
+    private var invalidationVersions: [String: UInt64] = [:]
+    private var diskEstimate: Int64 = 0
+    private var diskEstimateWrites = -1
+    private var diskEstimateDelta: Int64 = 0
+    private var statisticsScanRunning = false
+    private let resources: ImageResourceBudget
+    private let resourceOwner = ImageResourceOwner()
+    private var pressureObservation: ImagePressureObservation?
 
     // MARK: - Decode slots
     //
@@ -159,13 +191,15 @@ public actor ThumbnailCache {
         diskURL: URL,
         diskCeilingBytes: Int64 = 512 * 1024 * 1024,
         maxConcurrentDecodes: Int? = nil,
-        memoryByteLimit: Int = ThumbnailCache.defaultMemoryByteLimit
+        memoryByteLimit: Int = ThumbnailCache.defaultMemoryByteLimit,
+        resources: ImageResourceBudget = .shared
     ) throws {
         self.diskRoot = diskURL
         self.diskCeilingBytes = diskCeilingBytes
         self.maxConcurrentDecodes = max(1, maxConcurrentDecodes ?? Self.defaultMaxConcurrentDecodes)
-        self.memory = ThumbnailMemoryLRU(byteLimit: memoryByteLimit, countLimit: 1024)
-        self.disk = ThumbnailDiskStore(root: diskURL)
+        self.resources = resources
+        self.memory = ThumbnailMemoryLRU(byteLimit: memoryByteLimit, countLimit: 1024, resources: resources)
+        self.disk = ThumbnailDiskStore(root: diskURL, resources: resources)
         try FileManager.default.createDirectory(
             at: diskURL, withIntermediateDirectories: true
         )
@@ -174,6 +208,7 @@ public actor ThumbnailCache {
         // call actor-isolated methods synchronously under Swift 6.
         Task { [weak self] in
             await self?.startEvictionTicker()
+            await self?.observeResourcePressure()
         }
     }
 
@@ -257,6 +292,7 @@ public actor ThumbnailCache {
             } onCancel: {
                 Task { await self.loseInterest(key: key, jobID: jobID) }
             }
+            try Task.checkCancellation()
             if let current = jobs[key], current.id == jobID { current.interest -= 1 }
             ShrikeSignposts.thumbnail.end("thumbnail", state, "done,size=\(maxPixelSize)")
             return image
@@ -321,6 +357,7 @@ public actor ThumbnailCache {
         let key = Self.cacheKey(for: source, maxPixelSize: maxPixelSize)
         guard let job = jobs[key] else { return }
         job.priority = priority
+        updateResourceDemand(job)
         if let i = decodeWaiters.firstIndex(where: { $0.jobID == job.id }) {
             decodeWaiters[i].priority = priority
         }
@@ -336,7 +373,9 @@ public actor ThumbnailCache {
 
     private func startJob(key: String, source: any ImageSource, maxPixelSize: Int,
                           priority: ThumbnailPriority) -> Job {
-        let job = Job(key: key, priority: priority)
+        let prefix = Self.pathPrefix(for: source)
+        let job = Job(key: key, priority: priority, epoch: cacheEpoch,
+                      version: invalidationVersions[prefix, default: 0], prefix: prefix)
         let jobID = job.id
         let diskFile = diskURL(for: key)
         let body: @Sendable () async throws -> CGImage = { [weak self] in
@@ -360,23 +399,32 @@ public actor ThumbnailCache {
         maxPixelSize: Int, diskFile: URL
     ) async throws -> CGImage {
         guard let cache else { throw CancellationError() }
-        // Disk tier first, outside the slots: a warm read is ~3 ms.
-        if let fromDisk = ThumbnailDiskStore.read(at: diskFile) {
-            await cache.finish(key: key, jobID: jobID, image: fromDisk, fromDisk: true, diskFile: diskFile)
-            return fromDisk
-        }
+        let work = try await cache.reserveWork(for: key, jobID: jobID, size: maxPixelSize)
+        defer { withExtendedLifetime(work) {} }
         guard await cache.acquireSlot(for: key, jobID: jobID) else {
             await cache.finishCancelled(key: key, jobID: jobID)
             throw CancellationError()
         }
         let decoded: Result<CGImage, any Error>
+        var fromDisk = false
         do {
-            do {
-                decoded = .success(try await source.loadCGImage(maxPixelSize: maxPixelSize))
-            } catch ImageSourceError.unsupported {
-                // QuickLook handles odd formats, videos, PDFs.
-                decoded = .success(try await quickLookThumbnail(for: sourceURL(source),
-                                                                maxPixelSize: maxPixelSize))
+            try await cache.beforeDiskRead(diskFile)
+            try Task.checkCancellation()
+            if await cache.diskReadsAvailable(), let warm = try await ThumbnailBlockingIO.run({
+                withExtendedLifetime(work) { ThumbnailDiskStore.read(at: diskFile) }
+            }) {
+                fromDisk = true; decoded = .success(warm)
+            } else {
+                do {
+                    if let file = source as? FileImageSource {
+                        decoded = .success(try await ThumbnailBlockingIO.run {
+                            try withExtendedLifetime(work) { try file.decodeImage(maxPixelSize: maxPixelSize) }
+                        })
+                    } else { decoded = .success(try await source.loadCGImage(maxPixelSize: maxPixelSize)) }
+                } catch ImageSourceError.unsupported {
+                    decoded = .success(try await quickLookThumbnail(for: sourceURL(source), maxPixelSize: maxPixelSize,
+                                                                    reservation: work))
+                }
             }
         } catch {
             decoded = .failure(error)
@@ -384,7 +432,9 @@ public actor ThumbnailCache {
         await cache.releaseDecodeSlot()
         switch decoded {
         case .success(let image):
-            await cache.finish(key: key, jobID: jobID, image: image, fromDisk: false, diskFile: diskFile)
+            guard await cache.finish(key: key, jobID: jobID, image: image, fromDisk: fromDisk, diskFile: diskFile) else {
+                throw CancellationError()
+            }
             return image
         case .failure(let error):
             await cache.finishCancelled(key: key, jobID: jobID)
@@ -404,10 +454,12 @@ public actor ThumbnailCache {
 
     /// Result is in: memory tier now, disk tier later (after the caller has
     /// it, on the writer queue, never inside a decode slot).
-    private func finish(key: String, jobID: UUID, image: CGImage, fromDisk: Bool, diskFile: URL) {
-        if let job = jobs[key], job.id == jobID, job.discardResult {
+    private func finish(key: String, jobID: UUID, image: CGImage, fromDisk: Bool, diskFile: URL) -> Bool {
+        guard let job = jobs[key], job.id == jobID else { return false }
+        if job.discardResult || job.epoch != cacheEpoch || job.version != invalidationVersions[job.prefix, default: 0]
+            || (job.interest <= 0 && !job.pinned) {
             jobs[key] = nil
-            return
+            return false
         }
         memory.set(image, for: key)
         if fromDisk {
@@ -417,15 +469,27 @@ public actor ThumbnailCache {
             disk.enqueueWrite(image, to: diskFile)
         }
         if let job = jobs[key], job.id == jobID { jobs[key] = nil }
+        return true
     }
 
     private func finishCancelled(key: String, jobID: UUID) {
         if let job = jobs[key], job.id == jobID { jobs[key] = nil }
     }
 
+    private func updateResourceDemand(_ job: Job) {
+        let priority: ImageWorkPriority = job.priority == .visible ? .visible : job.priority == .nearby ? .nearby : .speculative
+        let policy: ImageAdmissionPolicy = job.priority == .visible ? .oneOversizedOperation : .bounded
+        // Release the demand lock before acquiring the budget lock. The
+        // insertion path reads demand under the budget lock, so an update
+        // either precedes insertion or updates the newly queued waiter.
+        job.resourceDemand.update(priority: priority, policy: policy)
+        resources.updatePriority(for: job.id, to: priority, policy: policy)
+    }
+
     private func raise(_ job: Job, to priority: ThumbnailPriority) {
         guard priority > job.priority else { return }
         job.priority = priority
+        updateResourceDemand(job)
         if let i = decodeWaiters.firstIndex(where: { $0.jobID == job.id }) {
             decodeWaiters[i].priority = priority
         }
@@ -440,7 +504,11 @@ public actor ThumbnailCache {
     /// Removes a job that hasn't started: its waiter resumes with `false`,
     /// so the job throws `CancellationError` without decoding.
     private func drop(key: String) {
-        guard let job = jobs[key], !job.started else { return }
+        guard let job = jobs[key] else { return }
+        if job.started {
+            if job.interest <= 0 && !job.pinned { job.discardResult = true; job.task?.cancel() }
+            return
+        }
         jobs[key] = nil
         if let i = decodeWaiters.firstIndex(where: { $0.jobID == job.id }) {
             decodeWaiters.remove(at: i).cont.resume(returning: false)
@@ -453,19 +521,30 @@ public actor ThumbnailCache {
     }
 
     public func statistics() -> ThumbStats {
-        ThumbStats(
+        let delta = disk.changedBytes
+        diskEstimate = max(0, diskEstimate + delta - diskEstimateDelta)
+        diskEstimateDelta = delta
+        reconcileStatisticsIfNeeded()
+        return ThumbStats(
             memoryHits: memoryHits,
             diskHits: diskHits,
             misses: misses,
-            diskBytesUsed: diskBytesUsed()
+            diskBytesUsed: diskEstimate,
+            diskBytesAreApproximate: diskEstimateWrites != disk.acceptedWrites
         )
     }
 
     /// Sum of on-disk cache bytes under `diskRoot`. Walks the directory once
     /// via `FileManager.enumerator`. Intentionally uncached — callers are
     /// user-driven (Preferences tab open + after "Clear cache"), not hot.
-    public func currentDiskBytes() -> Int64 {
-        diskBytesUsed()
+    public func currentDiskBytes() async -> Int64 {
+        let root = diskRoot, epoch = cacheEpoch, writes = disk.acceptedWrites, hook = testHooks.beforeExactScan
+        let bytes = await Task.detached(priority: .utility) { hook?(); return Self.diskBytesUsed(root: root) }.value
+        if epoch == cacheEpoch {
+            diskEstimate = bytes; diskEstimateDelta = disk.changedBytes
+            diskEstimateWrites = disk.pendingWrites == 0 ? writes : -1
+        }
+        return bytes
     }
 
     /// Directory the cache writes to. Exposed so the Preferences window can
@@ -476,21 +555,63 @@ public actor ThumbnailCache {
     /// Recursively delete every file under `diskRoot`, then re-create the
     /// empty root. Also wipes the in-memory tier so the next request rebuilds
     /// the thumbnail from scratch. "Clear cache" in Preferences calls this.
-    public func clearAll() {
+    @discardableResult
+    public func clearAll() async -> ThumbnailClearResult {
+        cacheEpoch &+= 1
         memory.removeAll()
-        disk.cancelPendingWrites()
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: diskRoot,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else { return }
-        for case let url as URL in enumerator {
-            try? fm.removeItem(at: url)
+        disk.beginClear()
+        for job in jobs.values { job.discardResult = true; job.task?.cancel() }
+        jobs.removeAll()
+        let waiters = decodeWaiters; decodeWaiters.removeAll()
+        for waiter in waiters { waiter.cont.resume(returning: false) }
+        let disk = self.disk, deleteHook = testHooks.beforeTombstoneDelete
+        do {
+            let tombstones = try await Task.detached(priority: .utility) { try disk.rotateRoot() }.value
+            // Old encodes may still have temporary paths under the old
+            // root; wait for the real work before reporting completion.
+            await disk.waitUntilIdle()
+            try await Task.detached(priority: .utility) { deleteHook?(); try disk.removeTombstones(tombstones) }.value
+            _ = await currentDiskBytes()
+            return ThumbnailClearResult(success: true, errorDescription: nil)
+        } catch {
+            return ThumbnailClearResult(success: false, errorDescription: error.localizedDescription)
         }
-        // Ensure the root still exists for the next write.
-        try? fm.createDirectory(at: diskRoot, withIntermediateDirectories: true)
     }
+
+    private func diskReadsAvailable() -> Bool { disk.isAvailable }
+    private func beforeDiskRead(_ url: URL) async throws { try await testHooks.beforeDiskRead?(url) }
+    private func reserveWork(for key: String, jobID: UUID, size: Int) async throws -> ImageWorkReservation {
+        guard let job = jobs[key], job.id == jobID else { throw CancellationError() }
+        let estimate = try ImageWorkingSetEstimate(width: size, height: size).totalBytes
+        let demand = job.resourceDemand
+        try await testHooks.beforeResourceReservation?()
+        return try await resources.reserve(bytes: estimate, owner: resourceOwner, category: .thumbnail,
+                                           requestID: jobID, demand: demand)
+    }
+    private func observeResourcePressure() {
+        guard pressureObservation == nil else { return }
+        pressureObservation = resources.observePressure { [weak self] pressure in
+            guard pressure != .normal else { return }
+            Task { await self?.relievePressure() }
+        }
+    }
+    private func relievePressure() {
+        memory.removeAll()
+        for job in jobs.values where job.priority == .prefetch && job.interest <= 0 {
+            job.pinned = false; drop(key: job.key)
+        }
+        cancelQueued(atOrBelow: .prefetch)
+    }
+    private func reconcileStatisticsIfNeeded() {
+        guard !statisticsScanRunning, diskEstimateWrites != disk.acceptedWrites else { return }
+        statisticsScanRunning = true
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.currentDiskBytes()
+            await self.statisticsScanFinished()
+        }
+    }
+    private func statisticsScanFinished() { statisticsScanRunning = false }
 
     // MARK: - Keying
 
@@ -552,17 +673,19 @@ public actor ThumbnailCache {
     /// are skipped. Call after delete, rename and save.
     public func evict(url: URL) async {
         let prefix = Self.pathPrefix(forPath: url.standardizedFileURL.path)
+        invalidationVersions[prefix, default: 0] &+= 1
         memory.removeAll(keyPrefix: prefix)
         for (key, job) in jobs where key.hasPrefix(prefix) {
             if job.started { job.discardResult = true } else { drop(key: key) }
         }
         disk.cancelPendingWrites(namePrefix: prefix)
+        let token = disk.maintenanceToken, disk = self.disk
         let shard = diskRoot.appendingPathComponent(String(prefix.prefix(2)), isDirectory: true)
         await Task.detached(priority: .utility) {
             let fm = FileManager.default
             guard let names = try? fm.contentsOfDirectory(atPath: shard.path) else { return }
             for name in names where name.hasPrefix(prefix) {
-                try? fm.removeItem(at: shard.appendingPathComponent(name))
+                _ = disk.removeFile(shard.appendingPathComponent(name), token: token)
             }
         }.value
     }
@@ -574,9 +697,9 @@ public actor ThumbnailCache {
     public func setDiskCeiling(bytes: Int64) async {
         diskCeilingBytes = max(0, bytes)
         lastEviction = Date()
-        let root = diskRoot, ceiling = diskCeilingBytes
+        let root = diskRoot, ceiling = diskCeilingBytes, disk = self.disk, token = disk.maintenanceToken
         await Task.detached(priority: .utility) {
-            Self.trimDisk(root: root, ceiling: ceiling)
+            Self.trimDisk(root: root, ceiling: ceiling, disk: disk, token: token)
         }.value
     }
 
@@ -625,8 +748,12 @@ public actor ThumbnailCache {
         (source as? FileImageSource)?.url
     }
 
+    private struct QuickLookWaiter: Sendable {
+        var continuation: CheckedContinuation<CGImage, any Error>?
+        var cancelled = false
+    }
     private static func quickLookThumbnail(
-        for url: URL?, maxPixelSize: Int
+        for url: URL?, maxPixelSize: Int, reservation: ImageWorkReservation
     ) async throws -> CGImage {
         guard let url else { throw ThumbnailCacheError.sourceUnavailable }
         let size = CGSize(width: maxPixelSize, height: maxPixelSize)
@@ -638,16 +765,32 @@ public actor ThumbnailCache {
         )
         // `QLThumbnailRepresentation` is not `Sendable`; extract the
         // `CGImage` (which is) inside the callback.
-        let cg: CGImage = try await withCheckedThrowingContinuation { cont in
-            QLThumbnailGenerator.shared.generateBestRepresentation(for: req) { r, e in
-                if let e { cont.resume(throwing: e); return }
-                guard let r else {
-                    cont.resume(throwing: ThumbnailCacheError.sourceUnavailable); return
+        let waiter = OSAllocatedUnfairLock(initialState: QuickLookWaiter())
+        // Immutable request reference, synchronized rather than adding an
+        // unchecked Sendable wrapper around the SDK's NSObject type.
+        let requestBox = OSAllocatedUnfairLock(uncheckedState: req)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { cont in
+                let cancelled = waiter.withLock { state in state.continuation = cont; return state.cancelled }
+                if cancelled {
+                    let take = waiter.withLock { state in defer { state.continuation = nil }; return state.continuation }
+                    take?.resume(throwing: CancellationError()); return
                 }
-                cont.resume(returning: r.cgImage)
+                QLThumbnailGenerator.shared.generateBestRepresentation(for: req) { r, e in
+                    defer { withExtendedLifetime(reservation) {} }
+                    let take = waiter.withLock { state in defer { state.continuation = nil }; return state.continuation }
+                    if let e { take?.resume(throwing: e) }
+                    else if let r { take?.resume(returning: r.cgImage) }
+                    else { take?.resume(throwing: ThumbnailCacheError.sourceUnavailable) }
+                }
             }
+        } onCancel: {
+            let take = waiter.withLock { state in
+                state.cancelled = true; defer { state.continuation = nil }; return state.continuation
+            }
+            requestBox.withLockUnchecked { QLThumbnailGenerator.shared.cancel($0) }
+            take?.resume(throwing: CancellationError())
         }
-        return cg
     }
 
     // MARK: - Eviction
@@ -674,9 +817,9 @@ public actor ThumbnailCache {
         guard written != writesAtLastTrim, !trimRunning else { return }
         writesAtLastTrim = written
         trimRunning = true
-        let root = diskRoot, ceiling = diskCeilingBytes
+        let root = diskRoot, ceiling = diskCeilingBytes, disk = self.disk, token = disk.maintenanceToken
         Task.detached(priority: .utility) { [weak self] in
-            Self.trimDisk(root: root, ceiling: ceiling)
+            Self.trimDisk(root: root, ceiling: ceiling, disk: disk, token: token)
             await self?.trimFinished()
         }
     }
@@ -684,17 +827,14 @@ public actor ThumbnailCache {
     private func trimFinished() { trimRunning = false }
 
     /// Exposed for tests.
-    public func runEvictionNow() {
+    public func runEvictionNow() async {
         lastEviction = Date()
-        evictDiskIfOverCeiling()
-    }
-
-    private func evictDiskIfOverCeiling() {
-        Self.trimDisk(root: diskRoot, ceiling: diskCeilingBytes)
+        await setDiskCeiling(bytes: diskCeilingBytes)
     }
 
     /// Deletes the oldest files under `root` until it holds ≤ `ceiling`.
-    private nonisolated static func trimDisk(root diskRoot: URL, ceiling diskCeilingBytes: Int64) {
+    private nonisolated static func trimDisk(root diskRoot: URL, ceiling diskCeilingBytes: Int64,
+        disk: ThumbnailDiskStore, token: (epoch: Int, sequence: UInt64)) {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: diskRoot,
@@ -721,16 +861,13 @@ public actor ThumbnailCache {
         entries.sort { $0.mtime < $1.mtime }
         for entry in entries {
             if total <= diskCeilingBytes { break }
-            do {
-                try fm.removeItem(at: entry.url)
+            if disk.removeFile(entry.url, token: token) {
                 total -= entry.size
-            } catch {
-                // Best effort — leave the file in place if removal fails.
             }
         }
     }
 
-    private func diskBytesUsed() -> Int64 {
+    private nonisolated static func diskBytesUsed(root diskRoot: URL) -> Int64 {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: diskRoot,

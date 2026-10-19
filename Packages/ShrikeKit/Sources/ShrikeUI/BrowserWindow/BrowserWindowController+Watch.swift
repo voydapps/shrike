@@ -19,6 +19,8 @@ extension BrowserWindowController {
 
     /// Starts watching `folder` (no-op when it is already watched).
     func startWatching(_ folder: URL) {
+        guard !browserDidClose else { return }
+        let generation = folderRequestGeneration
         if let watcher = folderWatcher, GroupList.canonical(watcher.folder) == GroupList.canonical(folder) {
             return
         }
@@ -28,7 +30,7 @@ extension BrowserWindowController {
         folderWatcher = watcher
         folderWatchTask = Task { @MainActor [weak self] in
             for await change in watcher.changes {
-                guard let self else { return }
+                guard let self, !Task.isCancelled, self.acceptsFolderRequest(generation, folder: watcher.folder) else { return }
                 self.handleFolderChange(change, in: watcher.folder)
             }
         }
@@ -46,7 +48,7 @@ extension BrowserWindowController {
 
     /// One batch of outside changes to `folder`.
     func handleFolderChange(_ change: FolderChange, in folder: URL) {
-        guard let current = currentFolder,
+        guard !browserDidClose, let current = currentFolder,
               GroupList.canonical(current) == GroupList.canonical(folder) else { return }
         if change.folderEvent != nil {
             showFolderGone(folder)
@@ -58,8 +60,10 @@ extension BrowserWindowController {
         let cache = services.thumbnailCache
         let modified = change.modified
         let changed = modified + change.removed + change.renamed.flatMap { [$0.from, $0.to] }
+        let generation = folderRequestGeneration
         Task { @MainActor [weak self] in
             for url in modified { await cache.evict(url: url) }
+            guard self?.acceptsFolderRequest(generation, folder: folder) == true else { return }
             self?.fileContentsChanged(changed)
         }
     }

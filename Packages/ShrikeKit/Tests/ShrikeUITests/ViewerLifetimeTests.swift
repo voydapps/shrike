@@ -81,6 +81,18 @@ final class ViewerLifetimeTests: XCTestCase {
         return Double(info.phys_footprint) / 1_048_576
     }
 
+    private func resourceDiagnostics(_ viewer: ViewerWindow) async -> String {
+        let navigation = viewer.navigationForTesting
+        #if DEBUG
+        let queueState = await navigation.decodeQueue.stateForTesting()
+        #else
+        let queueState = "queue diagnostics require Debug"
+        #endif
+        let windowState = "window visible=\(viewer.isVisible) closed=\(viewer.didTearDown) intent=\(viewer.intent.currentIndex) displayed=\(String(describing: viewer.displayedItem?.listIndex)) navIdle=\(viewer.navCoalescer.isIdle) hiddenTrim=\(viewer.hiddenTrimTask != nil) image=\(viewer.imageViewForTesting.image != nil) placeholder=\(viewer.imageViewForTesting.isCurrentImagePlaceholder)"
+        let s = ImageResourceBudget.shared.snapshot()
+        return "\(windowState) \(queueState) resources target=\(s.normalTarget) effective=\(s.effectiveTarget) pressure=\(s.pressure) retained=\(s.uniqueRetainedBytes) conservative=\(s.conservativeRetainedBytes) reserved=\(s.reservedEstimatedBytes) active=\(s.activeDiscretionaryOperationCount) oversize=\(s.activeOversizeOperationCount) waiters=\(s.pendingWaiterCount) categories=\(s.bytesByCategory)"
+    }
+
     private final class WeakBox<T: AnyObject> {
         weak var value: T?
         init(_ value: T?) { self.value = value }
@@ -144,7 +156,8 @@ final class ViewerLifetimeTests: XCTestCase {
         defer { window.close() }
         let nav = window.navigationForTesting
         let ready = await waitUntil { await nav.cachedEntry(at: 1)?.prepared != nil }
-        XCTAssertTrue(ready)
+        let diagnostics = ready ? "" : await resourceDiagnostics(window)
+        XCTAssertTrue(ready, diagnostics)
         let maybeEntry = await nav.cachedEntry(at: 1)
         let entry = try XCTUnwrap(maybeEntry)
         XCTAssertTrue(entry.imageIsLazy, "a prepared neighbour must not keep decoded CPU pixels")
@@ -188,7 +201,8 @@ final class ViewerLifetimeTests: XCTestCase {
                 let b = await nav.cachedEntry(at: 3)?.prepared != nil
                 return a && b
             }
-            XCTAssertTrue(ready)
+            let diagnostics = ready ? "" : await resourceDiagnostics(window)
+            XCTAssertTrue(ready, "window \(w): \(diagnostics)")
         }
         try await Task.sleep(nanoseconds: 1_500_000_000)
         let four = Self.footprintMB()

@@ -220,7 +220,7 @@ final class TagColorToggle: NSButton {
 
     init(tag: FinderTag) {
         self.tag0 = tag
-        super.init(frame: NSRect(x: 0, y: 0, width: 20, height: 20))
+        super.init(frame: NSRect(x: 0, y: 0, width: ChromeTypography.targetHeight, height: ChromeTypography.targetHeight))
         title = ""
         isBordered = false
         setButtonType(.pushOnPushOff)
@@ -230,8 +230,8 @@ final class TagColorToggle: NSButton {
         toolTip = tag.name
         translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 20),
-            heightAnchor.constraint(equalToConstant: 20),
+            ChromeTypography.scaled(widthAnchor.constraint(equalToConstant: 28), normal: 28, large: 32),
+            ChromeTypography.scaled(heightAnchor.constraint(equalToConstant: 28), normal: 28, large: 32),
         ])
     }
 
@@ -240,7 +240,7 @@ final class TagColorToggle: NSButton {
 
     override func draw(_ dirtyRect: NSRect) {
         let color = tag0.color.nsColor ?? .systemGray
-        let circle = bounds.insetBy(dx: 3, dy: 3)
+        let circle = CGRect(x: bounds.midX - 8, y: bounds.midY - 8, width: 16, height: 16)
         let path = NSBezierPath(ovalIn: circle)
         color.withAlphaComponent(0.25).setFill()
         path.fill()
@@ -370,10 +370,43 @@ final class TagsPopoverController: NSViewController, NSTokenFieldDelegate, NSPop
     // MARK: NSTokenFieldDelegate
 
     func tokenField(_ tokenField: NSTokenField, shouldAdd tokens: [Any], at index: Int) -> [Any] {
-        let names = tokens.compactMap { $0 as? String }
-        session.add(names)
+        // objectValue can already include the proposal as plain text. Only
+        // attachment-backed objects are committed tokens in the active editor.
+        var represented = tokenField.objectValue as? [Any] ?? []
+        if let editor = tokenField.currentEditor() as? NSTextView,
+           editor.delegate === tokenField, editor.window === tokenField.window,
+           let storage = editor.textStorage {
+            var committedCount = 0
+            var pendingIndex: Int?
+            let text = storage.string as NSString
+            storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                if value is NSTextAttachment {
+                    committedCount += range.length
+                } else if pendingIndex == nil,
+                          !text.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    pendingIndex = committedCount
+                }
+            }
+            let pendingCount = represented.count - committedCount
+            if pendingIndex == index, pendingCount > 0, index >= 0,
+               index <= represented.count, pendingCount <= represented.count - index {
+                represented.removeSubrange(index..<(index + pendingCount))
+            }
+        }
+        // AppKit owns insertion at index; never drop an occupied index merely
+        // because it is the insertion point, or consult stale session tags.
+        var shown = represented.compactMap { $0 as? String }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        var accepted: [String] = []
+        for case let text as String in tokens {
+            let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !TagEditSession.has(name, in: shown) else { continue }
+            accepted.append(name)
+            shown.append(name)
+        }
+        session.add(accepted)
         for toggle in toggles { toggle.state = session.state(of: toggle.tag0) }
-        return tokens
+        return accepted
     }
 
     func tokenField(_ tokenField: NSTokenField, completionsForSubstring substring: String,

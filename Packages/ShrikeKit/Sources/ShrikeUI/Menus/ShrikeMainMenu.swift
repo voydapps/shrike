@@ -422,6 +422,12 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         ("Open Recent", "clock"),               // File
         ("Find", "magnifyingglass"),            // Edit
         ("Sort By", "arrow.up.arrow.down"),     // View
+        ("Compare", "rectangle.split.2x1"),
+    ]
+
+    /// Selector-only actions keep their icons when their displayed title changes.
+    static let menuSelectorIconTable: [(action: Selector, symbol: String)] = [
+        (#selector(ViewerWindow.toggleReviewControls(_:)), "star"),
     ]
 
     private var iconedMenus: Set<ObjectIdentifier> = []
@@ -436,6 +442,9 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         }
         for holder in Self.menuHolderIconTable {
             rows += menu.items.filter { $0.submenu != nil && $0.title == holder.title }.map { ($0, holder.symbol) }
+        }
+        for entry in Self.menuSelectorIconTable {
+            rows += menu.items.filter { $0.action == entry.action }.map { ($0, entry.symbol) }
         }
         guard !rows.isEmpty else { return }
         let draws = Self.systemDrawsMenuIcons
@@ -622,12 +631,18 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         add(.toggleToolbar, to: m, action: #selector(NSWindow.toggleToolbarShown(_:)))
         add(.customizeToolbar, to: m, action: #selector(NSWindow.runToolbarCustomizationPalette(_:)))
         add(.toggleInspector, to: m)
+        m.addItem(withTitle: "Show Review Controls", action: #selector(ViewerWindow.toggleReviewControls(_:)), keyEquivalent: "")
         add(.toggleFilmstrip, to: m, .viewer)
         add(.toggleHistogram, to: m, .viewer)
         add(.unpinAllPanels, to: m, .viewer)
         m.addItem(.separator())
         add(.slideshow, to: m)
         add(.compare, to: m)
+        let compare = NSMenu(title: "Compare")
+        compare.addItem(withTitle: "Keep Focused Photo", action: #selector(CompareWindow.keepFocusedPhoto(_:)), keyEquivalent: "")
+        compare.addItem(withTitle: "Sync Zoom and Pan", action: #selector(CompareWindow.toggleLockFromToolbar(_:)), keyEquivalent: "")
+        compare.addItem(withTitle: "Fit", action: #selector(CompareWindow.fitAllFromToolbar(_:)), keyEquivalent: "")
+        let compareRow = NSMenuItem(title: "Compare", action: nil, keyEquivalent: ""); compareRow.submenu = compare; m.addItem(compareRow)
         add(.toggleFullScreen, to: m, .viewer, action: #selector(NSWindow.toggleFullScreen(_:)))
         return m
     }

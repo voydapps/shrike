@@ -14,8 +14,8 @@
 
 import Foundation
 import ShrikeCore
-import ShrikeIO
 import ShrikeRendering
+import ShrikeIO
 import CoreGraphics
 import ImageIO
 
@@ -61,6 +61,11 @@ public struct ShrikeServices: Sendable {
         DecodeQueue(preparer: preparer)
     }
 
+    public func makeDisplayDecodeQueue() -> DecodeQueue {
+        let owner = ImageResourceOwner()
+        return DecodeQueue(preparer: DisplayTextureFactory.preparer(resources: .shared, owner: owner), resourceOwner: owner)
+    }
+
     /// Convenience factory for top-level app code — wires default actors.
     /// Lays out caches and metadata under the standard
     /// `~/Library/Application Support/app.shrike/` and
@@ -68,29 +73,47 @@ public struct ShrikeServices: Sendable {
     /// live in a per-process temp folder instead (`ShrikeDataPaths`), so
     /// tests never touch the user's real database or cache.
     public static func makeDefault() -> ShrikeServices {
-        // Caches: ~/Library/Caches/app.shrike/thumbs/
-        let thumbsURL = ShrikeDataPaths.caches.appendingPathComponent("thumbs", isDirectory: true)
+        makeDefault(storagePaths: .defaults)
+    }
 
-        // App support: ~/Library/Application Support/app.shrike/metadata.sqlite
-        let dbURL = ShrikeDataPaths.applicationSupport.appendingPathComponent("metadata.sqlite")
+    /// Resolved factory inputs; tests can obstruct disposable paths without
+    /// disturbing another service's open database in this process.
+    struct StoragePaths: Sendable {
+        let thumbnails: URL
+        let metadata: URL
+        let thumbnailFallback: URL
+        let metadataFallback: URL
+
+        static var defaults: Self {
+            Self(applicationSupport: ShrikeDataPaths.applicationSupport, caches: ShrikeDataPaths.caches,
+                 fallbackDirectory: ShrikeDataPaths.fallbackDirectory)
+        }
+
+        init(applicationSupport: URL, caches: URL, fallbackDirectory: URL) {
+            thumbnails = caches.appendingPathComponent("thumbs", isDirectory: true)
+            metadata = applicationSupport.appendingPathComponent("metadata.sqlite")
+            thumbnailFallback = fallbackDirectory.appendingPathComponent("shrike-thumbs-fallback", isDirectory: true)
+            metadataFallback = fallbackDirectory.appendingPathComponent("shrike-metadata-fallback.sqlite")
+        }
+    }
+
+    static func makeDefault(storagePaths: StoragePaths) -> ShrikeServices {
 
         // Init paths that can throw. If they fail (sandbox quirks, disk full),
-        // fall back to NSTemporaryDirectory so the app still launches — the
-        // user just won't get persistence. Log via signpost so this shows up
-        // in Instruments.
+        // use temporary storage so the app still launches — the user just
+        // won't get persistence. Under XCTest, temporary fallbacks remain
+        // inside the guarded test root. Log failures for Instruments.
         let thumbCache: ThumbnailCache
         do {
             // The user's ceiling from the start; the
             // Thumbnails tab applies changes with `setDiskCeiling`.
-            thumbCache = try ThumbnailCache(diskURL: thumbsURL,
+            thumbCache = try ThumbnailCache(diskURL: storagePaths.thumbnails,
                                             diskCeilingBytes: Prefs.cacheDiskCeilingBytes)
         } catch {
-            let tmp = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-                .appendingPathComponent("shrike-thumbs-fallback", isDirectory: true)
             ShrikeSignposts.thumbnail.event("initFailed", "\(error.localizedDescription)")
             // Force a second attempt at the tmp path — if that fails too,
             // we genuinely can't run.
-            thumbCache = (try? ThumbnailCache(diskURL: tmp))
+            thumbCache = (try? ThumbnailCache(diskURL: storagePaths.thumbnailFallback))
                 ?? {
                     fatalError("ThumbnailCache init failed everywhere: \(error)")
                 }()
@@ -98,9 +121,8 @@ public struct ShrikeServices: Sendable {
 
         // A non-persistent fallback is flagged on the store
         // (`isPersistent == false`, `openError`) so the UI can warn.
-        let tmpDB = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("shrike-metadata-fallback.sqlite")
-        let metaStore = MetadataStore.openWithFallback(primary: dbURL, fallback: tmpDB)
+        let metaStore = MetadataStore.openWithFallback(primary: storagePaths.metadata,
+                                                     fallback: storagePaths.metadataFallback)
 
         // `backupStore` stays nil here: the app sets `.shared` (tests use
         // makeDefault too and must not read the user's backup index).
@@ -205,7 +227,7 @@ public actor NavigationController {
     }
 
     /// The window's own decode queue.
-    public var decodeQueue: DecodeQueue { queue }
+    public nonisolated var decodeQueue: DecodeQueue { queue }
 
     /// Like `jump(to:)`, but returns the full decoded entry (file id and
     /// the GPU-ready texture, when the queue has a preparer).

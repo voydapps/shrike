@@ -32,3 +32,30 @@ enum EditSourceLoader {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 }
+
+import ShrikeCore
+
+struct LoadedEditImage: Sendable {
+    let image: CGImage
+    let lease: ImageResourceLease
+}
+
+extension EditSourceLoader {
+    /// Admission happens before a full-size edit decode; the lease follows
+    /// the returned pixels into the session rather than ending at await.
+    static func loadForEditing(at url: URL, resources: ImageResourceBudget, owner: ImageResourceOwner) async throws -> LoadedEditImage? {
+        let estimate = try await Task.detached(priority: .userInitiated) {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int else { throw ImageResourceError.invalidByteCount }
+            return try ImageWorkingSetEstimate(width: w, height: h, bitsPerComponent: props[kCGImagePropertyDepth] as? Int ?? 8).totalBytes
+        }.value
+        let reservation = try await resources.reserve(bytes: estimate, owner: owner, category: .editOriginal, priority: .visible, policy: .oneOversizedOperation)
+        defer { reservation.release() }
+        try Task.checkCancellation()
+        let decode = Task.detached(priority: .userInitiated) { fullImage(at: url) }
+        let image = await withTaskCancellationHandler { await decode.value } onCancel: { decode.cancel() }
+        try Task.checkCancellation()
+        return image.map { LoadedEditImage(image: $0, lease: resources.retain(image: $0, owner: owner, category: .editOriginal)) }
+    }
+}

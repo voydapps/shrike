@@ -24,6 +24,7 @@ final class SaveFlowTests: XCTestCase {
     private var store: BackupStore!
 
     override func setUp() async throws {
+        EditToolTransitionModal.responderForTesting = { _ in .keep }
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("shrike-save-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Photos", isDirectory: true)
@@ -32,6 +33,7 @@ final class SaveFlowTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        EditToolTransitionModal.responderForTesting = nil
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -56,16 +58,19 @@ final class SaveFlowTests: XCTestCase {
         return try Data(contentsOf: url)
     }
 
-    private func viewer(_ url: URL, store: BackupStore?) -> ViewerWindow {
+    private func viewer(_ url: URL, store: BackupStore?) async throws -> ViewerWindow {
         var services = ShrikeServices.makeDefault()
         services.backupStore = store
         let viewer = ViewerWindow(groups: [ImageGroup(primary: url)], startIndex: 0, services: services)
-        viewer.markDisplayedForTesting(0)
+        let ready = await waitUntil { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == url }
+        XCTAssertTrue(ready, "The file target is accepted before installing the unit-test recipe")
         return viewer
     }
 
     /// Opens edit mode on `url` with one 90° turn in the recipe.
     private func enterEditWithRotate(_ viewer: ViewerWindow, url: URL) async throws {
+        let ready = await waitUntil { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == url }
+        XCTAssertTrue(ready, "A save/refetch has settled before the next edit session")
         viewer.contentRootForTesting.enterEditMode(image: Self.image(), url: url, landOn: .rotate)
         viewer.contentRootForTesting.editModeController.appendSnapped90(quarters: 1)
         let recipe = try XCTUnwrap(viewer.contentRootForTesting.editModeController.recipe)
@@ -84,11 +89,53 @@ final class SaveFlowTests: XCTestCase {
         return condition()
     }
 
+    func testDirectSaveIncludesUnappliedCropAfterToolSwitch() async throws {
+        let url = dir.appendingPathComponent("pending.jpg")
+        try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        let content = viewer.contentRootForTesting
+        content.enterEditMode(image: Self.image(width: 16, height: 8), url: url, landOn: .crop)
+        let controller = content.editModeController
+        controller.cropOverlay.imageFrame = CGRect(x: 0, y: 0, width: 16, height: 8)
+        controller.cropOverlay.setRectFromImageSpace(CGRect(x: 0, y: 0, width: 8, height: 4))
+        controller.selectTool(.color)
+        await controller.settleForTesting()
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(saved)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, 8)
+        XCTAssertEqual(image.height, 4)
+    }
+
+    func testSaveAsIncludesPendingResizeWithoutChangingOriginal() async throws {
+        let url = dir.appendingPathComponent("resize.jpg"), copy = dir.appendingPathComponent("resize-copy.jpg")
+        let original = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        viewer.savePanelResponderForTesting = { _, _ in copy }
+        let content = viewer.contentRootForTesting
+        content.enterEditMode(image: Self.image(width: 16, height: 8), url: url, landOn: .resize)
+        let panel = try XCTUnwrap(content.editModeController._installedToolForTesting as? ResizePanel)
+        panel._widthField.stringValue = "8"
+        _ = panel._widthField.sendAction(panel._widthField.action, to: panel._widthField.target)
+        content.editModeController.selectTool(.color)
+        await content.editModeController.settleForTesting()
+        let saved = await viewer.saveEditedFile(asPanel: true)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(copy as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, 8)
+        XCTAssertEqual(image.height, 4)
+    }
+
     // ⌘S backs up, pencil shows; ⌘Z restores; ⇧⌘Z re-saves.
     func testSaveInPlaceBacksUpAndUndoRedoSwapTheBytes() async throws {
         let url = dir.appendingPathComponent("a.jpg")
         let before = try Self.writeImage(url, type: .jpeg)
-        let viewer = viewer(url, store: store)
+        let viewer = try await viewer(url, store: store)
         defer { viewer.close() }
         try await enterEditWithRotate(viewer, url: url)
 
@@ -101,7 +148,7 @@ final class SaveFlowTests: XCTestCase {
         XCTAssertEqual(records.count, 1)
         XCTAssertEqual(try Data(contentsOf: records[0].backupURL), before)
         XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message,
-                       "Saved “a.jpg”. The original is kept.")
+                       "Saved ‘a.jpg’. Original backup available.")
         let edited = await waitUntil { viewer.isDisplayedEdited }
         XCTAssertTrue(edited)
         XCTAssertTrue(viewer.canPerform(.revertToOriginal))
@@ -123,7 +170,7 @@ final class SaveFlowTests: XCTestCase {
     func testSaveOnGIFAsksForACopy() async throws {
         let url = dir.appendingPathComponent("party.gif")
         let before = try Self.writeImage(url, type: .gif)
-        let viewer = viewer(url, store: store)
+        let viewer = try await viewer(url, store: store)
         defer { viewer.close() }
         var asked: (URL, String?)?
         viewer.savePanelResponderForTesting = { suggested, message in
@@ -144,13 +191,13 @@ final class SaveFlowTests: XCTestCase {
         let url = dir.appendingPathComponent("P1.ORF")
         let bytes = Data([0x49, 0x49, 0x52, 0x4F, 0x08, 0, 0, 0])
         try bytes.write(to: url)
-        let viewer = viewer(url, store: store)
+        let viewer = try await viewer(url, store: store)
         defer { viewer.close() }
         var message: String?
         viewer.savePanelResponderForTesting = { _, m in message = m; return nil }
         try await enterEditWithRotate(viewer, url: url)
         await viewer.saveEditedFile(asPanel: false)
-        XCTAssertEqual(message, "RAW files are never changed. Save an edited copy instead.")
+        XCTAssertTrue(message?.hasPrefix("RAW files are never changed. Save an edited copy instead.") == true)
         XCTAssertEqual(try Data(contentsOf: url), bytes)
     }
 
@@ -158,7 +205,7 @@ final class SaveFlowTests: XCTestCase {
     func testSaveAsKeepsTheOriginalAndListsTheCopy() async throws {
         let url = dir.appendingPathComponent("b.jpg")
         let before = try Self.writeImage(url, type: .jpeg)
-        let viewer = viewer(url, store: store)
+        let viewer = try await viewer(url, store: store)
         defer { viewer.close() }
         let copy = dir.appendingPathComponent("b-edited.jpg")
         viewer.savePanelResponderForTesting = { _, _ in copy }
@@ -169,7 +216,7 @@ final class SaveFlowTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path))
         XCTAssertEqual(viewer.groups.map(\.primary.lastPathComponent), ["b.jpg", "b-edited.jpg"])
         XCTAssertEqual(viewer.displayedItem?.group.primary, url)
-        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message, "Saved a copy as “b-edited.jpg”.")
+        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message, "Saved copy ‘b-edited.jpg’. Original unchanged.")
         XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.actionTitle, "Show")
     }
 
@@ -177,7 +224,7 @@ final class SaveFlowTests: XCTestCase {
     func testRevertToOriginalAndUndo() async throws {
         let url = dir.appendingPathComponent("c.jpg")
         let original = try Self.writeImage(url, type: .jpeg)
-        let viewer = viewer(url, store: store)
+        let viewer = try await viewer(url, store: store)
         defer { viewer.close() }
         try await enterEditWithRotate(viewer, url: url)
         await viewer.saveEditedFile(asPanel: false)
@@ -208,16 +255,33 @@ final class SaveFlowTests: XCTestCase {
         let failing = BackupStore(root: root.appendingPathComponent("Bad", isDirectory: true),
                                   retentionDays: { 30 }, maxBytes: { 1 << 30 }, 
                                   now: { Date() }, copier: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
-        let viewer = viewer(url, store: failing)
+        let viewer = try await viewer(url, store: failing)
         defer { viewer.close() }
         var alert: String?
-        viewer.alertResponderForTesting = { message in alert = message; return 0 }
+        viewer.alertResponderForTesting = { message in alert = message; return 1 }
         try await enterEditWithRotate(viewer, url: url)
         let saved = await viewer.saveEditedFile(asPanel: false)
         XCTAssertFalse(saved)
         XCTAssertEqual(alert, "Shrike didn't save “d.jpg”.")
         XCTAssertEqual(try Data(contentsOf: url), before)
         XCTAssertTrue(viewer.contentRootForTesting.isEditModeActive)
+    }
+
+    func testBackupFailureSaveCopyRecoveryKeepsOriginalAndWritesCopy() async throws {
+        let url = dir.appendingPathComponent("recover.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let destination = dir.appendingPathComponent("recovered-copy.jpg")
+        let failing = BackupStore(root: root.appendingPathComponent("FailRecovery"), retentionDays: { 30 }, maxBytes: { 1 << 30 }, now: { Date() }, copier: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let viewer = try await viewer(url, store: failing); defer { viewer.close() }
+        viewer.alertResponderForTesting = { _ in 0 }
+        var panels = 0
+        viewer.savePanelResponderForTesting = { _, _ in panels += 1; return destination }
+        try await enterEditWithRotate(viewer, url: url)
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(saved); XCTAssertEqual(panels, 1)
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertFalse(viewer.contentRootForTesting.isEditModeActive)
     }
 
     func testA5CopyNamesTheVolume() {
@@ -233,7 +297,7 @@ final class SaveFlowTests: XCTestCase {
     func testQuitWithUnsavedEditsAsksFirst() async throws {
         let url = dir.appendingPathComponent("q.jpg")
         let before = try Self.writeImage(url, type: .jpeg)
-        let viewer = viewer(url, store: store)
+        let viewer = try await viewer(url, store: store)
         defer { viewer.close(); EditExitModal.responderForTesting = nil }
         let idle = await WindowCoordinator.resolveUnsavedEdits(in: [viewer])
         XCTAssertTrue(idle, "no edit mode: quit at once")

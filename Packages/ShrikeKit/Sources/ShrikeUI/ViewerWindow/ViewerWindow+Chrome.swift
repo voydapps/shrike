@@ -52,6 +52,9 @@ extension ViewerWindow: ViewerToolbarHost {
         super.update()
         if toolbar === toolbarController?.toolbar, toolbar?.isVisible == true {
             toolbarController?.validate()
+            // A first image can arrive while the return item is hidden or
+            // overflowed. Retry only when a genuine visible anchor exists.
+            showBrowserReturnHint()
         }
     }
 
@@ -74,7 +77,6 @@ extension ViewerWindow: ViewerToolbarHost {
             if self.styleMask.contains(.fullScreen) { holds.insert(.notKey) }
             return holds
         }
-        hider.onShownChanged = { [weak self] shown in self?.setScrimShown(shown) }
         autoHider = hider
         applyTitlebarLook()
         contentRoot.addTrackingArea(NSTrackingArea(
@@ -142,38 +144,25 @@ extension ViewerWindow: ViewerToolbarHost {
         return true
     }
 
-    // MARK: Titlebar scrim (every macOS: the titlebar is transparent while auto-hide is on)
+    // MARK: Native titlebar backing
 
+    /// The backing belongs to the same measured native container as the title,
+    /// subtitle and toolbar. Its parent supplies layout and the entire reveal /
+    /// hide animation, so text can never outlive a separately fading scrim.
+    /// With auto-hide off, AppKit's opaque titlebar supplies this surface.
     func installScrimIfNeeded() {
-        let wanted = Prefs.viewerToolbarAutoHide && autoHider?.isActive == true
-        if !wanted {
+        guard autoHider?.isActive == true, contentRoot.windowMode == .windowed,
+              !styleMask.contains(.fullScreen), let container = autoHider?.container else {
             titlebarScrim?.removeFromSuperview()
             titlebarScrim = nil
             return
         }
-        guard titlebarScrim == nil else { return }
-        let scrim = TitlebarScrimView()
-        scrim.translatesAutoresizingMaskIntoConstraints = false
-        contentRoot.addSubview(scrim, positioned: .above, relativeTo: contentRoot.imageView)
-        let titlebarHeight = max(0, frame.height - contentLayoutRect.height)
-        NSLayoutConstraint.activate([
-            scrim.topAnchor.constraint(equalTo: contentRoot.topAnchor),
-            scrim.leadingAnchor.constraint(equalTo: contentRoot.leadingAnchor),
-            scrim.trailingAnchor.constraint(equalTo: contentRoot.trailingAnchor),
-            scrim.heightAnchor.constraint(equalToConstant: titlebarHeight + 16),
-        ])
-        scrim.canvasColor = {
-            ViewerContentView.canvasColor(windowed: true, alwaysBlack: Prefs.viewerBackgroundAlwaysBlack)
-        }
-        titlebarScrim = scrim
-    }
-
-    private func setScrimShown(_ shown: Bool) {
-        guard let scrim = titlebarScrim else { return }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = shown ? TitlebarAutoHider.showDuration : TitlebarAutoHider.hideDuration
-            scrim.animator().alphaValue = shown ? 1 : 0
-        }
+        if titlebarScrim?.superview === container { return }
+        titlebarScrim?.removeFromSuperview()
+        let backing = TitlebarScrimView(frame: container.bounds)
+        backing.autoresizingMask = [.width, .height]
+        container.addSubview(backing, positioned: .below, relativeTo: nil)
+        titlebarScrim = backing
     }
 
     // MARK: Frames
@@ -193,17 +182,22 @@ extension ViewerWindow: ViewerToolbarHost {
     }
 }
 
-/// Canvas colour at 55 % → 0 %, top to bottom, under the titlebar.
+/// A solid native-chrome surface. The historical scrim name remains local;
+/// this view no longer samples the image or fades independently of its parent.
 @MainActor
 final class TitlebarScrimView: NSView {
-    var canvasColor: () -> NSColor = { .black } { didSet { needsDisplay = true } }
-
-    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        let base = canvasColor()
-        let gradient = NSGradient(starting: base.withAlphaComponent(0.55), ending: base.withAlphaComponent(0))
-        gradient?.draw(in: bounds, angle: 90)
+        // Resolve in the native titlebar's inherited effective appearance.
+        // A dark canvas / HUD token would mismatch native light chrome.
+        NSColor.windowBackgroundColor.withAlphaComponent(1).setFill()
+        bounds.fill()
     }
 }

@@ -92,6 +92,9 @@ public final class BrowserWindowController: NSWindowController {
         didSet { if sortProgressText != oldValue { refreshStatusBar() } }
     }
 
+    private var chromeTextObservation: ChromeTextObservation?
+    private var persistenceBanner: PersistenceBanner?
+    private weak var noticeStack: NSStackView?
     private var filterPopover: NSPopover?
     var currentFolder: URL?
     var currentFilter: BrowserFilter = .none
@@ -115,7 +118,12 @@ public final class BrowserWindowController: NSWindowController {
     /// is, the selection is read again when its listing lands, because
     /// the user can change it in between (a rating, then ⇧→): the copy
     /// taken at the start would put the old selection back.
-    var relistsInFlight = 0
+    var listingTask: Task<Void, Never>?
+    var folderRequestGeneration: UInt64 = 0
+    var browserDidClose = false
+    private let folderEnumerator: @Sendable (URL, Bool) async throws -> ([BrowserItem], [FolderScanIssue])
+    private let listingNotice = InlineNotice()
+    var hydrationGateForTesting: (@MainActor () async -> Void)?
     /// Images dropped on the content area, selected when
     /// their folder is shown (the first scrolled into view).
     var pendingDropSelection: [URL] = []
@@ -180,7 +188,12 @@ public final class BrowserWindowController: NSWindowController {
 
     // MARK: - Init
 
-    public init(services: ShrikeServices, initialFolder: URL? = nil, selecting: URL? = nil) {
+    public init(services: ShrikeServices, initialFolder: URL? = nil, selecting: URL? = nil,
+                folderEnumerator: (@Sendable (URL, Bool) async throws -> [BrowserItem])? = nil,
+                folderDiagnosticEnumerator: (@Sendable (URL, Bool) async throws -> ([BrowserItem], [FolderScanIssue]))? = nil) {
+        if let folderDiagnosticEnumerator { self.folderEnumerator = folderDiagnosticEnumerator }
+        else if let folderEnumerator { self.folderEnumerator = { (try await folderEnumerator($0, $1), []) } }
+        else { self.folderEnumerator = { try await Self.enumerateWithDiagnostics(folder: $0, showHidden: $1) } }
         self.services = services
         self.pendingSelection = selecting
 
@@ -203,6 +216,16 @@ public final class BrowserWindowController: NSWindowController {
         observeToolbarRoom()
         wireUpDelegates()
         configureStatusBar()
+        chromeTextObservation = ChromeTextObservation(
+            root: window?.contentView ?? contentController.view,
+            afterUpdate: { [weak self] in self?.layoutNoticeStack() }
+        )
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshChromePreferences), name: .shrikeChromePreferencesChanged, object: nil)
+        contentController.onFilterSummaryChange = { [weak self] value in
+            guard let self else { return }
+            self.searchDebounce?.cancel(); self.searchField.stringValue = value.searchTerm
+            self.currentFilter = value; self.updateFilterButtonBadge(); self.updateSubtitle()
+        }
         applySavedFrame()
 
         // Default to user's Pictures folder if no initial folder supplied.
@@ -212,7 +235,7 @@ public final class BrowserWindowController: NSWindowController {
         navigate(to: startFolder, updateHistory: false)
 
         setupFirstResponder()
-        // Settings ▸ RAW+JPEG pairs changed: list the folder again.
+        // Settings listing rules (RAW+JPEG pairs or hidden files) changed.
         NotificationCenter.default.addObserver(
             self, selector: #selector(groupingDidChange(_:)),
             name: .shrikeGroupingDidChange, object: nil
@@ -231,6 +254,8 @@ public final class BrowserWindowController: NSWindowController {
     }
 
     @objc func groupingDidChange(_ note: Notification) {
+        guard !browserDidClose else { return }
+        treeController.refreshHiddenFilesPolicy(Prefs.showHiddenFiles, currentFolder: currentFolder)
         reloadCurrentFolder()
     }
 
@@ -271,7 +296,6 @@ public final class BrowserWindowController: NSWindowController {
         // folder, and the selection must survive it.
         let selected = contentController.selectedItems.map(\.url)
         if !selected.isEmpty { pendingReselection = selected }
-        relistsInFlight += 1
         navigate(to: folder, updateHistory: false)
     }
 
@@ -430,14 +454,14 @@ public final class BrowserWindowController: NSWindowController {
         thumbSizeSlider.setAccessibilityLabel("Thumbnail size")
 
         // Search field (the Search toolbar item's view).
-        searchField.placeholderString = "Search"
+        searchField.placeholderString = "Find File Names"
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
         // Esc: clear, and hand the keys back to the grid / list.
         searchField.delegate = self
         searchField.sendsSearchStringImmediately = true
         searchField.sendsWholeSearchString = false
-        searchField.setAccessibilityLabel("Search")
+        searchField.setAccessibilityLabel("Find file names in this folder")
 
         window?.toolbarStyle = .unified
         window?.toolbar = toolbar
@@ -453,6 +477,7 @@ public final class BrowserWindowController: NSWindowController {
         contentController.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
         contentController.onSortProgress = { [weak self] text in self?.sortProgressText = text }
         contentController.onClearFilter = { [weak self] in self?.clearFilterAndSearch() }
+        contentController.onChooseAnotherFolder = { [weak self] in self?.chooseAnotherFolder() }
         contentController.onDropFiles = { [weak self] urls in self?.handleContentDrop(urls) }
 
         inspectorController.onRate = { [weak self] stars in
@@ -509,6 +534,9 @@ public final class BrowserWindowController: NSWindowController {
 
     /// The inspector pane (tests drive its chip callbacks).
     var inspectorForTesting: InspectorPaneController { inspectorController }
+    var noticeStackForTesting: NSStackView? { noticeStack }
+
+    @objc private func refreshChromePreferences() { contentController.refreshChromePreferences() }
 
     private func configureStatusBar() {
         // The split sits above the bottom bar; a host controller holds
@@ -520,10 +548,32 @@ public final class BrowserWindowController: NSWindowController {
         split.translatesAutoresizingMaskIntoConstraints = false
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
 
+        let banner = PersistenceBanner(store: services.metadataStore)
+        persistenceBanner = banner
+        banner.onRecovered = { [weak self] in self?.reloadCurrentFolder() }
+        banner.onVisibilityChanged = { [weak self] _ in self?.layoutNoticeStack() }
+        listingNotice.onVisibilityChanged = { [weak self] _ in self?.layoutNoticeStack() }
+        let top = NSStackView(views: [banner, listingNotice]); top.orientation = .vertical
+        // A stack containing only hidden notices must not absorb the
+        // Browser's vertical slack. Visible notices retain their fitted height.
+        top.setHuggingPriority(.required, for: .vertical)
+        for notice in [banner, listingNotice] as [NSStackView] {
+            notice.setHuggingPriority(.required, for: .vertical)
+            notice.translatesAutoresizingMaskIntoConstraints = false
+            notice.leadingAnchor.constraint(equalTo: top.leadingAnchor).isActive = true
+            notice.trailingAnchor.constraint(equalTo: top.trailingAnchor).isActive = true
+        }
+        top.translatesAutoresizingMaskIntoConstraints = false
+        noticeStack = top
+        wrap.addSubview(top)
         wrap.addSubview(split)
         wrap.addSubview(bottomBar)
         NSLayoutConstraint.activate([
-            split.topAnchor.constraint(equalTo: wrap.topAnchor),
+            // This window uses fullSizeContentView, so the wrapper extends
+            // behind the unified toolbar. Keep notices in the visible area.
+            top.topAnchor.constraint(equalTo: wrap.safeAreaLayoutGuide.topAnchor),
+            top.leadingAnchor.constraint(equalTo: wrap.leadingAnchor), top.trailingAnchor.constraint(equalTo: wrap.trailingAnchor),
+            split.topAnchor.constraint(equalTo: top.bottomAnchor),
             split.leadingAnchor.constraint(equalTo: wrap.leadingAnchor),
             split.trailingAnchor.constraint(equalTo: wrap.trailingAnchor),
             split.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
@@ -531,7 +581,7 @@ public final class BrowserWindowController: NSWindowController {
             bottomBar.leadingAnchor.constraint(equalTo: wrap.leadingAnchor),
             bottomBar.trailingAnchor.constraint(equalTo: wrap.trailingAnchor),
             bottomBar.bottomAnchor.constraint(equalTo: wrap.bottomAnchor),
-            bottomBar.heightAnchor.constraint(equalToConstant: BrowserBottomBar.height),
+            ChromeTypography.scaled(bottomBar.heightAnchor.constraint(equalToConstant: BrowserBottomBar.height), normal: BrowserBottomBar.height, large: 30),
         ])
         bottomBar.onNavigate = { [weak self] url in self?.navigate(to: url) }
         bottomBar.setSliderHidden(contentController.mode != .grid)
@@ -540,6 +590,22 @@ public final class BrowserWindowController: NSWindowController {
         host.view = wrap
         host.addChild(splitController)
         window.contentViewController = host
+    }
+
+    /// The window safe area tracks the toolbar in global coordinates. When a
+    /// sibling notice takes space above the split, AppKit reduces the center
+    /// view's safe-area inset by the same amount. Reserve that height inside
+    /// Browser content so the filter and photo viewport move with the notice.
+    private func layoutNoticeStack() {
+        guard let window, let noticeStack else { return }
+        window.contentView?.layoutSubtreeIfNeeded()
+        noticeStack.layoutSubtreeIfNeeded()
+        let visibleNotices = noticeStack.arrangedSubviews.filter { !$0.isHidden }
+        let contentHeight = visibleNotices.reduce(CGFloat.zero) { $0 + $1.fittingSize.height }
+        let gaps = CGFloat(max(0, visibleNotices.count - 1)) * noticeStack.spacing
+        // Preserve the visible notice height in Browser's own safe area so
+        // its filter strip and photo viewport move with the notice.
+        contentController.view.additionalSafeAreaInsets.top = contentHeight + gaps
     }
 
     private func setupFirstResponder() {
@@ -764,45 +830,100 @@ public final class BrowserWindowController: NSWindowController {
     /// old folder onto the back stack, updates breadcrumbs, inspector, and
     /// status bar.
     public func navigate(to url: URL, updateHistory: Bool = true) {
+        guard !browserDidClose else { return }
         let std = url.standardizedFileURL
-        if std != currentFolder { beginSubtitleLoading() }
+        listingNotice.show(nil)
+        let isReload = std == currentFolder && window?.representedURL == std
+        beginSubtitleLoading()
         if updateHistory, let current = currentFolder, current != std {
             backStack.append(current)
             forwardStack.removeAll()
         }
-        if std != currentFolder { relistsInFlight = 0 }
+        // Reload selection belongs only to its originating folder. Explicit
+        // follow/drop selection still targets the destination and stays intact.
+        if currentFolder != std { pendingReselection = [] }
         currentFolder = std
-
-        // Fire enumerate + metadata hydrate on an isolated Task; we don't
-        // want to block the UI for the directory read.
+        pairedViewer?.refreshBrowserReturnContext()
+        if !isReload {
+            contentController.showFolderLoading(std)
+            window?.title = std.lastPathComponent
+            window?.representedURL = std
+            bottomBar.setFolder(std)
+            refreshSelectionInfo()
+        }
+        folderRequestGeneration &+= 1
+        let generation = folderRequestGeneration
+        listingTask?.cancel()
+        subfolderCheckTask?.cancel()
+        subfolderCheckTask = nil
+        stopWatching()
         let store = services.metadataStore
         let backups = services.backupStore
         let hidden = Prefs.showHiddenFiles
-        // First paint before hydrate: the grid shows the
-        // listing at once; ratings, flags, tags and edit marks are read in
-        // the background and land in place.
+        let enumerate = folderEnumerator
         let signpost = ShrikeSignposts.browser.begin("folderFirstPaint")
-        Task { [weak self] in
-            let items = await Self.nameOrdered(Self.enumerate(folder: std, showHidden: hidden))
-            await MainActor.run { [weak self] in
+        listingTask = Task { @MainActor [weak self] in
+            let items: [BrowserItem]
+            let issues: [FolderScanIssue]
+            do {
+                let listing = try await enumerate(std, hidden)
+                items = await Self.nameOrdered(listing.0)
+                issues = listing.1
+                try Task.checkCancellation()
+            } catch {
                 ShrikeSignposts.browser.end("folderFirstPaint", signpost)
-                guard let self else { return }
-                self.applyFolderContents(items, folder: std)
+                guard !(error is CancellationError), !Task.isCancelled,
+                      self?.acceptsFolderRequest(generation, folder: std) == true else { return }
+                self?.showFolderReadError(error, folder: std)
+                return
             }
+            ShrikeSignposts.browser.end("folderFirstPaint", signpost)
+            guard self?.acceptsFolderRequest(generation, folder: std) == true else { return }
+            self?.applyFolderContents(items, folder: std, preserveLiveSelection: isReload)
+            self?.showListingIssues(issues, count: items.count, folder: std)
             let hydrateSignpost = ShrikeSignposts.browser.begin("folderHydrate")
             let hydrated = await Self.hydrate(items, with: store, backups: backups)
-            await MainActor.run { [weak self] in
-                ShrikeSignposts.browser.end("folderHydrate", hydrateSignpost)
-                guard let self, self.currentFolder == std else { return }
-                self.contentController.applyHydrated(hydrated)
-                // A filter on rating / flag can change the count; leave a
-                // pending "Loading…" alone.
-                if self.subtitleLoadingTask == nil { self.updateSubtitle() }
-                self.refreshSelectionInfo()
-                self.onHydratedForTesting?()
-            }
-            // Persist the most-recent folder outside the MainActor hop.
+            let hydrateGate = self?.hydrationGateForTesting
+            await hydrateGate?()
+            ShrikeSignposts.browser.end("folderHydrate", hydrateSignpost)
+            guard !Task.isCancelled, self?.acceptsFolderRequest(generation, folder: std) == true else { return }
+            self?.contentController.applyHydrated(hydrated)
+            self?.contentController.isHydratingMarks = false
+            if self?.subtitleLoadingTask == nil { self?.updateSubtitle() }
+            self?.refreshSelectionInfo()
+            self?.onHydratedForTesting?()
+            guard !Task.isCancelled, self?.acceptsFolderRequest(generation, folder: std) == true else { return }
             try? await store.addRecentFolder(std)
+        }
+    }
+
+    func acceptsFolderRequest(_ generation: UInt64, folder: URL) -> Bool {
+        !browserDidClose && folderRequestGeneration == generation && currentFolder == folder
+    }
+
+    private func showFolderReadError(_ error: any Error, folder: URL) {
+        subtitleLoadingTask?.cancel()
+        subtitleLoadingTask = nil
+        window?.title = folder.lastPathComponent
+        window?.representedURL = folder
+        bottomBar.setFolder(folder)
+        treeController.select(folder)
+        if case FolderScannerError.notADirectory = error {
+            showFolderGone(folder)
+        } else {
+            let reason: String
+            if case FolderScannerError.permissionDenied = error {
+                reason = "Shrike doesn't have permission to read this folder. Check the folder's permissions or privacy access, then retry."
+            } else if case FolderScannerError.unreadable(_, let detail) = error {
+                reason = detail
+            } else {
+                reason = error.localizedDescription
+            }
+            contentController.showFolderReadError(folder, reason: reason) { [weak self] in
+                self?.navigate(to: folder, updateHistory: false)
+            }
+            refreshSelectionInfo()
+            updateSubtitle()
         }
     }
 
@@ -811,15 +932,27 @@ public final class BrowserWindowController: NSWindowController {
     /// Test seam: called when a listing is first shown.
     var onFolderPaintedForTesting: (() -> Void)?
 
-    private func applyFolderContents(_ items: [BrowserItem], folder: URL) {
+    private func applyFolderContents(_ items: [BrowserItem], folder: URL, preserveLiveSelection: Bool) {
         // A re-list of the shown folder: keep the selection as it is NOW.
-        var liveSelection: [URL]?
-        if relistsInFlight > 0 {
-            relistsInFlight -= 1
-            if folder == currentFolder { liveSelection = contentController.selectedItems.map(\.url) }
-        }
+        let liveSelection = preserveLiveSelection ? contentController.selectedItems.map(\.url) : nil
         contentController.emptyFolder = (folder.lastPathComponent, 0, false)
-        contentController.setItems(items)
+        contentController.isHydratingMarks = true
+        var firstPaintItems = items
+        if preserveLiveSelection {
+            // Enumeration has no saved marks yet. Keep known values for exact
+            // survivors so a mark filter cannot transiently erase their selection.
+            // Fresh file/group facts still win; request-bound hydration remains authoritative.
+            let known = Dictionary(uniqueKeysWithValues: contentController.allItems.map { ($0.url, $0) })
+            for i in firstPaintItems.indices {
+                guard let previous = known[firstPaintItems[i].url] else { continue }
+                firstPaintItems[i].rating = previous.rating
+                firstPaintItems[i].isFlagged = previous.isFlagged
+                firstPaintItems[i].tags = previous.tags
+                firstPaintItems[i].finderTags = previous.finderTags
+                firstPaintItems[i].edited = previous.edited
+            }
+        }
+        contentController.setItems(firstPaintItems)
         if items.isEmpty { checkSubfolders(of: folder) }
         if folder == currentFolder {
             subtitleLoadingTask?.cancel()
@@ -848,7 +981,7 @@ public final class BrowserWindowController: NSWindowController {
             contentController.selectFirstOnOpen()
         }
         claimKeysForContentIfIdle()
-        treeController.select(folder)
+        treeController.select(folder, preservingViewportOnReload: preserveLiveSelection)
         bottomBar.setFolder(folder)
         startWatching(folder)
         refreshSelectionInfo()
@@ -858,17 +991,40 @@ public final class BrowserWindowController: NSWindowController {
     /// Enumerates images in `folder` (one level deep). Filters by extension
     /// cheaply before constructing a `BrowserItem` for each; parallelism
     /// isn't worth the overhead at typical folder sizes.
-    nonisolated private static func enumerate(folder: URL, showHidden: Bool) async -> [BrowserItem] {
-        // The list holds groups; `FolderScanner` decides what
-        // an image is (no extension list here) and runs off the main thread.
-        let groups = (try? await FolderScanner.imageGroups(in: folder, showHidden: showHidden)) ?? []
-        return await Task.detached(priority: .userInitiated) {
-            groups.compactMap { group -> BrowserItem? in
-                guard var item = try? BrowserItem.make(from: group.primary) else { return nil }
-                item.group = group
-                return item
+    nonisolated private static func enumerateWithDiagnostics(folder: URL, showHidden: Bool) async throws -> ([BrowserItem], [FolderScanIssue]) {
+        let result = try await FolderScanner.imageGroupsWithDiagnostics(in: folder, showHidden: showHidden)
+        let conversion = Task.detached(priority: .userInitiated) { () throws -> [BrowserItem] in
+            var items: [BrowserItem] = []
+            for group in result.groups {
+                try Task.checkCancellation()
+                guard var item = try? BrowserItem.make(from: group.primary) else { continue }
+                item.group = group; items.append(item)
             }
-        }.value
+            return items
+        }
+        let items = try await withTaskCancellationHandler { try await conversion.value } onCancel: { conversion.cancel() }
+        return (items, result.skipped)
+    }
+
+    private func chooseAnotherFolder() {
+        guard let window else { return }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.navigate(to: url)
+        }
+    }
+
+    private func showListingIssues(_ issues: [FolderScanIssue], count: Int, folder: URL) {
+        guard !issues.isEmpty else { listingNotice.show(nil); return }
+        listingNotice.show("\(count) photos shown · \(issues.count) files could not be read", buttons: [
+            ("Details…", { [weak self] in
+                guard let window = self?.window else { return }
+                let alert = NSAlert(); alert.messageText = "Some files could not be read"
+                alert.informativeText = issues.map { "\($0.url.lastPathComponent): \($0.reason)" }.joined(separator: "\n")
+                alert.beginSheetModal(for: window)
+            }),
+            ("Retry", { [weak self] in self?.navigate(to: folder, updateHistory: false) })])
     }
 
     /// Fill in rating / flag / tags from MetadataStore. Works off actor
@@ -916,9 +1072,9 @@ public final class BrowserWindowController: NSWindowController {
         CullingUndo.perform(
             .rating, urls: urls, store: services.metadataStore, undoManager: window?.undoManager,
             compute: { Culling.ratingValues(rating, urls: urls, previous: $0) },
-            onChange: { [weak self] values in self?.cullingDidChange(values) }
+            onChange: { [weak self] values in self?.cullingDidChange(values) },
+            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.rating, error: error), kind: .error)) }
         )
-        Culling.announce(Culling.ratingAnnouncement(rating))
     }
 
     private func applyFlag(_ flag: Bool, to items: [BrowserItem]) {
@@ -935,16 +1091,21 @@ public final class BrowserWindowController: NSWindowController {
                 }
                 return out
             },
-            onChange: { [weak self] values in self?.cullingDidChange(values) }
+            onChange: { [weak self] values in self?.cullingDidChange(values) },
+            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.flag, error: error), kind: .error)) }
         )
-        Culling.announce(Culling.flagAnnouncement(flag))
     }
 
     /// Q / \ : if any selected item is unflagged, flag all; else unflag all.
     private func toggleFlagOnSelection() {
         let items = contentController.selectedItems
         guard !items.isEmpty else { return }
-        applyFlag(items.contains { !$0.isFlagged }, to: items)
+        let urls = Culling.imageURLs(of: items.map(\.group))
+        let leaders = items.map(\.url)
+        CullingUndo.perform(.flag, urls: urls, store: services.metadataStore, undoManager: window?.undoManager,
+            compute: { Culling.toggledFlagValues(urls: urls, leaders: leaders, previous: $0) },
+            onChange: { [weak self] in self?.cullingDidChange($0) },
+            onFailure: { [weak self] in self?.toast(ToastContent(CullingUndo.failureMessage(.flag, error: $0), kind: .error)) })
     }
 
     /// Saved values landed (also after undo / redo). Keeps a paired
@@ -956,8 +1117,10 @@ public final class BrowserWindowController: NSWindowController {
 
     /// Updates cells and the inspector (no forwarding).
     public func applyCullingValues(_ values: [URL: FileRecord]) {
+        let previousCount = contentController.visibleItems.count
         contentController.applyCulling(values)
         updateInspectorFromSelection()
+        if previousCount != contentController.visibleItems.count { updateSubtitle(); refreshStatusBar() }
     }
 
     // MARK: - Open-in-viewer
@@ -1582,7 +1745,8 @@ extension BrowserWindowController: NSToolbarDelegate, NSToolbarItemValidation {
             // Search gives way first when the window is narrow;
             // every other item is `.high`.
             item.visibilityPriority = .low
-            LiveTooltips.shared.bind(searchField, command: .find, context: .browser)
+            LiveTooltips.shared.bind(searchField, command: .find, context: .browser,
+                                     title: "Matches file names in this folder. Subfolders are not searched.")
             searchToolbarItem = item
             return item
         case BrowserToolbarID.inspector:
@@ -1855,7 +2019,22 @@ extension BrowserWindowController: BrowserContentDelegate {
 
 extension BrowserWindowController: NSWindowDelegate {
 
+    public func windowDidResize(_ notification: Notification) {
+        layoutNoticeStack()
+    }
+
     public func windowWillClose(_ notification: Notification) {
+        persistenceBanner?.dispose()
+        persistenceBanner = nil
+        chromeTextObservation = nil
+        browserDidClose = true
+        folderRequestGeneration &+= 1
+        listingTask?.cancel()
+        listingTask = nil
+        subfolderCheckTask?.cancel()
+        subfolderCheckTask = nil
+        subtitleLoadingTask?.cancel()
+        subtitleLoadingTask = nil
         stopWatching()
         // Give the autosave name back, so the next new Browser
         // can own it (saves its size) even while this object lives on.

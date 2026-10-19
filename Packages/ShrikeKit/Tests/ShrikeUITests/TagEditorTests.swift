@@ -197,4 +197,207 @@ final class TagEditorTests: XCTestCase {
         XCTAssertEqual(Set(session.groups.map(\.primary.lastPathComponent)), ["a.jpg", "b.jpg"])
         XCTAssertEqual(session.commonTags, ["Client"])
     }
+
+    /// Direct delegate/component coverage, separate from the real field-editor
+    /// input cases below. With no editor these supplied objects are committed;
+    /// pending plaintext is covered by the real editor boundary below.
+    /// AppKit owns where accepted objects are inserted.
+    func testTokenAdditionNormalizesBatchAgainstActualRepresentedObjects() async throws {
+        let recent = TagEditSession.recentTags
+        defer { TagEditSession.recentTags = recent }
+        let cases: [(stored: [String], shown: [String], input: [Any], index: Int,
+                     accepted: [String], model: [String])] = [
+            ([], [], [" Workflow ", "workflow", "\n", 42, "Client", "CLIENT"], 0,
+             ["Workflow", "Client"], ["Workflow", "Client"]),
+            (["Client", "Venice"], ["Client", "Venice"], ["client", "VENICE", " New ", "new"], 0,
+             ["New"], ["Client", "Venice", "New"]),
+            (["Client", "Venice"], ["Client", "Venice"], ["Venice"], 1,
+             [], ["Client", "Venice"]),
+            // The edited token is absent from the actual represented objects.
+            (["Client", "Venice"], ["Venice"], ["Client"], 0,
+             ["Client"], ["Client", "Venice"]),
+            (["Client", "Venice"], ["Venice"], [" Project ", "project"], 0,
+             ["Project"], ["Client", "Venice", "Project"]),
+            (["Client"], [], ["Client"], 0, ["Client"], ["Client"]),
+            (["Café"], ["Café"], [" CAFÉ "], 1, [], ["Café"]),
+            ([], [], ["", " \n ", 42], 0, [], []),
+        ]
+        for (index, example) in cases.enumerated() {
+            let url = try file("table-\(index).jpg")
+            try FinderTags.write(url, tags: example.stored)
+            let undo = UndoManager(); undo.groupsByEvent = false; undo.beginUndoGrouping()
+            let state = session([ImageGroup(primary: url)], undo: undo)
+            XCTAssertFalse(state.didRegisterUndo, "case \(index), before view load")
+            let controller = TagsPopoverController(session: state); _ = controller.view
+            XCTAssertFalse(state.didRegisterUndo, "case \(index), after view load")
+            controller.tokenField.objectValue = example.shown
+            XCTAssertFalse(state.didRegisterUndo, "case \(index), after represented-object setup")
+            let accepted = controller.tokenField(controller.tokenField, shouldAdd: example.input, at: example.index)
+            XCTAssertEqual(accepted as? [String], example.accepted, "case \(index)")
+            XCTAssertEqual(controller.tokenField.objectValue as? [String], example.shown,
+                           "the callback returns insertions; it must not replace the field contents")
+            XCTAssertEqual(state.commonTags, example.model, "case \(index)")
+            undo.endUndoGrouping()
+            XCTAssertEqual(state.didRegisterUndo, example.model != example.stored,
+                           "case \(index), tag session owns registration only after a real change")
+            await FinderTagWriter.shared.flush()
+            XCTAssertEqual(FinderTags.read(url), example.model, "case \(index)")
+        }
+    }
+
+    private func tokenWindow(_ controller: TagsPopoverController) -> NSWindow {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 100),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.alphaValue = 0; window.ignoresMouseEvents = true; window.animationBehavior = .none
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+        return window
+    }
+
+    private func tokenEditor(_ field: NSTokenField, in window: NSWindow) throws -> NSTextView {
+        if field.currentEditor() == nil { XCTAssertTrue(window.makeFirstResponder(field)) }
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertTrue(editor.delegate === field); XCTAssertTrue(editor.window === window)
+        return editor
+    }
+
+    private func tokenKey(_ text: String, code: UInt16, in window: NSWindow) throws {
+        window.sendEvent(try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code)))
+    }
+
+    private func tokenRanges(_ editor: NSTextView) -> [NSRange] {
+        guard let storage = editor.textStorage else { return [] }
+        var ranges: [NSRange] = []
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            if value is NSTextAttachment { ranges.append(range) }
+        }
+        return ranges
+    }
+
+    private func untilTokenState(_ description: String, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(3)
+        while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(condition(), description)
+    }
+
+    private func assertTagAgreement(_ expected: [String], session: TagEditSession, url: URL,
+                                    store: MetadataStore) async throws {
+        // The writer fence covers only already-enqueued writes. Let normal
+        // deferred token removal update the model and enqueue its final write.
+        try await untilTokenState("Deferred token changes reach the expected session before the writer fence") {
+            session.current[url]?.sorted() == expected.sorted() && session.commonTags.sorted() == expected.sorted()
+        }
+        await FinderTagWriter.shared.flush()
+        XCTAssertEqual(session.current[url]?.sorted(), expected.sorted())
+        XCTAssertEqual(session.commonTags.sorted(), expected.sorted())
+        XCTAssertEqual(FinderTags.read(url).sorted(), expected.sorted())
+        let entries = try XCTUnwrap(FinderTags.readXattrEntries(url))
+        XCTAssertEqual(entries.map { FinderTags.parseEntry($0).name }.sorted(), expected.sorted())
+        let stored = try await store.tags(for: url)
+        XCTAssertEqual(stored, expected.sorted())
+    }
+
+    /// Real NSTokenField field-editor input and Return tokenization, not a
+    /// direct shouldAdd invocation or a claim about the production popover.
+    func testFieldEditorCommitRejectsDuplicateTokensAndPreservesPendingText() async throws {
+        let recent = TagEditSession.recentTags
+        defer { TagEditSession.recentTags = recent }
+        let url = try file("native-add.jpg")
+        let store = try MetadataStore(databaseURL: dir.appendingPathComponent("add.sqlite"))
+        let undo = UndoManager(); undo.groupsByEvent = false; undo.beginUndoGrouping()
+        let state = session([ImageGroup(primary: url)], undo: undo)
+        let controller = TagsPopoverController(session: state)
+        let window = tokenWindow(controller); defer { window.close() }
+        let editor = try tokenEditor(controller.tokenField, in: window)
+        editor.insertText("workflow", replacementRange: editor.selectedRange())
+        XCTAssertTrue(tokenRanges(editor).isEmpty, "plain proposal is not a committed token")
+        XCTAssertEqual(controller.tokenField.objectValue as? [String], ["workflow"],
+                       "AppKit exposes pending plaintext in objectValue before tokenization")
+        XCTAssertTrue(state.commonTags.isEmpty)
+        try tokenKey("\r", code: 36, in: window)
+        try await untilTokenState("First Return creates one actual token") {
+            tokenRanges(editor).count == 1 && controller.tokenField.objectValue as? [String] == ["workflow"]
+        }
+        try await assertTagAgreement(["workflow"], session: state, url: url, store: store)
+        XCTAssertTrue(try tokenEditor(controller.tokenField, in: window) === editor)
+        editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+        editor.insertText(" WORKFLOW ", replacementRange: editor.selectedRange())
+        try tokenKey("\r", code: 36, in: window)
+        try await untilTokenState("Duplicate Return leaves exactly one actual token") {
+            tokenRanges(editor).count == 1 && controller.tokenField.objectValue as? [String] == ["workflow"]
+        }
+        try await assertTagAgreement(["workflow"], session: state, url: url, store: store)
+        XCTAssertTrue(window.firstResponder === editor)
+        editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+        editor.insertText("unsubmitted", replacementRange: editor.selectedRange())
+        await FinderTagWriter.shared.flush(); await Task.yield()
+        XCTAssertTrue(editor.string.hasSuffix("unsubmitted"), "async landed/removal callbacks preserve pending text")
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertTrue(controller.tokenField.currentEditor() === editor)
+        XCTAssertEqual(state.commonTags, ["workflow"])
+        XCTAssertEqual(FinderTags.read(url), ["workflow"])
+        // Clear only unsubmitted text; this is not a simulated popover Cancel.
+        editor.setSelectedRange(NSRange(location: editor.string.utf16.count - "unsubmitted".utf16.count,
+                                        length: "unsubmitted".utf16.count))
+        editor.deleteBackward(nil)
+        // NSTextInputClient composition remains owned by the same editor;
+        // this is component input, not a claim about a particular IME app.
+        editor.setMarkedText("未確定", selectedRange: NSRange(location: 3, length: 0),
+                             replacementRange: editor.selectedRange())
+        let marked = editor.markedRange()
+        XCTAssertTrue(editor.hasMarkedText())
+        await Task.yield()
+        XCTAssertEqual(editor.markedRange(), marked)
+        XCTAssertTrue(editor.hasMarkedText())
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertEqual(state.commonTags, ["workflow"])
+        editor.unmarkText(); editor.setSelectedRange(marked); editor.deleteBackward(nil)
+        undo.endUndoGrouping()
+        XCTAssertEqual(undo.undoActionName, "Tags")
+        undo.undo()
+        try await assertTagAgreement([], session: state, url: url, store: store)
+        XCTAssertFalse(undo.canUndo, "one tag session has one Undo step despite duplicate input")
+        undo.redo()
+        try await assertTagAgreement(["workflow"], session: state, url: url, store: store)
+    }
+
+    func testFieldEditorReplacesAndRemovesExistingToken() async throws {
+        let recent = TagEditSession.recentTags
+        defer { TagEditSession.recentTags = recent }
+        let url = try file("native-edit.jpg")
+        try FinderTags.write(url, tags: ["Client", "Venice"])
+        let store = try MetadataStore(databaseURL: dir.appendingPathComponent("edit.sqlite"))
+        let state = session([ImageGroup(primary: url)])
+        let controller = TagsPopoverController(session: state)
+        let window = tokenWindow(controller); defer { window.close() }
+        let editor = try tokenEditor(controller.tokenField, in: window)
+        let original = try XCTUnwrap(tokenRanges(editor).first)
+        XCTAssertEqual(tokenRanges(editor).count, 2)
+        editor.insertText("Client", replacementRange: original)
+        try tokenKey("\r", code: 36, in: window)
+        try await untilTokenState("Editing a token to itself keeps it and its neighbor") {
+            controller.tokenField.objectValue as? [String] == ["Client", "Venice"] && tokenRanges(editor).count == 2
+        }
+        try await assertTagAgreement(["Client", "Venice"], session: state, url: url, store: store)
+        XCTAssertFalse(state.didRegisterUndo, "recommitting an unchanged tag is not a session change")
+        editor.insertText("Project", replacementRange: try XCTUnwrap(tokenRanges(editor).first))
+        try tokenKey("\r", code: 36, in: window)
+        try await untilTokenState("Editing a represented token inserts its replacement at the original index") {
+            controller.tokenField.objectValue as? [String] == ["Project", "Venice"] && tokenRanges(editor).count == 2
+        }
+        try await assertTagAgreement(["Project", "Venice"], session: state, url: url, store: store)
+        editor.setSelectedRange(try XCTUnwrap(tokenRanges(editor).first))
+        editor.deleteBackward(nil)
+        try await untilTokenState("Native token removal updates the session") {
+            controller.tokenField.objectValue as? [String] == ["Venice"] && state.commonTags == ["Venice"]
+        }
+        try await assertTagAgreement(["Venice"], session: state, url: url, store: store)
+    }
+
 }

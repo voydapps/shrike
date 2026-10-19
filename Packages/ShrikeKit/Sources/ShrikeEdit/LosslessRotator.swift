@@ -95,6 +95,7 @@ public actor LosslessRotator {
     /// Apply `op` to the displayed image by rewriting the orientation tag.
     @discardableResult
     public func apply(_ op: OrientationOp, to url: URL) async throws -> LosslessRotateResult {
+        try Task.checkCancellation()
         let fm = FileManager.default
         guard fm.fileExists(atPath: url.path) else { throw LosslessRotateError.sourceMissing }
         guard Self.isSupported(url),
@@ -129,6 +130,7 @@ public actor LosslessRotator {
         else {
             throw LosslessRotateError.transformFailed(underlying: "orientation not written")
         }
+        try Task.checkCancellation()
 
         let record: BackupRecord
         do {
@@ -136,6 +138,8 @@ public actor LosslessRotator {
         } catch {
             throw LosslessRotateError.backupFailed(underlying: "\(error)")
         }
+
+        try Task.checkCancellation()
 
         do {
             _ = try fm.replaceItemAt(url, withItemAt: tmp)

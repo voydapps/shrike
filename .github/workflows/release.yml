@@ -1,19 +1,17 @@
 name: Release
-# Push a tag like v0.2.11 (the number must equal MARKETING_VERSION in project.yml).
-# The runner builds the app, signs it ad-hoc (no certificate, so no personal
-# name in the signature), makes the DMG and publishes a GitHub Release.
-# The release is created by github-actions[bot].
+# Existing releases are immutable. A failed/incomplete public release requires a
+# new version; this workflow never overwrites, deletes or appends release assets.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to (re)build, for example v0.2.11'
+        description: 'Existing unreleased vMAJOR.MINOR.PATCH tag matching project.yml'
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
@@ -21,81 +19,41 @@ concurrency:
 
 jobs:
   release:
-    # macOS 26 on Apple silicon (GA). Xcode 26.4.1 is installed next to
-    # 26.6 (the default); 26.4.1 is the closest to the Xcode 26.4 the project is developed with.
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 90
+    permissions:
+      contents: write
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
-          fetch-depth: 0   # the build number is the commit count
-
-      - name: Tag must be on main
+          fetch-depth: 0
+      - name: Fetch main ancestry
+        run: git fetch origin main:refs/remotes/origin/main
+      - name: Require intended Xcode (no fallback)
         run: |
-          git fetch origin main
-          git merge-base --is-ancestor HEAD origin/main \
-            || { echo "::error::$TAG is not on main"; exit 1; }
-
-      - name: Select Xcode
-        run: |
-          if [ -d /Applications/Xcode_26.4.1.app ]; then
-            sudo xcode-select -s /Applications/Xcode_26.4.1.app
-          fi
+          test -d "$DEVELOPER_DIR" || { echo '::error::Xcode 26.4.1 unavailable'; exit 1; }
           xcodebuild -version
-          swift --version
-
+          xcrun swift --version
       - name: Install XcodeGen
         run: brew install xcodegen
-
-      - name: Build the ad-hoc signed DMG
-        run: |
-          VERSION="${TAG#v}"
-          Scripts/make-package.sh --adhoc "$VERSION"
-          ls -l dist
-
-      - name: Stable file names
-        run: |
-          VERSION="${TAG#v}"
-          cp "dist/Shrike-$VERSION.dmg" dist/Shrike.dmg
-          (cd dist && shasum -a 256 Shrike.dmg > Shrike.dmg.sha256 && cat Shrike.dmg.sha256)
-
-      - name: Publish the release
+      - name: Validate release gate failure and immutability boundaries
+        run: python3 Scripts/tests/test-release-gate.py
+      - name: Three full SwiftPM runs, then exact-commit Release package
+        run: python3 Scripts/release-gate.py "$TAG"
+      - name: Publish gated artifact (existing release fails closed)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${TAG#v}"
-          SHA="$(cut -d' ' -f1 dist/Shrike.dmg.sha256)"
-          # The CHANGELOG.md entry that holds this version (a missing entry stops the release).
-          node Scripts/make-changelog-page.mjs --section "$VERSION" > changes.md \
-            || { echo "::error::CHANGELOG.md has no entry for $VERSION"; exit 1; }
-          cat > notes.md <<EOF
-          Shrike $VERSION for macOS 14 or newer (Apple silicon and Intel).
-
-          ## What changed
-
-          EOF
-          cat changes.md >> notes.md
-          cat >> notes.md <<EOF
-
-          ## Download
-
-          Download **Shrike.dmg**, open it, and drag Shrike to Applications.
-          The app is not notarized, so macOS asks once before the first
-          launch. The steps are in the text file inside the disk image and in
-          the README.
-
-          SHA-256 of Shrike.dmg:
-
-              $SHA
-
-          Check it in Terminal with: \`shasum -a 256 ~/Downloads/Shrike.dmg\`
-          EOF
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/Shrike.dmg dist/Shrike.dmg.sha256 --clobber
-          else
-            gh release create "$TAG" dist/Shrike.dmg dist/Shrike.dmg.sha256 \
-              --title "Shrike $VERSION" --notes-file notes.md --verify-tag
-          fi
+        run: python3 Scripts/publish-release.py "$TAG"
+      - name: Keep gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-evidence
+          path: |
+            build/release-gate/*.log
+            build/release-gate/gate.json
+          if-no-files-found: ignore

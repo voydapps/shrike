@@ -42,15 +42,14 @@ final class EditEntryTests: XCTestCase {
 
     // MARK: Helpers
 
-    private func makeViewer(size: NSSize = NSSize(width: 1280, height: 800)) -> ViewerWindow {
+    private func makeViewer(size: NSSize = NSSize(width: 1280, height: 800)) async throws -> ViewerWindow {
         let url = root.appendingPathComponent("p-\(UUID().uuidString.prefix(6)).jpg")
         XCTAssertTrue(RotateDirectionTests.writeQuadrantJPEG(url, orientation: .up))
         var services = ShrikeServices.makeDefault()
         services.backupStore = store
         let viewer = ViewerWindow(groups: [ImageGroup(primary: url)], startIndex: 0, services: services)
         viewer.setContentSize(size)
-        viewer.markDisplayedForTesting(0)
-        viewer.imageViewForTesting.image = RotateDirectionTests.quadrants()
+        try await waitFor("accepted photo enables editing") { viewer.canPerform(.editImage) }
         let content = viewer.contentRootForTesting
         content.animatesPanelFades = false
         return viewer
@@ -70,7 +69,7 @@ final class EditEntryTests: XCTestCase {
     // MARK: No tool on entry
 
     func testV10EveryEntryLandsOnNoTool() async throws {
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         let controller = content.editModeController
@@ -91,13 +90,13 @@ final class EditEntryTests: XCTestCase {
             XCTAssertEqual(content.editCapsule.toolPicker.selectedSegment, -1, "\(name): capsule picker lights nothing")
             XCTAssertEqual((controller.parameterPanel._installed as? ChooseToolPanel)?.bodyLabel.stringValue,
                            "Pick Crop, Rotate, Resize, Color or Levels in the bar at the top.", name)
-            content.exitEditMode()
+            content.editModeController.finalizeExit()
             XCTAssertFalse(content.isEditModeActive)
         }
     }
 
     func testV11V12PickingAToolAndDoneWithNoEdits() async throws {
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         let controller = content.editModeController
@@ -128,7 +127,7 @@ final class EditEntryTests: XCTestCase {
         XCTAssertEqual(ops?.count, 1, "one 90° op")
         XCTAssertNil(controller.currentTool)
         XCTAssertTrue(controller.chromeState.hasEdits, "Reset enabled")
-        content.exitEditMode()
+        content.editModeController.finalizeExit()
     }
 
     // MARK: Full screen, filmstrip, pin, Done, menus
@@ -137,7 +136,7 @@ final class EditEntryTests: XCTestCase {
         XCTAssertEqual(ViewerToolbar.symbolNamesForTesting[5...7],
                        ["square.and.arrow.up", "slider.horizontal.3", "trash"])
         XCTAssertEqual(ViewerToolbar.command(for: .openEditMode), .editImage)
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         content.windowMode = .fullscreen
@@ -147,13 +146,13 @@ final class EditEntryTests: XCTestCase {
         XCTAssertEqual(content.editCapsule.toolPicker.selectedSegment, -1)
         XCTAssertEqual((content.editModeController.parameterPanel._installed as? ChooseToolPanel)?.bodyLabel.stringValue,
                        "Pick Crop, Rotate, Resize, Color or Levels in the bar at the bottom.")
-        content.exitEditMode()
+        content.editModeController.finalizeExit()
         content.windowMode = .windowed
     }
 
     func testV14FullScreenPinnedFilmstripStaysHiddenInEditMode() async throws {
         Prefs.filmstripPinnedFullscreen = true
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         content.windowMode = .fullscreen
@@ -162,7 +161,7 @@ final class EditEntryTests: XCTestCase {
         try await waitFor("edit mode") { content.isEditModeActive }
         content.evaluateZonesForTesting(at: NSPoint(x: content.bounds.midX, y: 2))
         XCTAssertTrue(content.filmstripForTesting.isHidden, "no filmstrip in edit mode")
-        content.exitEditMode()
+        content.editModeController.finalizeExit()
         XCTAssertTrue(content.isPinnedForTesting(.filmstrip), "pinned again after exit")
         XCTAssertFalse(content.filmstripForTesting.isHidden)
         content.windowMode = .windowed
@@ -170,7 +169,7 @@ final class EditEntryTests: XCTestCase {
 
     func testV15WindowFilmstripStaysInEditModeAndThePhotoDoesNotMove() async throws {
         Prefs.filmstripVisibleInWindowed = true
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         content.layoutSubtreeIfNeeded()
@@ -182,7 +181,7 @@ final class EditEntryTests: XCTestCase {
         // Spec 25 §3.3: a window keeps its docked strip in edit mode, and ⌘K works.
         XCTAssertFalse(content.filmstripForTesting.isHidden, "the docked strip stays")
         XCTAssertTrue(viewer.canPerform(.toggleFilmstrip), "⌘K and the menu item work")
-        content.exitEditMode()
+        content.editModeController.finalizeExit()
         content.layoutSubtreeIfNeeded()
         XCTAssertFalse(content.filmstripForTesting.isHidden)
         XCTAssertEqual(viewer.imageViewForTesting.frame, before, "the photo frame equals the one before entry")
@@ -207,8 +206,8 @@ final class EditEntryTests: XCTestCase {
         if #available(macOS 26, *) { XCTAssertNotEqual(item?.style, .prominent) }
     }
 
-    func testV18PanelMenuItemsReadShowOrHideWithNoCheckMark() {
-        let viewer = makeViewer()
+    func testV18PanelMenuItemsReadShowOrHideWithNoCheckMark() async throws {
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         func validated(_ command: ShrikeCommand) -> NSMenuItem {

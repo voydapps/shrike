@@ -52,7 +52,7 @@ final class EditToolbarHiddenTests: XCTestCase {
         let savedBefore = savedShown()
 
         content.enterEditMode(image: SaveFlowTests.image(), url: nil, landOn: .crop)
-        XCTAssertEqual(viewer.toolbar?.identifier, EditToolbarController.toolbarIdentifier)
+        XCTAssertTrue(viewer.toolbar === viewer.contentRootForTesting.editToolbarController.toolbar)
         XCTAssertEqual(viewer.toolbar?.isVisible, true, "the edit toolbar shows for the session")
         let ids = viewer.toolbar?.items.map(\.itemIdentifier) ?? []
         for id in [EditToolbarController.ItemID.cancel,

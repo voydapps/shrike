@@ -19,27 +19,56 @@ extension ViewerWindow {
     /// again keeps it; `0` clears.
     func rateDisplayed(_ stars: Int) {
         guard let item = displayedItem else { return }
+        reviewDecisionSerial &+= 1
+        let serial = reviewDecisionSerial
+        let sourceSequence = list.groups.map(\.primary)
+        let originalIndex = item.listIndex
+        let listGeneration = list.generation
+        let decision = ReviewDecision()
+        let advance = Prefs.reviewControlsVisible && Prefs.advanceAfterRating && stars > 0
         let urls = Culling.imageURLs(of: item.group)
         CullingUndo.perform(
             .rating, urls: urls, store: services.metadataStore, undoManager: windowUndoManager,
             compute: { Culling.ratingValues(stars, urls: urls, previous: $0) },
-            onChange: { [weak self] values in self?.cullingDidChange(values) }
+            onChange: { [weak self] values in self?.cullingDidChange(values) },
+            onFailure: { [weak self] error in self?.contentRoot.toast(CullingUndo.failureMessage(.rating, error: error)) },
+            onCommit: { [weak self] result, kind in
+                guard let self, !self.didTearDown, self.reviewDecisionSerial == serial,
+                      !self.contentRoot.isEditModeActive, self.list.generation == listGeneration else { return }
+                if kind == .forward {
+                    guard advance, self.services.metadataStore.persistenceStatus.isPersistent,
+                          self.displayedItem?.group.primary == item.group.primary,
+                          result.previous.contains(where: { result.new[$0.key]?.rating != $0.value.rating }) else { return }
+                    let surviving = Set(self.list.groups.map(\.primary))
+                    guard let next = sourceSequence.dropFirst(originalIndex + 1).first(where: { surviving.contains($0) }),
+                          let index = self.list.groups.firstIndex(where: { $0.primary == next }) else {
+                        self.contentRoot.toast("Review reached the last photo"); return
+                    }
+                    decision.didAdvance = true
+                    self.reviewAutomaticMove = true
+                    self.reviewJump(to: index)
+                    self.reviewAutomaticMove = false
+                } else if kind == .undo, decision.didAdvance,
+                          let index = self.list.groups.firstIndex(where: { $0.primary == item.group.primary }) {
+                    self.reviewDecisionSerial &+= 1
+                    self.reviewAutomaticMove = true; self.reviewJump(to: index); self.reviewAutomaticMove = false
+                }
+            }
         )
-        Culling.announce(Culling.ratingAnnouncement(stars))
     }
 
     /// Q / \ : flags or unflags the displayed item.
     func toggleFlagDisplayed() {
         guard let item = displayedItem else { return }
+        reviewDecisionSerial &+= 1
         let urls = Culling.imageURLs(of: item.group)
         let leaders = [item.group.primary]
-        let willFlag = !(cullingRecords[item.group.primary]?.flagged ?? false)
         CullingUndo.perform(
             .flag, urls: urls, store: services.metadataStore, undoManager: windowUndoManager,
             compute: { Culling.toggledFlagValues(urls: urls, leaders: leaders, previous: $0) },
-            onChange: { [weak self] values in self?.cullingDidChange(values) }
+            onChange: { [weak self] values in self?.cullingDidChange(values) },
+            onFailure: { [weak self] error in self?.contentRoot.toast(CullingUndo.failureMessage(.flag, error: error)) }
         )
-        Culling.announce(Culling.flagAnnouncement(willFlag))
     }
 
     /// Saved values landed (also after undo / redo): update the pill,
@@ -55,6 +84,7 @@ extension ViewerWindow {
         cullingReadGuard.noteWrite(values.keys)
         refreshPositionMarks(flash: flash)
         contentRoot.refreshFilmstripMarks()
+        refreshReviewRecord()
     }
 
     // MARK: Records
@@ -177,13 +207,14 @@ extension ViewerWindow {
     func refreshInspectorFileState() {
         let panel = contentRoot.inspectorPanel
         panel.updateAlsoLine(displayedItem.flatMap { PairCopy.alsoLine(for: $0.group, shownURL: $0.shownURL) })
-        guard isDisplayedEdited, let url = displayedItem?.group.primary,
+        guard let url = displayedItem?.group.primary,
               let store = services.backupStore else {
             panel.updateOriginalDate(nil)
             return
         }
         Task { [weak self] in
-            let original = await store.records(for: url).last?.createdAt
+            let availability = await store.availability(for: url)
+            let original = availability.canRevert ? availability.originalDate : nil
             guard let self, self.displayedItem?.group.primary == url else { return }
             self.contentRoot.inspectorPanel.updateOriginalDate(original)
         }
@@ -211,3 +242,6 @@ extension ViewerWindow {
         }
     }
 }
+
+@MainActor
+private final class ReviewDecision { var didAdvance = false }

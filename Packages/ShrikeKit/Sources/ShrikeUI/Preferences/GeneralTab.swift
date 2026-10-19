@@ -27,22 +27,19 @@ struct GeneralTab: View {
                 Toggle("Show hidden files", isOn: store.showHiddenFiles)
                     .accessibilityHint("When on, dotfiles and system folders appear in the browser.")
 
-                //
-                Toggle("Hide the toolbar when the pointer is still", isOn: store.viewerToolbarAutoHide)
-
                 // A JPEG+RAW shot is one item by default.
                 Picker("RAW+JPEG pairs", selection: store.pairRAW) {
                     Text("Show as one item").tag(true)
                     Text("Show both files").tag(false)
                 }
                 Text("Press \u{2325}R in the viewer to see the RAW file.")
-                    .font(.system(size: 11))
+                    .font(.system(size: ChromeTypography.size(11)))
                     .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                     .fixedSize(horizontal: false, vertical: true)
 
                 Toggle("Store ratings and flags with the file", isOn: store.metadataWriteFileAttributes)
                 Text("Keeps them when the file is moved or renamed in Finder.")
-                    .font(.system(size: 11))
+                    .font(.system(size: ChromeTypography.size(11)))
                     .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -53,7 +50,19 @@ struct GeneralTab: View {
                     }
                 }
             } header: {
-                Text("Browser").font(.headline)
+                Text("Browsing").font(.headline)
+            }
+
+            Section("Viewing") {
+                Toggle("Hide the toolbar when the pointer is still", isOn: store.viewerToolbarAutoHide)
+                Toggle("Background is always pure black", isOn: store.viewerBackgroundAlwaysBlack)
+                Toggle("Position overlay auto-hides after idle", isOn: store.viewerPositionOverlayAutoHides)
+                Toggle("Show Review Controls", isOn: store.reviewControlsVisible)
+                Toggle("Advance after rating", isOn: store.advanceAfterRating)
+                Picker("Text size", selection: store.largerChrome) {
+                    Text("Standard").tag(false)
+                    Text("Large").tag(true)
+                }
             }
 
             // "Mouse and Trackpad" group.
@@ -62,22 +71,13 @@ struct GeneralTab: View {
                     Text("Changes image").tag(true)
                     Text("Zooms").tag(false)
                 }
-                Text(Self.wheelHelp)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
-                    .frame(maxWidth: 320, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text("Hold ⌘ for the other wheel action. Pinch to zoom. Swipe to change photos.")
+                DisclosureGroup("More Trackpad Controls") { Text(Self.wheelHelp).fixedSize(horizontal: false, vertical: true) }
             } header: {
                 Text("Mouse and Trackpad").font(.headline)
             }
         }
         .formStyle(.grouped)
-        .safeAreaInset(edge: .bottom) {
-            PreferencesResetFooter(
-                label: "Reset General to Defaults",
-                tab: .general
-            )
-            .environmentObject(store)
-        }
+        .preferencesResetFooter("Reset General to Defaults", tab: .general)
     }
 }

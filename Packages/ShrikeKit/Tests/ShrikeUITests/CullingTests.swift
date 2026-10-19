@@ -27,6 +27,8 @@ final class CullingTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        CullingUndo.beforeWriteForTesting = nil
+        await CullingUndo.waitForPendingWrites()
         try? FileManager.default.removeItem(at: tempDir)
     }
 
@@ -43,6 +45,106 @@ final class CullingTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(10))
         }
         XCTFail("condition never held")
+    }
+
+    func testImmediateUndoAndRedoWaitForCommittedSnapshot() async throws {
+        let a = try file("immediate.jpg"), raw = try file("immediate.raw")
+        try await store.setRating(2, for: a)
+        try await store.setRating(3, for: raw)
+        let urls = [a, raw]
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        var changes = 0
+        undo.beginUndoGrouping()
+        CullingUndo.perform(.rating, urls: urls, store: store, undoManager: undo,
+            compute: { Culling.ratingValues(5, urls: urls, previous: $0) },
+            onChange: { _ in changes += 1 })
+        undo.endUndoGrouping()
+        undo.undo()
+        undo.redo()
+        await CullingUndo.waitForPendingWrites()
+        var records = await store.records(for: urls)
+        XCTAssertEqual(records[a]?.rating, 5)
+        XCTAssertEqual(records[raw]?.rating, 5)
+        XCTAssertEqual(changes, 3)
+        undo.undo()
+        await CullingUndo.waitForPendingWrites()
+        records = await store.records(for: urls)
+        XCTAssertEqual(records[a]?.rating, 2)
+        XCTAssertEqual(records[raw]?.rating, 3)
+    }
+
+    func testAlternatingFieldsAndImmediateUndoPreserveTheOtherField() async throws {
+        let a = try file("alternating.jpg")
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        func rate(_ value: Int) {
+            undo.beginUndoGrouping()
+            CullingUndo.perform(.rating, urls: [a], store: store, undoManager: undo,
+                compute: { Culling.ratingValues(value, urls: [a], previous: $0) }, onChange: { _ in })
+            undo.endUndoGrouping()
+        }
+        rate(1)
+        undo.beginUndoGrouping()
+        CullingUndo.perform(.flag, urls: [a], store: store, undoManager: undo,
+            compute: { Culling.toggledFlagValues(urls: [a], leaders: [a], previous: $0) }, onChange: { _ in })
+        undo.endUndoGrouping()
+        rate(5)
+        undo.undo()
+        await CullingUndo.waitForPendingWrites()
+        var record = await store.records(for: [a])[a]
+        XCTAssertEqual(record?.rating, 1)
+        XCTAssertEqual(record?.flagged, true)
+        undo.undo()
+        await CullingUndo.waitForPendingWrites()
+        record = await store.records(for: [a])[a]
+        XCTAssertEqual(record?.rating, 1)
+        XCTAssertEqual(record?.flagged, false)
+    }
+
+    func testFailedWriteDoesNotPublishSuccessOrRemoveUnrelatedUndo() async throws {
+        let a = try file("failure.jpg")
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        let unrelated = Counter()
+        undo.beginUndoGrouping()
+        undo.registerUndo(withTarget: unrelated) { _ in }
+        undo.setActionName("Unrelated")
+        undo.endUndoGrouping()
+        var changes = 0, failures = 0
+        CullingUndo.beforeWriteForTesting = { throw CocoaError(.fileWriteNoPermission) }
+        undo.beginUndoGrouping()
+        CullingUndo.perform(.rating, urls: [a], store: store, undoManager: undo,
+            compute: { Culling.ratingValues(5, urls: [a], previous: $0) },
+            onChange: { _ in changes += 1 }, onFailure: { _ in failures += 1 })
+        undo.endUndoGrouping()
+        await CullingUndo.waitForPendingWrites()
+        XCTAssertEqual(changes, 0)
+        XCTAssertEqual(failures, 1)
+        XCTAssertEqual(undo.undoActionName, "Unrelated")
+        let records = await store.records(for: [a])
+        XCTAssertEqual(records[a]?.rating, 0)
+    }
+
+    func testFailedInverseAndImmediateRedoDoNotInventAChange() async throws {
+        let a = try file("inverse.jpg")
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        var changes = 0, failures = 0
+        undo.beginUndoGrouping()
+        CullingUndo.perform(.rating, urls: [a], store: store, undoManager: undo,
+            compute: { Culling.ratingValues(4, urls: [a], previous: $0) },
+            onChange: { _ in changes += 1 }, onFailure: { _ in failures += 1 })
+        undo.endUndoGrouping()
+        await CullingUndo.waitForPendingWrites()
+        CullingUndo.beforeWriteForTesting = { throw CocoaError(.fileWriteNoPermission) }
+        undo.undo()
+        undo.redo()
+        await CullingUndo.waitForPendingWrites()
+        XCTAssertEqual(changes, 1)
+        XCTAssertEqual(failures, 1)
+        let records = await store.records(for: [a])
+        XCTAssertEqual(records[a]?.rating, 4)
     }
 
     func testImageMembersSkipSidecarsAndMovies() throws {

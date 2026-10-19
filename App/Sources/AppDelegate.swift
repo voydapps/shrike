@@ -11,7 +11,8 @@
 //    WindowCoordinator.open(_:).
 //  - Shows Welcome when nothing else is open: at launch, when a Dock click
 //    finds no windows, or from Window ▸ Welcome to Shrike.
-//  - Keeps the cold-launch signpost closing on the first Metal drawable.
+//  - Separates window readiness, placeholder presentation and real-photo
+//    presentation, with explicit empty/unavailable launch outcomes.
 //
 
 import AppKit
@@ -27,7 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launchSignpost: OSSignpostIntervalState
     private var willFinishSignpost: OSSignpostIntervalState?
     private var didFinishSignpost: OSSignpostIntervalState?
-    private var launchSignpostClosed = false
+    private var launchPresentation = LaunchPresentationState()
+    private var launchPhotoTimeout: Task<Void, Never>?
+    private var launchPresentationObservers: [any NSObjectProtocol] = []
     /// `NSApplication.run()` until `applicationWillFinishLaunching` (main.swift).
     static var appKitStartState: OSSignpostIntervalState?
     /// End of `applicationWillFinishLaunching` until the first open request
@@ -48,6 +51,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     init(launchSignpost: OSSignpostIntervalState) {
         self.launchSignpost = launchSignpost
         super.init()
+        // Install before queued opens replay: even a disk-warm first frame
+        // must not beat registration. Rendering posts only from the Metal
+        // presented-handler thread; hop explicitly to the main actor.
+        launchPresentationObservers.append(NotificationCenter.default.addObserver(
+            forName: Notification.Name("shrike.firstImagePresented"), object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let presentedUptime = notification.userInfo?["presentedUptime"] as? Double else { return }
+            Task { @MainActor [weak self] in self?.firstRealPhotoPresented(at: presentedUptime) }
+        })
+        launchPresentationObservers.append(NotificationCenter.default.addObserver(
+            forName: Notification.Name("shrike.firstPlaceholderPresented"), object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let presentedUptime = notification.userInfo?["presentedUptime"] as? Double else { return }
+            Task { @MainActor [weak self] in self?.firstPlaceholderPresented(at: presentedUptime) }
+        })
     }
 
     @available(*, unavailable)
@@ -98,12 +116,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.services = services
         ShrikeSignposts.launch.end("makeServices", servicesState)
 
-        coordinator.onWindowOpened = { [weak self] in self?.closeWelcome() }
+        coordinator.onWindowOpened = { [weak self] in
+            self?.recordWindowReady()
+            self?.closeWelcome()
+        }
         // A message with no Viewer or Browser in front (e.g. every opened
         // file was unreadable) shows on Welcome.
         coordinator.onMessage = { [weak self] message in self?.showWelcome(message: message) }
         // An open that produced no window leaves the app empty: show Welcome.
-        coordinator.onOpenSettled = { [weak self] in self?.showWelcomeIfIdle() }
+        coordinator.onOpenSettled = { [weak self] in
+            self?.showWelcomeIfIdle()
+            self?.settleLaunchWithoutPhotoIfAppropriate()
+        }
 
         // Replay files handed to us before services existed (Finder
         // double-click / `open` on a cold launch), then deliver every later
@@ -121,23 +145,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ShrikeSignposts.launch.end("didFinishLaunching", didFinishSignpost)
         }
 
-        // Close the cold-launch signpost on a real paint.
-        NotificationCenter.default.addObserver(
-            forName: .shrikeFirstMetalDrawable,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.closeLaunchSignpost()
-            }
-        }
-
-        // Safety: if no viewer ever opens, close the cold-launch signpost
-        // at the first runloop turn so the interval isn't open-ended.
-        // Requests AppKit delivers right after launch have arrived by now.
+        // Empty and folder-only launches have an explicit no-photo outcome.
+        // The next turn lets AppKit deliver immediate launch-open events; it
+        // NEVER manufactures a presented frame. Later user opens are ordinary
+        // navigation and cannot reopen the completed cold-launch interval.
         DispatchQueue.main.async { [weak self] in
-            self?.closeLaunchSignpost()
             self?.showWelcomeIfIdle()
+            self?.settleLaunchWithoutPhotoIfAppropriate()
+        }
+        // A corrupt/blocked first photo must not leave an infinite interval.
+        // Timeout is an unavailable outcome, never a photo-presentation pass.
+        if launchPresentation.outcome == nil {
+            launchPhotoTimeout = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .seconds(30)) }
+                catch { return }
+                guard let self, self.launchPresentation.presentationUnavailable() else { return }
+                ShrikeSignposts.launch.event("photoPresentationUnavailable", "reason=30s_timeout origin=main.swift")
+                self.endColdLaunch(outcome: "photo_unavailable")
+            }
         }
     }
 
@@ -147,11 +172,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appKitGapState = nil
     }
 
-    private func closeLaunchSignpost() {
-        guard !launchSignpostClosed else { return }
-        launchSignpostClosed = true
-        ShrikeSignposts.launch.event("firstDrawable")
-        ShrikeSignposts.launch.end("coldLaunch", launchSignpost)
+    private func recordWindowReady() {
+        guard launchPresentation.windowReady(at: ProcessInfo.processInfo.systemUptime) else { return }
+        // Construction/readiness, deliberately separate from pixels on glass.
+        ShrikeSignposts.launch.event("windowReady", "origin=main.swift endpoint=window_constructed")
+    }
+
+    private func firstPlaceholderPresented(at presentedUptime: Double) {
+        guard launchPresentation.placeholderPresented(at: presentedUptime) else { return }
+        ShrikeSignposts.launch.event("placeholderPresented", presentationMetadata(at: presentedUptime))
+    }
+
+    private func firstRealPhotoPresented(at presentedUptime: Double) {
+        guard launchPresentation.photoPresented(at: presentedUptime) else { return }
+        ShrikeSignposts.launch.event("realPhotoPresented", presentationMetadata(at: presentedUptime))
+        endColdLaunch(outcome: "real_photo_presented")
+    }
+
+    private func presentationMetadata(at presentedUptime: Double) -> String {
+        let lagMs = max(0, ProcessInfo.processInfo.systemUptime - presentedUptime) * 1_000
+        return "origin=main.swift endpoint=drawable_presented presentedUptime=\(presentedUptime) deliveryLagMs=\(lagMs)"
+    }
+
+    private func settleLaunchWithoutPhotoIfAppropriate() {
+        guard launchFinished,
+              launchPresentation.settleWithoutPhoto(
+                hasPendingOpen: coordinator.pendingOpens > 0 || openQueue.hasPending,
+                hasViewer: !coordinator.viewers.isEmpty
+              ) else { return }
+        ShrikeSignposts.launch.event("noPhoto", "origin=main.swift outcome=no_photo_requested")
+        endColdLaunch(outcome: "no_photo")
+    }
+
+    private func endColdLaunch(outcome: String) {
+        launchPhotoTimeout?.cancel()
+        launchPhotoTimeout = nil
+        // coldLaunch starts in main.swift, before NSApplication exists. This
+        // is a process-entry measurement, not the external `open` wall clock.
+        var metadata = "origin=main.swift outcome=\(outcome)"
+        if let presentedUptime = launchPresentation.realPhotoPresentedAt {
+            metadata += " " + presentationMetadata(at: presentedUptime)
+        }
+        ShrikeSignposts.launch.end("coldLaunch", launchSignpost, metadata)
     }
 
     /// Unsaved edits get the edit exit alert first; Cancel
@@ -210,6 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = welcome ?? makeWelcome()
         welcome = controller
         controller.show()
+        recordWindowReady()
         if let message { controller.showMessage(message) }
     }
 
@@ -250,12 +313,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferencesWindowController?.show()
         }
     }
-}
-
-// MARK: - First-drawable notification
-
-// Named notification so MetalImageView doesn't need a direct reference to
-// AppDelegate. Declared in the app target so ShrikeKit stays framework-only.
-public extension Notification.Name {
-    static let shrikeFirstMetalDrawable = Notification.Name("shrike.firstMetalDrawable")
 }

@@ -28,12 +28,25 @@
 
 import Foundation
 import GRDB
+import os
+
+public struct MetadataPersistenceStatus: Sendable {
+    public let isPersistent: Bool
+    public let primaryURL: URL?
+    public let errorDescription: String?
+}
+
+public struct MetadataRecoveryResult: Sendable {
+    public let metadataCount: Int
+    public let recentFolderCount: Int
+}
 
 // MARK: - Errors
 
 public enum MetadataStoreError: Error, Sendable {
     case urlNotFileScheme
     case contentHashUnavailable
+    case conflictingValuesForCanonicalPath
 }
 
 /// Rating and flag of one file, as the grid shows them.
@@ -46,6 +59,13 @@ public struct FileRecord: Sendable, Hashable {
         self.rating = rating
         self.flagged = flagged
     }
+}
+
+/// Actual records immediately before and after one committed field update.
+/// SQLite changes are atomic; file extended attributes are best-effort mirrors.
+public struct MetadataWriteResult: Sendable {
+    public let previous: [URL: FileRecord]
+    public let new: [URL: FileRecord]
 }
 
 /// Header values used for sorting, cached per file version.
@@ -82,7 +102,7 @@ public enum TransferMode: Sendable, Hashable {
 
 public actor MetadataStore {
 
-    private let writer: DatabaseQueue
+    private var writer: DatabaseQueue
     private let writeFileAttributes: @Sendable () -> Bool
 
     /// Rows per `IN (…)` query in batched reads.
@@ -90,9 +110,11 @@ public actor MetadataStore {
 
     /// False when this store lives somewhere that won't survive a relaunch
     /// (temp folder or memory fallback). The UI should warn once.
-    public nonisolated let isPersistent: Bool
+    private nonisolated let status: OSAllocatedUnfairLock<MetadataPersistenceStatus>
+    public nonisolated var isPersistent: Bool { persistenceStatus.isPersistent }
     /// Why the preferred database couldn't be opened, if it couldn't.
-    public nonisolated let openError: String?
+    public nonisolated var openError: String? { persistenceStatus.errorDescription }
+    public nonisolated var persistenceStatus: MetadataPersistenceStatus { status.withLock { $0 } }
 
     /// Opens (or creates) the SQLite database at `databaseURL`. Parent
     /// directory is created if missing — the caller typically passes a
@@ -101,7 +123,8 @@ public actor MetadataStore {
         databaseURL: URL,
         isPersistent: Bool = true,
         openError: String? = nil,
-        writeFileAttributes: @escaping @Sendable () -> Bool = { Prefs.metadataWriteFileAttributes }
+        writeFileAttributes: @escaping @Sendable () -> Bool = { Prefs.metadataWriteFileAttributes },
+        recoveryPrimaryURL: URL? = nil
     ) throws {
         let fm = FileManager.default
         let parent = databaseURL.deletingLastPathComponent()
@@ -110,8 +133,9 @@ public actor MetadataStore {
         var config = Configuration()
         config.foreignKeysEnabled = true
         self.writer = try DatabaseQueue(path: databaseURL.path, configuration: config)
-        self.isPersistent = isPersistent
-        self.openError = openError
+        self.status = OSAllocatedUnfairLock(initialState: MetadataPersistenceStatus(
+            isPersistent: isPersistent, primaryURL: recoveryPrimaryURL ?? (isPersistent ? databaseURL : nil),
+            errorDescription: openError))
         self.writeFileAttributes = writeFileAttributes
 
         try Self.runMigrations(on: self.writer)
@@ -120,13 +144,14 @@ public actor MetadataStore {
     /// In-memory store: nothing survives the process. Last-resort fallback.
     public init(
         inMemoryWithError openError: String?,
-        writeFileAttributes: @escaping @Sendable () -> Bool = { Prefs.metadataWriteFileAttributes }
+        writeFileAttributes: @escaping @Sendable () -> Bool = { Prefs.metadataWriteFileAttributes },
+        recoveryPrimaryURL: URL? = nil
     ) throws {
         var config = Configuration()
         config.foreignKeysEnabled = true
         self.writer = try DatabaseQueue(configuration: config)
-        self.isPersistent = false
-        self.openError = openError
+        self.status = OSAllocatedUnfairLock(initialState: MetadataPersistenceStatus(
+            isPersistent: false, primaryURL: recoveryPrimaryURL, errorDescription: openError))
         self.writeFileAttributes = writeFileAttributes
         try Self.runMigrations(on: self.writer)
     }
@@ -141,11 +166,64 @@ public actor MetadataStore {
             ShrikeSignposts.decode.event("metadataInitFailed", "\(reason)")
             if let fallback,
                let store = try? MetadataStore(databaseURL: fallback, isPersistent: false,
-                                              openError: reason) {
+                                              openError: reason, recoveryPrimaryURL: primary) {
                 return store
             }
             // In-memory DatabaseQueue creation only fails on OOM.
-            return try! MetadataStore(inMemoryWithError: reason)
+            return try! MetadataStore(inMemoryWithError: reason, recoveryPrimaryURL: primary)
+        }
+    }
+
+    /// Reconnect this same service object. The actor stays occupied while
+    /// both queues drain and the merge commits, so no session write can fall
+    /// between migration and reconnect. Newer timestamp wins, including
+    /// explicit zero/false; ties prefer this session. Recents keep max dates.
+    /// The fallback remains intact on every failure and is not deleted.
+    public func retryPersistentStore() throws -> MetadataRecoveryResult {
+        let prior = persistenceStatus
+        guard !prior.isPersistent else { return MetadataRecoveryResult(metadataCount: 0, recentFolderCount: 0) }
+        guard let primary = prior.primaryURL else { throw MetadataStoreError.urlNotFileScheme }
+        do {
+            try FileManager.default.createDirectory(at: primary.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let recovered = try DatabaseQueue(path: primary.path)
+            try Self.runMigrations(on: recovered)
+            let snapshot = try writer.read { db in
+                (try Row.fetchAll(db, sql: "SELECT * FROM file_metadata"),
+                 try Row.fetchAll(db, sql: "SELECT * FROM recent_folders"),
+                 try Row.fetchAll(db, sql: "SELECT * FROM header_cache"))
+            }
+            try recovered.write { db in
+                for row in snapshot.0 {
+                    try db.execute(sql: """
+                        INSERT INTO file_metadata (path,size,mtime,rating,flagged,updated_at) VALUES (?,?,?,?,?,?)
+                        ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime,
+                        rating=excluded.rating,flagged=excluded.flagged,updated_at=excluded.updated_at
+                        WHERE excluded.updated_at >= file_metadata.updated_at
+                        """, arguments: [row["path"] as String, row["size"] as Int64, row["mtime"] as Double,
+                                            row["rating"] as Int, row["flagged"] as Int, row["updated_at"] as Double])
+                }
+                for row in snapshot.1 {
+                    try db.execute(sql: """
+                        INSERT INTO recent_folders (path,last_opened) VALUES (?,?)
+                        ON CONFLICT(path) DO UPDATE SET last_opened=MAX(last_opened,excluded.last_opened)
+                        """, arguments: [row["path"] as String, row["last_opened"] as Double])
+                }
+                for row in snapshot.2 {
+                    try db.execute(sql: """
+                        INSERT INTO header_cache (path,mtime,captured,width,height) VALUES (?,?,?,?,?)
+                        ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime,captured=excluded.captured,
+                        width=excluded.width,height=excluded.height WHERE excluded.mtime >= header_cache.mtime
+                        """, arguments: [row["path"] as String, row["mtime"] as Double,
+                                            row["captured"] as Double?, row["width"] as Int?, row["height"] as Int?])
+                }
+            }
+            writer = recovered
+            status.withLock { $0 = MetadataPersistenceStatus(isPersistent: true, primaryURL: primary, errorDescription: nil) }
+            return MetadataRecoveryResult(metadataCount: snapshot.0.count, recentFolderCount: snapshot.1.count)
+        } catch {
+            status.withLock { $0 = MetadataPersistenceStatus(isPersistent: false, primaryURL: primary,
+                                                            errorDescription: error.localizedDescription) }
+            throw error
         }
     }
 
@@ -156,6 +234,13 @@ public actor MetadataStore {
     /// then to `FileRecord()` (0 stars, not flagged). Non-file URLs are
     /// left out. Never throws: a DB error reads as "no rows".
     public func records(for urls: [URL]) async -> [URL: FileRecord] {
+        (try? await recordsStrict(for: urls)) ?? Self.attributeRecords(for: urls)
+    }
+
+    /// A guaranteed database snapshot for Undo baselines. A missing row
+    /// imports valid file attributes as usual; a failed query throws instead
+    /// of inventing a default record. Non-file URLs are left out.
+    public func recordsStrict(for urls: [URL]) async throws -> [URL: FileRecord] {
         let fileURLs = urls.filter(\.isFileURL)
         var byKey: [String: [URL]] = [:]
         byKey.reserveCapacity(fileURLs.count)
@@ -163,7 +248,7 @@ public actor MetadataStore {
             byKey[key, default: []].append(url)
         }
         let keys = Array(byKey.keys)
-        let found: [String: FileRecord] = (try? await readOnlyAccess { db in
+        let found: [String: FileRecord] = try await readOnlyAccess { db in
             var out: [String: FileRecord] = [:]
             out.reserveCapacity(keys.count)
             var start = 0
@@ -180,7 +265,7 @@ public actor MetadataStore {
                 }
             }
             return out
-        }) ?? [:]
+        }
 
         var result: [URL: FileRecord] = [:]
         result.reserveCapacity(urls.count)
@@ -195,6 +280,15 @@ public actor MetadataStore {
             }
         }
         return result
+    }
+
+    private static func attributeRecords(for urls: [URL]) -> [URL: FileRecord] {
+        var records: [URL: FileRecord] = [:]
+        for url in urls where url.isFileURL {
+            records[url] = FileRecord(rating: FileAttributes.rating(at: url) ?? 0,
+                                      flagged: FileAttributes.flag(at: url) ?? false)
+        }
+        return records
     }
 
     // MARK: - Header cache (sorting)
@@ -316,6 +410,50 @@ public actor MetadataStore {
         if writeFileAttributes() {
             for url in urls { FileAttributes.setFlag(flagged, at: url) }
         }
+    }
+
+    /// Set or restore mixed ratings in one transaction, preserving flags.
+    @discardableResult
+    public func setRatings(_ values: [URL: Int]) async throws -> MetadataWriteResult {
+        let rows = try values.map { try metadataRow(for: $0.key, rating: max(0, min(5, $0.value))) }
+        return try await writeFieldRows(rows)
+    }
+
+    /// Set or restore mixed flags in one transaction, preserving ratings.
+    @discardableResult
+    public func setFlags(_ values: [URL: Bool]) async throws -> MetadataWriteResult {
+        let rows = try values.map { try metadataRow(for: $0.key, flagged: $0.value) }
+        return try await writeFieldRows(rows)
+    }
+
+    private func writeFieldRows(_ rows: [MetaRow]) async throws -> MetadataWriteResult {
+        // Aliases of the same canonical file must agree, regardless of
+        // dictionary iteration order. Validate before starting any writes.
+        var byPath: [String: MetaRow] = [:]
+        for row in rows {
+            if let prior = byPath[row.path],
+               prior.rating != row.rating || prior.flagged != row.flagged {
+                throw MetadataStoreError.conflictingValuesForCanonicalPath
+            }
+            byPath[row.path] = row
+        }
+        guard !rows.isEmpty else { return MetadataWriteResult(previous: [:], new: [:]) }
+        let uniqueRows = byPath.values.sorted { $0.path < $1.path }
+        let result = try await writer.write { db in
+            var previous: [URL: FileRecord] = [:]
+            for row in rows { previous[row.url] = try Self.record(for: row, in: db) }
+            for row in uniqueRows { try Self.upsertRow(row, in: db) }
+            var new: [URL: FileRecord] = [:]
+            for row in rows { new[row.url] = try Self.record(for: row, in: db) }
+            return MetadataWriteResult(previous: previous, new: new)
+        }
+        if writeFileAttributes() {
+            for row in rows {
+                if let rating = row.rating { FileAttributes.setRating(rating, at: row.url) }
+                if let flag = row.flagged { FileAttributes.setFlag(flag, at: row.url) }
+            }
+        }
+        return result
     }
 
     // MARK: - Tags (Finder)
@@ -481,6 +619,15 @@ public actor MetadataStore {
         try db.execute(
             sql: "UPDATE file_metadata SET \(sets.joined(separator: ", ")) WHERE path = ?",
             arguments: StatementArguments(args))
+    }
+
+    private static func record(for row: MetaRow, in db: Database) throws -> FileRecord {
+        if let stored = try Row.fetchOne(db, sql: "SELECT rating, flagged FROM file_metadata WHERE path = ?",
+                                         arguments: [row.path]) {
+            return FileRecord(rating: stored["rating"], flagged: (stored["flagged"] as Int) != 0)
+        }
+        return FileRecord(rating: FileAttributes.rating(at: row.url) ?? 0,
+                          flagged: FileAttributes.flag(at: row.url) ?? false)
     }
 
     // MARK: - Migrations

@@ -53,13 +53,14 @@ final class EditChromeTests: XCTestCase {
     // The toolbar shows Cancel, the five tools, Undo/Redo, Reset, Done (spec 26).
     func testEditToolbarItemsInOrder() {
         let c = EditToolbarController()
-        XCTAssertEqual(c.toolbar.identifier, "shrike.viewer.editToolbar")
+        XCTAssertTrue(c.toolbar.identifier.hasPrefix(EditToolbarController.toolbarIdentifier + "."))
+        XCTAssertFalse(c.toolbar.autosavesConfiguration)
         XCTAssertEqual(c.toolbar.displayMode, .iconOnly)
         XCTAssertFalse(c.toolbar.allowsUserCustomization)
         XCTAssertEqual(EditToolbarController.itemOrder, [
             EditToolbarController.ItemID.cancel, .flexibleSpace, EditToolbarController.ItemID.tools,
             EditToolbarController.ItemID.undoRedo, .flexibleSpace, EditToolbarController.ItemID.reset,
-            EditToolbarController.ItemID.done,
+            EditToolbarController.ItemID.saveCopy, EditToolbarController.ItemID.done,
         ], "Cancel · tools · Undo/Redo · Reset · Done (spec 26 §1.2)")
         let done = c.toolbar(c.toolbar, itemForItemIdentifier: EditToolbarController.ItemID.done,
                              willBeInsertedIntoToolbar: true)
@@ -76,7 +77,7 @@ final class EditChromeTests: XCTestCase {
         let before = viewer.toolbar
         let content = viewer.contentRootForTesting
         content.enterEditMode(image: SaveFlowTests.image(), url: nil, landOn: .crop)
-        XCTAssertEqual(viewer.toolbar?.identifier, EditToolbarController.toolbarIdentifier)
+        XCTAssertTrue(viewer.toolbar === viewer.contentRootForTesting.editToolbarController.toolbar)
         XCTAssertEqual(viewer.subtitle, "Editing")
         XCTAssertFalse(viewer.isDocumentEdited)
         XCTAssertNil(content.editCapsule.superview, "no capsule in a window")

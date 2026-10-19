@@ -101,6 +101,15 @@ public final class BrowserContentViewController: NSViewController {
         tableView.highlightedTableColumn = highlighted
     }
 
+    func refreshChromePreferences() {
+        tableView.rowHeight = ChromeTypography.targetHeight
+        if mode == .grid, let layout = collectionView.collectionViewLayout as? NSCollectionViewFlowLayout {
+            layout.itemSize = NSSize(width: thumbnailPixelSize, height: thumbnailPixelSize + (Prefs.largerChrome ? 48 : 40))
+            layout.invalidateLayout()
+        }
+        filterStrip.show(filter)
+    }
+
     /// Test seam: the list view.
     var tableViewForTesting: NSTableView { tableView }
     /// Which primaries still hold a kept size (list column) or sort value.
@@ -133,7 +142,10 @@ public final class BrowserContentViewController: NSViewController {
     /// nil when done or cancelled.
     var onSortProgress: ((String?) -> Void)?
     public var filter: BrowserFilter = .none {
-        didSet { applyFilterKeepingSelection() }
+        didSet {
+            filterStrip.show(filter)
+            applyFilterKeepingSelection()
+        }
     }
     public var thumbnailPixelSize: Int = Prefs.thumbnailSizePt {
         didSet {
@@ -174,8 +186,8 @@ public final class BrowserContentViewController: NSViewController {
     /// name capsule needs under it (4 pt gap + 18 pt capsule). Without it
     /// the name hung below the cell and the scroller cut it off.
     static let filmstripItemSize = NSSize(width: 120, height: 146)
-    /// The strip's height: one cell row, 8 pt above and below, and 16 pt
-    /// for a legacy (always visible) horizontal scroller.
+    /// Existing outer-height floor, retained for overlay-scroller appearance.
+    /// Legacy scrollers may need more space, derived from their native metrics.
     static let filmstripStripHeight: CGFloat = 8 + filmstripItemSize.height + 8 + 16
     /// The preview is decoded at most this big (the thumbnail cache).
     static let filmstripPreviewPixels = 1536
@@ -183,6 +195,9 @@ public final class BrowserContentViewController: NSViewController {
     private let listScrollView = NSScrollView()
     private let tableView = BrowserTableView()
     private let emptyStateView = BrowserEmptyState()
+    let filterStrip = BrowserFilterStrip(frame: .zero)
+    var onFilterSummaryChange: ((BrowserFilter) -> Void)?
+    var isHydratingMarks = false { didSet { updateEmptyState() } }
 
     // MARK: - Init
 
@@ -203,6 +218,10 @@ public final class BrowserContentViewController: NSViewController {
         configureCollectionView()
         configureTableView()
         configureEmptyState()
+        view.addSubview(filterStrip)
+        filterStrip.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([filterStrip.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor), filterStrip.leadingAnchor.constraint(equalTo: view.leadingAnchor), filterStrip.trailingAnchor.constraint(equalTo: view.trailingAnchor)])
+        filterStrip.onChange = { [weak self] value in self?.filter = value; self?.onFilterSummaryChange?(value) }
         layoutForMode()
     }
 
@@ -211,7 +230,7 @@ public final class BrowserContentViewController: NSViewController {
         layout.minimumInteritemSpacing = 12
         layout.minimumLineSpacing = 16
         layout.sectionInset = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        layout.itemSize = NSSize(width: thumbnailPixelSize, height: thumbnailPixelSize + 40)
+        layout.itemSize = NSSize(width: thumbnailPixelSize, height: thumbnailPixelSize + (Prefs.largerChrome ? 48 : 40))
         collectionView.collectionViewLayout = layout
 
         collectionView.backgroundColors = [.clear]
@@ -271,7 +290,7 @@ public final class BrowserContentViewController: NSViewController {
 
     private func configureTableView() {
         tableView.usesAlternatingRowBackgroundColors = true
-        tableView.rowHeight = 28
+        tableView.rowHeight = ChromeTypography.targetHeight
         tableView.allowsMultipleSelection = true
         tableView.dataSource = self
         tableView.delegate = self
@@ -400,6 +419,11 @@ public final class BrowserContentViewController: NSViewController {
     /// The list's columns start at their full widths, wider than most
     /// windows; once the list has its width they are fitted to it (the
     /// uniform autoresizing then keeps them fitted as the window changes).
+    override public func viewWillLayout() {
+        refreshFilmstripHeight()
+        super.viewWillLayout()
+    }
+
     override public func viewDidLayout() {
         super.viewDidLayout()
         fitListColumns()
@@ -428,7 +452,7 @@ public final class BrowserContentViewController: NSViewController {
     }
 
     /// The list's text font (every text cell).
-    static let listFont = NSFont.systemFont(ofSize: 13)
+    static let listFont = ChromeTypography.font(13)
     private var listColumnFitsApplied = false
 
     /// Dimensions and Modified were cut in the middle
@@ -494,6 +518,28 @@ public final class BrowserContentViewController: NSViewController {
     /// the scroll view itself, so it survives `removeFromSuperview`; left
     /// active, the grid kept the strip's 178 pt and the window shrank to
     /// fit it (580 pt tall in ⌘2, 202 pt after ⌘1).
+    private func filmstripFrameHeight() -> CGFloat {
+        let insets = (collectionView.collectionViewLayout as? NSCollectionViewFlowLayout)?.sectionInset
+            ?? NSEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
+        let contentHeight = Self.filmstripItemSize.height + insets.top + insets.bottom
+        let scrollerClass: AnyClass = gridScrollView.horizontalScroller.map { type(of: $0) } ?? NSScroller.self
+        func frameHeight(_ style: NSScroller.Style) -> CGFloat {
+            NSScrollView.frameSize(forContentSize: NSSize(width: 1, height: contentHeight),
+                horizontalScrollerClass: scrollerClass, verticalScrollerClass: nil,
+                borderType: gridScrollView.borderType,
+                controlSize: gridScrollView.horizontalScroller?.controlSize ?? .regular,
+                scrollerStyle: style).height
+        }
+        // Reserve native legacy capacity even while overlay scrollers show:
+        // AppKit retiles inside a live style setter, before a later layout pass.
+        return max(Self.filmstripStripHeight, ceil(frameHeight(gridScrollView.scrollerStyle)), ceil(frameHeight(.legacy)))
+    }
+    private func refreshFilmstripHeight() {
+        guard mode == .filmstrip, let constraint = filmstripStripHeightConstraint, constraint.isActive else { return }
+        let height = filmstripFrameHeight()
+        if abs(constraint.constant - height) > 0.01 { constraint.constant = height }
+    }
+
     private var filmstripStripHeightConstraint: NSLayoutConstraint?
 
     private func layoutForMode() {
@@ -516,7 +562,7 @@ public final class BrowserContentViewController: NSViewController {
                 case .grid:
                     layout.scrollDirection = .vertical
                     layout.sectionInset = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-                    layout.itemSize = NSSize(width: thumbnailPixelSize, height: thumbnailPixelSize + 40)
+                    layout.itemSize = NSSize(width: thumbnailPixelSize, height: thumbnailPixelSize + (Prefs.largerChrome ? 48 : 40))
                     gridScrollView.hasHorizontalScroller = false
                     gridScrollView.hasVerticalScroller = true
                 case .filmstrip:
@@ -542,11 +588,11 @@ public final class BrowserContentViewController: NSViewController {
             // Preview on top, one fixed-height strip below.
             filmstripPreview.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(filmstripPreview, positioned: .below, relativeTo: activeScroll)
-            let stripHeight = activeScroll.heightAnchor.constraint(equalToConstant: Self.filmstripStripHeight)
+            let stripHeight = activeScroll.heightAnchor.constraint(equalToConstant: filmstripFrameHeight())
             filmstripStripHeightConstraint = stripHeight
             NSLayoutConstraint.activate([
                 stripHeight,
-                filmstripPreview.topAnchor.constraint(equalTo: view.topAnchor),
+                filmstripPreview.topAnchor.constraint(equalTo: filterStrip.bottomAnchor),
                 filmstripPreview.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 filmstripPreview.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                 filmstripPreview.bottomAnchor.constraint(equalTo: activeScroll.topAnchor),
@@ -556,7 +602,7 @@ public final class BrowserContentViewController: NSViewController {
             ])
         } else {
             NSLayoutConstraint.activate([
-                activeScroll.topAnchor.constraint(equalTo: view.topAnchor),
+                activeScroll.topAnchor.constraint(equalTo: filterStrip.bottomAnchor),
                 activeScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
                 activeScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 activeScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -640,18 +686,18 @@ public final class BrowserContentViewController: NSViewController {
 
     /// Selects `urls` in the view on screen with `anchor` as the range
     /// anchor, and scrolls the first selected item into view.
-    private func restoreSelection(_ urls: [URL], anchor: URL?) {
+    private func restoreSelection(_ urls: [URL], anchor: URL?, scrollToFirst: Bool = true) {
         let groups = visibleItems.map(\.group)
         let indices = urls.compactMap { FolderScanner.index(of: $0, in: groups) }.sorted()
         let anchorIndex = anchor.flatMap { FolderScanner.index(of: $0, in: groups) }
             .flatMap { indices.contains($0) ? $0 : nil }
         // The new view gets its size first, so the scroll lands.
-        if !indices.isEmpty, view.window != nil { view.layoutSubtreeIfNeeded() }
+        if scrollToFirst, !indices.isEmpty, view.window != nil { view.layoutSubtreeIfNeeded() }
         switch mode {
         case .grid, .filmstrip:
             collectionView.selectionIndexPaths = Set(indices.map { IndexPath(item: $0, section: 0) })
             collectionView.restoreAnchor(anchorIndex.map { IndexPath(item: $0, section: 0) })
-            if let first = indices.first {
+            if scrollToFirst, let first = indices.first {
                 collectionView.scrollToItems(at: [IndexPath(item: first, section: 0)],
                                              scrollPosition: mode == .filmstrip ? .centeredHorizontally
                                                                                 : .centeredVertically)
@@ -666,7 +712,7 @@ public final class BrowserContentViewController: NSViewController {
             } else {
                 tableView.selectRowIndexes(IndexSet(indices), byExtendingSelection: false)
             }
-            if let first = indices.first { tableView.scrollRowToVisible(first) }
+            if scrollToFirst, let first = indices.first { tableView.scrollRowToVisible(first) }
         }
     }
 
@@ -683,6 +729,8 @@ public final class BrowserContentViewController: NSViewController {
         cullingChangedSinceListing = []
         tagsChangedSinceListing = []
         folderGoneState = nil
+        folderReadErrorState = nil
+        folderLoadingState = nil
         cancelSortRead()
         recomputeVisibleItems()
         if sort.key.needsReading, !allItems.isEmpty,
@@ -778,6 +826,14 @@ public final class BrowserContentViewController: NSViewController {
     /// Re-sorts, keeps the selection and scrolls its first item into view.
     private func resortKeepingSelection() {
         let selected = selectedItems.map(\.url)
+        let anchor = selectionAnchorURL
+        let keyRange = gridKeyRangeURLs
+        // Old indices refer to different files after filtering or sorting.
+        // Restore surviving URLs only; an empty result has no action target.
+        switch mode {
+        case .grid, .filmstrip: collectionView.selectionIndexPaths = []
+        case .list: tableView.deselectAll(nil)
+        }
         recomputeVisibleItems()
         // Only the automatic first photo is selected (nobody chose
         // anything yet): after the re-sort the first photo ON SCREEN is the
@@ -791,12 +847,25 @@ public final class BrowserContentViewController: NSViewController {
             }
             return
         }
-        guard !selected.isEmpty, select(urls: selected) else { return }
+        restoreSelection(selected, anchor: anchor, scrollToFirst: false)
+        if mode != .list, let keyRange {
+            let groups = visibleItems.map(\.group)
+            if let anchor = FolderScanner.index(of: keyRange.anchor, in: groups),
+               let lead = FolderScanner.index(of: keyRange.lead, in: groups),
+               collectionView.selectionIndexPaths.contains(IndexPath(item: anchor, section: 0)),
+               collectionView.selectionIndexPaths.contains(IndexPath(item: lead, section: 0)) {
+                collectionView.restoreAnchor(IndexPath(item: anchor, section: 0), lead: IndexPath(item: lead, section: 0))
+            }
+        }
+        carriedKeyRange = nil
+        notifySelection()
         keepSelectionInView()
     }
 
     /// "Folder gone": the listed folder was deleted, moved or its
     /// disk was disconnected. Cleared by the next `setItems`.
+    private var folderLoadingState: URL?
+    private var folderReadErrorState: (folder: URL, reason: String, retry: () -> Void)?
     private var folderGoneState: (folder: URL, action: () -> Void)?
 
     func showFolderGone(_ folder: URL, goToEnclosingFolder: @escaping () -> Void) {
@@ -806,6 +875,18 @@ public final class BrowserContentViewController: NSViewController {
         visibleItems = []
         folderGoneState = (folder, goToEnclosingFolder)
         refresh()
+        updateEmptyState()
+    }
+
+    func showFolderLoading(_ folder: URL) {
+        setItems([])
+        folderLoadingState = folder
+        updateEmptyState()
+    }
+
+    func showFolderReadError(_ folder: URL, reason: String, retry: @escaping () -> Void) {
+        setItems([])
+        folderReadErrorState = (folder, reason, retry)
         updateEmptyState()
     }
 
@@ -831,6 +912,7 @@ public final class BrowserContentViewController: NSViewController {
 
     /// "Clear Filter" in the empty result. The window owns the filter.
     var onClearFilter: (() -> Void)?
+    var onChooseAnotherFolder: (() -> Void)?
 
     /// Update a single item's mutable fields (rating / flag / tags) in place.
     /// Keeps selection and scroll position stable.
@@ -937,11 +1019,22 @@ public final class BrowserContentViewController: NSViewController {
     /// redraw only their cells, keeping selection.
     public func applyCulling(_ values: [URL: FileRecord]) {
         guard !values.isEmpty else { return }
+        // Even an equal confirmed write supersedes a held older hydrate.
         cullingChangedSinceListing.formUnion(values.keys)
+        var ratingChanged = false, flagChanged = false
         for i in allItems.indices {
             guard let record = values[allItems[i].url] else { continue }
+            ratingChanged = ratingChanged || allItems[i].rating != record.rating
+            flagChanged = flagChanged || allItems[i].isFlagged != record.flagged
             allItems[i].rating = record.rating
             allItems[i].isFlagged = record.flagged
+        }
+        guard ratingChanged || flagChanged else { return }
+        if (ratingChanged && (filter.minimumRating > 0 || filter.unratedOnly || appliedSort.key == .rating))
+            || (flagChanged && (filter.flaggedOnly || filter.unflaggedOnly)) {
+            firstOnOpenPending = false
+            resortKeepingSelection()
+            return
         }
         var changed: [Int] = []
         for i in visibleItems.indices {
@@ -958,10 +1051,19 @@ public final class BrowserContentViewController: NSViewController {
     public func applyTags(_ values: [URL: [FinderTag]]) {
         guard !values.isEmpty else { return }
         tagsChangedSinceListing.formUnion(values.keys)
+        var changedNames = false, changedTags = false
         for i in allItems.indices {
             guard let tags = values[allItems[i].url] else { continue }
+            changedNames = changedNames || allItems[i].tags != tags.map(\.name)
+            changedTags = changedTags || allItems[i].finderTags != tags
             allItems[i].finderTags = tags
             allItems[i].tags = tags.map(\.name)
+        }
+        guard changedNames || changedTags else { return }
+        if changedNames, !filter.tags.isEmpty {
+            firstOnOpenPending = false
+            resortKeepingSelection()
+            return
         }
         var changed: [Int] = []
         for i in visibleItems.indices {
@@ -1126,6 +1228,8 @@ public final class BrowserContentViewController: NSViewController {
     private(set) var reloadCount = 0
     /// Cells configured (each one asks for its thumbnail).
     private(set) var configureCount = 0
+    /// Nil in ordinary use: regression-owned observations allocate no production ledger.
+    var listMaterializationStatsForTesting: BrowserListMaterializationStats?
 
     private func refresh() {
         reloadCount += 1
@@ -1158,6 +1262,16 @@ public final class BrowserContentViewController: NSViewController {
                 action: gone.action
             )
             emptyStateView.isHidden = false
+        } else if let folder = folderLoadingState {
+            emptyStateView.configure(symbol: nil, title: "Opening “\(folder.lastPathComponent)”…",
+                                    subtitle: "", buttonTitle: nil, action: nil)
+            emptyStateView.isHidden = false
+        } else if let failure = folderReadErrorState {
+            emptyStateView.configure(symbol: "exclamationmark.triangle",
+                title: "Couldn't open “\(failure.folder.lastPathComponent)”.",
+                subtitle: failure.reason, buttonTitle: "Retry", action: failure.retry)
+            emptyStateView.setSecondary(onChooseAnotherFolder)
+            emptyStateView.isHidden = false
         } else if allItems.isEmpty {
             // Nothing here adds files,
             // so there is no drop hint and no button.
@@ -1171,10 +1285,15 @@ public final class BrowserContentViewController: NSViewController {
                 action: nil
             )
             emptyStateView.isHidden = false
+        } else if isHydratingMarks && filter.requiresMarkHydration && visibleItems.isEmpty {
+            emptyStateView.configure(title: "Loading ratings and tags…", subtitle: "")
+            emptyStateView.isHidden = false
         } else if visibleItems.isEmpty {
-            // No match for the filter.
-            emptyStateView.configure(symbol: nil, title: "No images match the filter.", subtitle: "",
-                                     buttonTitle: "Clear Filter",
+            let searching = !filter.searchTerm.isEmpty
+            let filtering = !filter.popoverPartIsEmpty
+            let actionTitle = searching ? (filtering ? "Clear Search and Filters" : "Clear Search") : "Clear Filters"
+            emptyStateView.configure(symbol: nil, title: "No Matching Photos", subtitle: searching && !filtering ? "No file names match ‘\(filter.searchTerm)’." : "No photos match these search and filter settings.",
+                                     buttonTitle: actionTitle,
                                      action: { [weak self] in self?.onClearFilter?() })
             emptyStateView.isHidden = false
         } else {
@@ -1282,7 +1401,7 @@ public final class BrowserContentViewController: NSViewController {
     public func applyThumbnailSize() {
         guard let layout = collectionView.collectionViewLayout as? NSCollectionViewFlowLayout else { return }
         if mode == .grid {
-            layout.itemSize = NSSize(width: thumbnailPixelSize, height: thumbnailPixelSize + 40)
+            layout.itemSize = NSSize(width: thumbnailPixelSize, height: thumbnailPixelSize + (Prefs.largerChrome ? 48 : 40))
             layout.invalidateLayout()
         }
         applyWheelStep()
@@ -1795,12 +1914,17 @@ extension BrowserContentViewController: NSTableViewDataSource, NSTableViewDelega
         visibleItems.count
     }
 
+    public func tableView(_ tableView: NSTableView, didAdd rowView: NSTableRowView, forRow row: Int) {
+        listMaterializationStatsForTesting?.record(rowView: rowView)
+    }
+
     public func tableView(_ tableView: NSTableView,
                           viewFor tableColumn: NSTableColumn?,
                           row: Int) -> NSView? {
         guard visibleItems.indices.contains(row),
               let column = tableColumn else { return nil }
         let item = visibleItems[row]
+        listMaterializationStatsForTesting?.recordCell()
         let cell = NSTableCellView()
         let text = NSTextField(labelWithString: "")
         text.font = Self.listFont
@@ -1810,6 +1934,7 @@ extension BrowserContentViewController: NSTableViewDataSource, NSTableViewDelega
 
         switch column.identifier.rawValue {
         case "col.thumb":
+            listMaterializationStatsForTesting?.recordThumbnail(for: item.url)
             let image = NSImageView()
             image.translatesAutoresizingMaskIntoConstraints = false
             image.imageScaling = .scaleProportionallyUpOrDown
@@ -1952,6 +2077,8 @@ final class BrowserEmptyState: NSView {
     private let subtitle = NSTextField(wrappingLabelWithString: "")
     private(set) lazy var button = NSButton(title: "", target: self, action: #selector(buttonPressed(_:)))
     private var action: (() -> Void)?
+    private var secondaryAction: (() -> Void)?
+    private lazy var secondary = NSButton(title: "Choose Another Folder…", target: self, action: #selector(secondaryPressed))
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1961,13 +2088,13 @@ final class BrowserEmptyState: NSView {
         title.alignment = .center
         title.textColor = .labelColor
         title.lineBreakMode = .byTruncatingMiddle
-        subtitle.font = .systemFont(ofSize: 13)
+        subtitle.font = ChromeTypography.font(13)
         subtitle.alignment = .center
         subtitle.textColor = .secondaryLabelColor
         subtitle.maximumNumberOfLines = 3
         button.controlSize = .regular
         button.bezelStyle = .push
-        let stack = NSStackView(views: [icon, title, subtitle, button])
+        let stack = NSStackView(views: [icon, title, subtitle, button, secondary])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 12
@@ -1991,6 +2118,7 @@ final class BrowserEmptyState: NSView {
 
     func configure(symbol: String?, title: String, subtitle: String,
                    buttonTitle: String?, action: (() -> Void)?) {
+        secondary.isHidden = true
         icon.image = symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
         icon.isHidden = icon.image == nil
         self.title.stringValue = title
@@ -2000,6 +2128,9 @@ final class BrowserEmptyState: NSView {
         button.isHidden = buttonTitle == nil
         self.action = action
     }
+
+    func setSecondary(_ action: (() -> Void)?) { secondaryAction = action; secondary.isHidden = action == nil }
+    @objc private func secondaryPressed() { secondaryAction?() }
 
     var titleText: String { title.stringValue }
     var subtitleText: String? { subtitle.isHidden ? nil : subtitle.stringValue }
@@ -2058,7 +2189,7 @@ extension BrowserContentViewController: NSMenuDelegate {
 /// The list's column header text: 12 pt semibold, `text.secondary` token
 /// (spec 27 P3-14; at least 4.5:1 on the header).
 final class ListHeaderCell: NSTableHeaderCell {
-    static let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    static let font = ChromeTypography.font(12, weight: .semibold)
 
     override init(textCell string: String) {
         super.init(textCell: string)
@@ -2079,4 +2210,20 @@ final class ListHeaderCell: NSTableHeaderCell {
 
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("programmatic only") }
+}
+
+/// Opt-in observations of real native row/cell work; semantic AX proxies are not views.
+/// Tests own this object. Its weak row ledger never retains a table or rendered row.
+@MainActor
+final class BrowserListMaterializationStats {
+    private let rows = NSHashTable<NSTableRowView>.weakObjects()
+    private(set) var rowViews = 0
+    private(set) var cells = 0
+    private(set) var thumbnailRequests = 0
+    private(set) var thumbnailURLs: Set<URL> = []
+    func record(rowView: NSTableRowView) {
+        if !rows.contains(rowView) { rows.add(rowView); rowViews += 1 }
+    }
+    func recordCell() { cells += 1 }
+    func recordThumbnail(for url: URL) { thumbnailRequests += 1; thumbnailURLs.insert(url) }
 }

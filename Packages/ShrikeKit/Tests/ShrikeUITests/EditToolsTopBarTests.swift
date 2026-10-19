@@ -17,6 +17,7 @@ import AppKit
 @MainActor
 final class EditToolsTopBarTests: XCTestCase {
 
+    private enum ReadinessError: Error { case timedOut }
     private var root: URL!
     private var store: BackupStore!
     private var savedPreset: ShortcutPreset = .macNative
@@ -35,15 +36,19 @@ final class EditToolsTopBarTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    private func makeViewer(size: NSSize = NSSize(width: 1280, height: 800)) -> ViewerWindow {
+    private func makeViewer(size: NSSize = NSSize(width: 1280, height: 800)) async throws -> ViewerWindow {
         let url = root.appendingPathComponent("p-\(UUID().uuidString.prefix(6)).jpg")
         XCTAssertTrue(RotateDirectionTests.writeQuadrantJPEG(url, orientation: .up))
         var services = ShrikeServices.makeDefault()
         services.backupStore = store
         let viewer = ViewerWindow(groups: [ImageGroup(primary: url)], startIndex: 0, services: services)
         viewer.setContentSize(size)
-        viewer.markDisplayedForTesting(0)
-        viewer.imageViewForTesting.image = RotateDirectionTests.quadrants()
+        do {
+            try await waitFor("accepted photo ready for editing") { viewer.canPerform(.editImage) }
+        } catch {
+            viewer.close()
+            throw error
+        }
         viewer.contentRootForTesting.animatesPanelFades = false
         return viewer
     }
@@ -52,18 +57,21 @@ final class EditToolsTopBarTests: XCTestCase {
         for _ in 0..<300 where !condition() {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertTrue(condition(), "timed out waiting for \(what)")
+        guard condition() else {
+            XCTFail("timed out waiting for \(what)")
+            throw ReadinessError.timedOut
+        }
     }
 
     // MARK: 1. Order and the picker
 
     func testV1_ItemOrderAndPickerSegments() throws {
-        XCTAssertEqual(EditToolbarController.itemOrder, [
+        let controller = EditToolbarController()
+        XCTAssertEqual(controller.toolbarDefaultItemIdentifiers(controller.toolbar), [
             EditToolbarController.ItemID.cancel, .flexibleSpace, EditToolbarController.ItemID.tools,
             EditToolbarController.ItemID.undoRedo, .flexibleSpace, EditToolbarController.ItemID.reset,
             EditToolbarController.ItemID.done,
         ])
-        let controller = EditToolbarController()
         let item = try XCTUnwrap(controller.toolbar(controller.toolbar,
                                                     itemForItemIdentifier: EditToolbarController.ItemID.tools,
                                                     willBeInsertedIntoToolbar: true))
@@ -99,7 +107,7 @@ final class EditToolsTopBarTests: XCTestCase {
     }
 
     func testV2_PressingCOnAViewerLightsCropAndKeepsThePhotoFrame() async throws {
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         viewer.dispatch(.openEditMode)
@@ -177,7 +185,7 @@ final class EditToolsTopBarTests: XCTestCase {
     }
 
     func testV15_TheEditButtonSaysWhyOnADecodeError() async throws {
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         let item = try XCTUnwrap(viewer.toolbarController?.item(ViewerWindowToolbar.ID.edit))
@@ -193,7 +201,7 @@ final class EditToolsTopBarTests: XCTestCase {
     /// On screen (2026-10-12): E on a broken photo entered edit mode over the PREVIOUS photo's
     /// pixels (the image view keeps them behind the error card) and could save them over the file.
     func testV15b_NoEditModeOnADecodeError() async throws {
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         content.setImage(RotateDirectionTests.quadrants(), index: 0, total: 1)
@@ -284,18 +292,20 @@ final class EditToolsTopBarTests: XCTestCase {
     func testV13_CapsuleOrderAndNoPanelOverlap() throws {
         let capsule = EditCapsuleView()
         let stack = try XCTUnwrap(capsule.allSubviewsForTesting.compactMap { $0 as? NSStackView }.first)
-        XCTAssertEqual(stack.arrangedSubviews.count, 6)
+        XCTAssertEqual(stack.arrangedSubviews.count, 7)
         XCTAssertTrue(stack.arrangedSubviews[0] === capsule.label)
         XCTAssertTrue(stack.arrangedSubviews[1] === capsule.cancelButton)
         XCTAssertTrue(stack.arrangedSubviews[2] === capsule.toolPicker)
         XCTAssertTrue(stack.arrangedSubviews[3] === capsule.undoRedo)
         XCTAssertTrue(stack.arrangedSubviews[4] === capsule.resetButton)
-        XCTAssertTrue(stack.arrangedSubviews[5] === capsule.doneButton)
+        XCTAssertTrue(stack.arrangedSubviews[5] === capsule.saveCopyButton)
+        XCTAssertTrue(capsule.saveCopyButton.isHidden, "Clean edit has no secondary action")
+        XCTAssertTrue(stack.arrangedSubviews[6] === capsule.doneButton)
         XCTAssertEqual(stack.spacing, 10)
     }
 
     func testV13_InFullScreenTheCapsuleNeverOverlapsThePanel() async throws {
-        let viewer = makeViewer(size: NSSize(width: 1440, height: 900))
+        let viewer = try await makeViewer(size: NSSize(width: 1440, height: 900))
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         content.windowMode = .fullscreen
@@ -313,7 +323,7 @@ final class EditToolsTopBarTests: XCTestCase {
     // MARK: 14. Every way in, and the tools through the Image menu
 
     func testV14_ImageMenuToolEntriesLandOnTheirTool() async throws {
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         let entries: [(ShrikeCommand, EditTool, Int)] = [
@@ -333,8 +343,8 @@ final class EditToolsTopBarTests: XCTestCase {
 
     // MARK: 15. The viewer context menu
 
-    func testV15_ContextMenuHasEditImageAfterRotateRight() throws {
-        let viewer = makeViewer()
+    func testV15_ContextMenuHasEditImageAfterRotateRight() async throws {
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         viewer.contextMenu.prepareForTesting()
         let menu = viewer.contextMenu.menu
@@ -348,7 +358,7 @@ final class EditToolsTopBarTests: XCTestCase {
     // MARK: 9. Shift-Command-E is free
 
     func testV9_ShiftCommandEDoesNothing() async throws {
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         let key = KeyEventSnapshot.from(KeyCharactersTests.key("e", keyCode: 14, [.command, .shift]), isKeyUp: false)
@@ -363,7 +373,7 @@ final class EditToolsTopBarTests: XCTestCase {
     // MARK: 16. Spec 26 §5: the photo's centre in edit mode
 
     func testV16_TheEditFitAreaIsCentredOnTheCanvasMinusThePanelColumn() async throws {
-        let viewer = makeViewer(size: NSSize(width: 1200, height: 800))
+        let viewer = try await makeViewer(size: NSSize(width: 1200, height: 800))
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         viewer.enterEditMode(landOn: nil)
@@ -386,16 +396,20 @@ final class EditToolsTopBarTests: XCTestCase {
     // MARK: 18. The viewer toolbar hidden: Edit still works
 
     func testV18_EditEntersWithTheViewerToolbarHidden() async throws {
-        let viewer = makeViewer()
+        let viewer = try await makeViewer()
         defer { viewer.close() }
         let content = viewer.contentRootForTesting
         viewer.toolbar?.isVisible = false
         for (name, enter) in [("E", { viewer.perform(.editImage) }), ("Edit button", { viewer.dispatch(.openEditMode) })] {
+            try await waitFor("accepted photo ready again") { viewer.canPerform(.editImage) }
             enter()
             try await waitFor("\(name) → edit mode") { content.isEditModeActive }
             XCTAssertTrue(viewer.toolbar === content.editToolbarController.toolbar, "\(name): the edit toolbar is installed")
             XCTAssertEqual(content.editToolbarController.toolPicker.selectedSegment, -1)
-            content.exitEditMode()
+            content.editToolbarController.doneButton.performClick(nil)
+            try await waitFor("clean Done finishes the edit session") {
+                !content.isEditModeActive && !content.editModeController.isActive
+            }
         }
     }
 
@@ -468,7 +482,7 @@ final class EditToolsTopBarTests: XCTestCase {
         let savedPref = Prefs.viewerInspectorVisibleWindowed
         Prefs.viewerInspectorVisibleWindowed = true
         defer { Prefs.viewerInspectorVisibleWindowed = savedPref }
-        let viewer = makeViewer(size: NSSize(width: 480, height: 400))
+        let viewer = try await makeViewer(size: NSSize(width: 480, height: 400))
         defer { viewer.close() }
         let split = try XCTUnwrap(viewer.splitController)
         XCTAssertTrue(split.isInspectorShown)

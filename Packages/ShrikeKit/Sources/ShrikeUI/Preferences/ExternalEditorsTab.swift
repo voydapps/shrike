@@ -164,7 +164,7 @@ struct ExternalEditorsTab: View {
                 if layout.showsEmptyState {
                     VStack(spacing: 10) {
                         Text(Self.emptyStateText(firstKey: model.keys(forSlot: 0)))
-                            .font(.system(size: 13))
+                            .font(.system(size: ChromeTypography.size(13)))
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .fixedSize(horizontal: false, vertical: true)
@@ -189,7 +189,7 @@ struct ExternalEditorsTab: View {
                     Text(Self.footer)
                     Text("Shrike doesn't keep originals for changes made in other apps.")
                 }
-                .font(.system(size: 12))
+                .font(.system(size: ChromeTypography.size(12)))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -218,11 +218,11 @@ struct ExternalEditorsTab: View {
             }
             .frame(width: Self.iconSize, height: Self.iconSize)
             Text(editor.displayName)
-                .font(.system(size: 13))
+                .font(.system(size: ChromeTypography.size(13)))
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 8)
             Text(model.keys(forSlot: slot))
-                .font(.system(size: 12))
+                .font(.system(size: ChromeTypography.size(12)))
                 .foregroundStyle(.secondary)
             Toggle("", isOn: Binding(
                 get: { editor.sendRAW },

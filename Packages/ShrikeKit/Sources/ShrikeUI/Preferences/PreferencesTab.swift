@@ -31,7 +31,7 @@ public enum PreferencesTab: String, CaseIterable, Identifiable, Sendable {
 
     /// Tab order.
     public static var allCases: [PreferencesTab] {
-        [.general, .editing, .shortcuts, .thumbnails, .performance, .externalEditors, .advanced]
+        [.general, .editing, .shortcuts, .thumbnails, .externalEditors, .advanced]
     }
 
     /// Title shown in the toolbar and used as the window title when active.
@@ -75,6 +75,12 @@ public enum PreferencesTab: String, CaseIterable, Identifiable, Sendable {
                 "shrike.input.scrollWheelNavigates",
                 "shrike.grouping.pairRAW",
                 "shrike.metadata.writeFileAttributes",
+                "shrike.viewer.toolbarAutoHide",
+                "shrike.viewer.backgroundAlwaysBlack",
+                "shrike.viewer.positionOverlayAutoHides",
+                "shrike.accessibility.largerChrome",
+                "shrike.review.controlsVisible",
+                "shrike.review.advanceAfterRating",
             ]
         case .editing:
             return [
@@ -99,8 +105,7 @@ public enum PreferencesTab: String, CaseIterable, Identifiable, Sendable {
             return ["shrike.editors.registry", "shrike.editors.slots"]
         case .advanced:
             return [
-                "shrike.viewer.backgroundAlwaysBlack",
-                "shrike.viewer.positionOverlayAutoHides",
+                "shrike.viewer.maxDisplayLongEdge",
             ]
         }
     }
@@ -115,7 +120,27 @@ public enum PreferencesTab: String, CaseIterable, Identifiable, Sendable {
         for key in resetKeys {
             defaults.removeObject(forKey: key)
         }
-        if resetKeys.contains("shrike.grouping.pairRAW") {
+        Self.notifyReset(removing: resetKeys)
+    }
+
+    /// UI-wide reset follows the same live-consumer notifications as per-tab
+    /// reset. Core Prefs.resetAll remains independent of AppKit/UI consumers.
+    @MainActor
+    public static func resetAllToDefaults() {
+        Prefs.resetAll()
+        notifyReset(removing: Prefs.allUserDefaultsKeys)
+    }
+
+    @MainActor
+    private static func notifyReset(removing keys: [String]) {
+        if keys.contains("shrike.thumbnails.sizePt") {
+            NotificationCenter.default.post(name: .shrikeThumbnailSizeChanged, object: nil)
+        }
+        if keys.contains("shrike.viewer.toolbarAutoHide") {
+            NotificationCenter.default.post(name: .shrikeToolbarAutoHideChanged, object: nil)
+        }
+        NotificationCenter.default.post(name: .shrikeChromePreferencesChanged, object: nil)
+        if keys.contains("shrike.grouping.pairRAW") {
             NotificationCenter.default.post(name: .shrikeGroupingDidChange, object: nil)
         }
     }
@@ -127,7 +152,7 @@ public enum PreferencesTab: String, CaseIterable, Identifiable, Sendable {
         guard let raw = Prefs.selectedPreferencesTabRaw,
               let tab = PreferencesTab(rawValue: raw)
         else { return .general }
-        return tab
+        return tab == .performance ? .advanced : tab
     }
 
     /// Persist the current selection so the window opens on the same tab

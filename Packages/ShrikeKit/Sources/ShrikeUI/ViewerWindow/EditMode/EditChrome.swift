@@ -16,8 +16,16 @@ struct EditChromeState: Equatable {
     var tool: EditTool? = nil
     var canUndo = false
     var canRedo = false
-    /// The recipe has operations (Reset enabled, "Unsaved changes").
+    /// Effective session content differs from entry ("Unsaved changes").
     var hasEdits = false
+    /// Valid focused or unapplied tool edits change the primary consequence, not recipe history.
+    var hasPendingToolEdits = false
+    var requiresCopy = false
+    var isSaving = false
+    var isTransitioning = false
+    var acceptsInput: Bool { !isSaving && !isTransitioning }
+    var savePolicy = "Changes will replace this file. An original backup is kept."
+    var primaryTitle: String { isSaving ? "Saving…" : (!(hasEdits || hasPendingToolEdits) ? "Done" : (requiresCopy ? "Save Copy…" : "Save Changes")) }
 
     /// Window subtitle in edit mode.
     var subtitle: String { hasEdits ? "Editing · Unsaved changes" : "Editing" }
@@ -31,6 +39,7 @@ enum EditChromeAction: Equatable {
     case redo
     case reset
     case done
+    case saveCopy
 }
 
 /// Tool picker order, symbols, names and key letters.
@@ -99,8 +108,8 @@ enum EditChromeTools {
 @MainActor
 final class EditToolPicker: NSControl {
 
-    static let segmentWidth: CGFloat = 32
-    static let height: CGFloat = 28
+    static var segmentWidth: CGFloat { ChromeTypography.targetHeight + 4 }
+    static var height: CGFloat { ChromeTypography.targetHeight }
     /// The active tool's platter. 0.2.10 audit item 4: at 0.30 the fill was
     /// 1.7:1 against the dark bar and read grey (WCAG 1.4.11 asks 3:1 for the
     /// state of a control). 0.62 is about 3.1:1 on (17,17,17); the ring is
@@ -345,13 +354,14 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         static let tools = NSToolbarItem.Identifier("shrike.edit.tools")
         static let undoRedo = NSToolbarItem.Identifier("shrike.edit.undoRedo")
         static let reset = NSToolbarItem.Identifier("shrike.edit.reset")
+        static let saveCopy = NSToolbarItem.Identifier("shrike.edit.saveCopy")
         static let done = NSToolbarItem.Identifier("shrike.edit.done")
     }
 
     /// Default item order, left to right.
     static let itemOrder: [NSToolbarItem.Identifier] = [
         ItemID.cancel, .flexibleSpace, ItemID.tools, ItemID.undoRedo,
-        .flexibleSpace, ItemID.reset, ItemID.done,
+        .flexibleSpace, ItemID.reset, ItemID.saveCopy, ItemID.done,
     ]
 
     /// Which items leave the bar first in a narrow window (spec 26 §1.4).
@@ -369,24 +379,33 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
     let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     let resetButton = NSButton(title: "Reset", target: nil, action: nil)
     let doneButton = NSButton(title: "Done", target: nil, action: nil)
+    let saveCopyButton = NSButton(title: "Save Copy…", target: nil, action: nil)
     let toolPicker = EditToolPicker()
     private(set) var toolItem: NSToolbarItem?
     private(set) var undoGroup: NSToolbarItemGroup?
+    private var doneItem: NSToolbarItem?
+    private var primaryTitleMinimumWidth: NSLayoutConstraint?
+    private var syncingSaveCopyItem = false
+    private var constructingToolbarItemDepth = 0
+    private var saveCopyMenuItem: NSMenuItem?
     private(set) var chromeState = EditChromeState()
 
     override init() {
-        toolbar = NSToolbar(identifier: Self.toolbarIdentifier)
+        // Native toolbars with the same identifier synchronize item insertions
+        // even without autosaving. Save actions belong to this edit session.
+        toolbar = NSToolbar(identifier: Self.toolbarIdentifier + "." + UUID().uuidString)
         super.init()
         toolbar.allowsUserCustomization = false
         toolbar.autosavesConfiguration = false
         toolbar.displayMode = .iconOnly
-        for button in [cancelButton, resetButton, doneButton] {
+        for button in [cancelButton, resetButton, saveCopyButton, doneButton] {
             button.bezelStyle = .push
             button.target = self
         }
         cancelButton.action = #selector(cancelClicked)
         resetButton.action = #selector(resetClicked)
         doneButton.action = #selector(doneClicked)
+        saveCopyButton.action = #selector(saveCopyClicked)
         // Return = Done; the key also gives the default button look.
         doneButton.keyEquivalent = "\r"
         // The same accent call as Apply and the capsule's Done, on every
@@ -405,7 +424,20 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
 
     func apply(_ newState: EditChromeState) {
         chromeState = newState
-        resetButton.isEnabled = newState.hasEdits
+        for control in [cancelButton, resetButton, saveCopyButton, doneButton] { control.isEnabled = newState.acceptsInput }
+        doneButton.setAccentTitle(newState.primaryTitle)
+        updatePrimaryTitleMinimumWidth()
+        doneButton.setAccessibilityLabel(newState.primaryTitle)
+        doneButton.toolTip = newState.savePolicy
+        doneItem?.label = newState.primaryTitle
+        doneItem?.paletteLabel = newState.primaryTitle
+        doneItem?.menuFormRepresentation?.title = newState.primaryTitle
+        doneItem?.menuFormRepresentation?.isEnabled = newState.acceptsInput
+        saveCopyButton.isHidden = newState.requiresCopy || !newState.hasEdits
+        syncSaveCopyParticipation()
+        saveCopyMenuItem?.isEnabled = newState.acceptsInput
+        toolPicker.isEnabled = newState.acceptsInput
+        resetButton.isEnabled = (newState.hasEdits || newState.canUndo) && newState.acceptsInput
         toolPicker.show(tool: newState.tool)
         if let menu = toolItem?.menuFormRepresentation?.submenu {
             for (i, entry) in menu.items.enumerated() {
@@ -414,35 +446,83 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
             }
         }
         if let menu = undoGroup?.menuFormRepresentation?.submenu, menu.items.count == 2 {
-            menu.items[0].isEnabled = newState.canUndo
-            menu.items[1].isEnabled = newState.canRedo
+            menu.items[0].isEnabled = newState.canUndo && newState.acceptsInput
+            menu.items[1].isEnabled = newState.canRedo && newState.acceptsInput
         }
-        resetMenuItem?.isEnabled = newState.hasEdits
+        resetMenuItem?.isEnabled = (newState.hasEdits || newState.canUndo) && newState.acceptsInput
         if let group = undoGroup, group.subitems.count == 2 {
-            group.subitems[0].isEnabled = newState.canUndo
-            group.subitems[1].isEnabled = newState.canRedo
+            group.subitems[0].isEnabled = newState.canUndo && newState.acceptsInput
+            group.subitems[1].isEnabled = newState.canRedo && newState.acceptsInput
+        }
+    }
+
+    /// AppKit's glass custom view can retain its first content-size constraint
+    /// after an attributed title changes. Supply the current native measurement
+    /// before the toolbar calculates item widths; height remains native.
+    private func updatePrimaryTitleMinimumWidth() {
+        let width = doneButton.intrinsicContentSize.width
+        guard width.isFinite, width > 0 else { return }
+        if let constraint = primaryTitleMinimumWidth {
+            if abs(constraint.constant - width) > 0.01 { constraint.constant = width }
+        } else {
+            let constraint = doneButton.widthAnchor.constraint(greaterThanOrEqualToConstant: width)
+            constraint.identifier = "shrike.edit.primaryTitleMinimumWidth"
+            constraint.isActive = true
+            primaryTitleMinimumWidth = constraint
+        }
+    }
+
+    /// Hide the native wrapper too, including its overflow entry, on macOS 14.
+    /// Delegate construction calls apply; keep that nested update idempotent.
+    private func syncSaveCopyParticipation() {
+        guard !syncingSaveCopyItem, constructingToolbarItemDepth == 0 else { return }
+        syncingSaveCopyItem = true
+        defer { syncingSaveCopyItem = false }
+        let items = toolbar.items
+        let index = items.firstIndex { $0.itemIdentifier == ItemID.saveCopy }
+        if chromeState.hasEdits && !chromeState.requiresCopy {
+            if index == nil, let primary = items.firstIndex(where: { $0.itemIdentifier == ItemID.done }) {
+                toolbar.insertItem(withItemIdentifier: ItemID.saveCopy, at: primary)
+            }
+        } else if let index {
+            toolbar.removeItem(at: index)
         }
     }
 
     // MARK: NSToolbarDelegate
 
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { Self.itemOrder }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        Self.itemOrder.filter { $0 != ItemID.saveCopy || (chromeState.hasEdits && !chromeState.requiresCopy) }
+    }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { Self.itemOrder }
 
     func toolbar(_ toolbar: NSToolbar,
                  itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        // AppKit may still own an uncommitted insertion during this callback.
+        // Read/render state here; only an external apply reconciles membership.
+        constructingToolbarItemDepth += 1
+        defer { constructingToolbarItemDepth -= 1 }
         switch itemIdentifier {
         case ItemID.cancel:
             return viewItem(itemIdentifier, cancelButton, label: "Cancel", menuTitle: "Cancel", action: #selector(cancelClicked))
         case ItemID.reset:
             let item = viewItem(itemIdentifier, resetButton, label: "Reset", menuTitle: "Reset All Edits", action: #selector(resetClicked))
             resetMenuItem = item.menuFormRepresentation
-            resetMenuItem?.isEnabled = chromeState.hasEdits
+            resetMenuItem?.isEnabled = chromeState.hasEdits || chromeState.canUndo
+            return item
+        case ItemID.saveCopy:
+            let item = viewItem(itemIdentifier, saveCopyButton, label: "Save Copy…", menuTitle: "Save Copy…", action: #selector(saveCopyClicked))
+            saveCopyMenuItem = item.menuFormRepresentation
+            saveCopyMenuItem?.isEnabled = chromeState.acceptsInput
             return item
         case ItemID.done:
             // The button carries the accent fill itself (`useAccentFill`).
-            return viewItem(itemIdentifier, doneButton, label: "Done", menuTitle: "Done", action: #selector(doneClicked))
+            let item = viewItem(itemIdentifier, doneButton, label: chromeState.primaryTitle,
+                                menuTitle: chromeState.primaryTitle, action: #selector(doneClicked))
+            doneItem = item
+            apply(chromeState)
+            return item
         case ItemID.tools:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = toolPicker
@@ -521,6 +601,7 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
     @objc private func cancelClicked() { onAction?(.cancel) }
     @objc private func resetClicked() { onAction?(.reset) }
     @objc private func doneClicked() { onAction?(.done) }
+    @objc private func saveCopyClicked() { onAction?(.saveCopy) }
 
     @objc private func undoRedoPicked(_ sender: Any?) {
         guard let group = undoGroup else { return }
@@ -548,6 +629,7 @@ final class EditCapsuleView: HUDSurfaceView {
     let undoRedo = NSSegmentedControl()
     let resetButton = NSButton(title: "Reset", target: nil, action: nil)
     let doneButton = NSButton(title: "Done", target: nil, action: nil)
+    let saveCopyButton = NSButton(title: "Save Copy…", target: nil, action: nil)
     private(set) var chromeState = EditChromeState()
 
     init() {
@@ -566,15 +648,16 @@ final class EditCapsuleView: HUDSurfaceView {
     required init?(coder: NSCoder) { fatalError("programmatic only") }
 
     private func build() {
-        label.font = .systemFont(ofSize: 11)
+        label.font = ChromeTypography.font(11)
         label.textColor = .secondaryLabelColor
-        for button in [cancelButton, resetButton, doneButton] {
+        for button in [cancelButton, resetButton, saveCopyButton, doneButton] {
             button.bezelStyle = .push
             button.target = self
         }
         cancelButton.action = #selector(cancelClicked)
         resetButton.action = #selector(resetClicked)
         doneButton.action = #selector(doneClicked)
+        saveCopyButton.action = #selector(saveCopyClicked)
         // Done is the default button (accent fill on 14/15;
         // Return clicks it once, so the edit keymap never sees Return).
         doneButton.keyEquivalent = "\r"
@@ -596,7 +679,7 @@ final class EditCapsuleView: HUDSurfaceView {
 
         toolPicker.onPick = { [weak self] tool in self?.onAction?(.selectTool(tool)) }
 
-        let stack = NSStackView(views: [label, cancelButton, toolPicker, undoRedo, resetButton, doneButton])
+        let stack = NSStackView(views: [label, cancelButton, toolPicker, undoRedo, resetButton, saveCopyButton, doneButton])
         stack.orientation = .horizontal
         stack.spacing = 10
         stack.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 6, right: 8)
@@ -620,16 +703,23 @@ final class EditCapsuleView: HUDSurfaceView {
 
     func apply(_ newState: EditChromeState) {
         chromeState = newState
+        doneButton.setAccessibilityLabel(newState.primaryTitle)
+        doneButton.toolTip = newState.savePolicy
+        saveCopyButton.isHidden = newState.requiresCopy || !newState.hasEdits
+        for control in [cancelButton, resetButton, saveCopyButton, doneButton] { control.isEnabled = newState.acceptsInput }
+        doneButton.setAccentTitle(newState.primaryTitle)
+        toolPicker.isEnabled = newState.acceptsInput
         label.stringValue = newState.subtitle
-        resetButton.isEnabled = newState.hasEdits
-        undoRedo.setEnabled(newState.canUndo, forSegment: 0)
-        undoRedo.setEnabled(newState.canRedo, forSegment: 1)
+        resetButton.isEnabled = (newState.hasEdits || newState.canUndo) && newState.acceptsInput
+        undoRedo.setEnabled(newState.canUndo && newState.acceptsInput, forSegment: 0)
+        undoRedo.setEnabled(newState.canRedo && newState.acceptsInput, forSegment: 1)
         toolPicker.show(tool: newState.tool)
     }
 
     @objc private func cancelClicked() { onAction?(.cancel) }
     @objc private func resetClicked() { onAction?(.reset) }
     @objc private func doneClicked() { onAction?(.done) }
+    @objc private func saveCopyClicked() { onAction?(.saveCopy) }
 
     @objc private func undoRedoPicked() {
         onAction?(undoRedo.selectedSegment == 1 ? .redo : .undo)

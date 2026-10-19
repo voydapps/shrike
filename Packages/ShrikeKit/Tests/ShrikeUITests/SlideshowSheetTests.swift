@@ -36,11 +36,26 @@ final class SlideshowSheetTests: XCTestCase {
     // Spec 25 §9.
     func testDefaultRadioFollowsTheSelectionCount() {
         let settings = SlideshowSettings.fromPrefs()
-        for (selected, selectedOn) in [(0, false), (1, false), (2, true), (12, true)] {
+        for (selected, selectedOn, title) in [(0, false, "0 selected photos"),
+                                            (1, false, "1 selected photo"),
+                                            (2, true, "2 selected photos"),
+                                            (12, true, "12 selected photos")] {
             let scope = SlideshowScope(allCount: 25, folderName: "F", selectedCount: selected)
             let sheet = SlideshowSheet.makeForTesting(scope: scope, settings: settings) { _ in }
             XCTAssertEqual(sheet.selectedRadioForTesting.state == .on, selectedOn, "\(selected) selected")
             XCTAssertEqual(sheet.allRadioForTesting.state == .on, !selectedOn, "\(selected) selected")
+            XCTAssertEqual(sheet.selectedRadioForTesting.title, title)
+            XCTAssertEqual(sheet.allRadioForTesting.title, "All 25 visible photos in ‘F’")
+        }
+        for (count, title) in [(0, "All 0 visible photos in ‘F’"),
+                               (1, "All 1 visible photo in ‘F’"),
+                               (2, "All 2 visible photos in ‘F’")] {
+            let scope = SlideshowScope(allCount: count, folderName: "F", selectedCount: 0)
+            let sheet = SlideshowSheet.makeForTesting(scope: scope, settings: settings) { _ in }
+            XCTAssertEqual(sheet.allRadioForTesting.title, title)
+            XCTAssertEqual(sheet.selectedRadioForTesting.title, "0 selected photos")
+            XCTAssertEqual(sheet.allRadioForTesting.state, .on)
+            XCTAssertEqual(sheet.selectedRadioForTesting.state, .off)
         }
     }
 

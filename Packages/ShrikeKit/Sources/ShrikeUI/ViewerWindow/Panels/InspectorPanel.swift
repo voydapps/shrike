@@ -120,7 +120,7 @@ final class InspectorPanel: HUDSurfaceView {
         headerRow.translatesAutoresizingMaskIntoConstraints = false
         headerRow.appearance = NSAppearance(named: .darkAqua)
         addSubview(headerRow)
-        headerTitle.font = .systemFont(ofSize: 13, weight: .semibold)
+        headerTitle.font = ChromeTypography.font(13, weight: .semibold)
         headerTitle.textColor = .secondaryLabelColor
         headerTitle.translatesAutoresizingMaskIntoConstraints = false
         headerTitle.setAccessibilityRole(.staticText)
@@ -257,7 +257,8 @@ final class InspectorPanel: HUDSurfaceView {
     /// When the displayed file has a Shrike edit: the date of the kept
     /// original ("Original kept since 25 Sep 2026"); nil hides the row.
     func updateOriginalDate(_ date: Date?) {
-        viewModel.originalKeptSince = date.map { InspectorRows.originalKept(since: $0) }
+        viewModel.originalAvailable = date != nil
+        viewModel.originalKeptSince = date.map { "Original backup available · " + InspectorRows.originalKept(since: $0) } ?? "Original backup unavailable"
     }
 
     private var infoTask: Task<Void, Never>?
@@ -303,6 +304,7 @@ final class InspectorViewModel: ObservableObject {
     @Published var alsoLine: String?
     @Published var facts = InspectorFacts()
     @Published var marks = PillMarks()
+    @Published var originalAvailable = false
     @Published var originalKeptSince: String?
     @Published var histogram = HistogramDisplayState()
     /// The one histogram setting (⌃H / View menu / toolbar): off hides this
@@ -385,13 +387,14 @@ struct InspectorContent: View {
                 if model.url != nil {
                     cullingSection
                 }
-                if model.marks.edited, let since = model.originalKeptSince {
+                if let since = model.originalKeptSince {
                     VStack(alignment: .leading, spacing: 6) {
                         header("Edits")
                         Text(since)
                             .font(.system(size: InspectorStyle.smallFontSize))
                             .foregroundStyle(.secondary)
                         Button("Revert to Original…") { model.actions.revert() }
+                            .disabled(!model.originalAvailable)
                             .controlSize(.small)
                     }
                 }

@@ -32,8 +32,8 @@ final class FileVersionStep {
 
 /// Copy for
 enum SaveCopy {
-    static func saved(_ name: String) -> String { "Saved “\(name)”. The original is kept." }
-    static func savedCopy(_ name: String) -> String { "Saved a copy as “\(name)”." }
+    static func saved(_ name: String) -> String { "Saved ‘\(name)’. Original backup available." }
+    static func savedCopy(_ name: String) -> String { "Saved copy ‘\(name)’. Original unchanged." }
     static func saveUndone(_ name: String) -> String { "Save undone. “\(name)” is back to how it was." }
     static func reverted(_ name: String) -> String { "Reverted “\(name)” to the original." }
     static func revertUndone(_ name: String) -> String { "“\(name)” is back to how it was before the revert." }
@@ -47,7 +47,7 @@ enum SaveCopy {
             return "It couldn't keep a copy of the original. There isn't enough space on “\(volume)”. "
                 + "Free up space, or use Save As."
         }
-        return "It couldn't keep a copy of the original. Use Save As."
+        return "Shrike couldn't keep an original backup, so this file was not changed. Save a copy to keep your edits."
     }
 
     /// A4.
@@ -85,24 +85,25 @@ extension ViewerWindow {
     /// saved, or Don't Save. False on Cancel or a failed save.
     func resolveUnsavedEdits(reason: EditExitReason) async -> Bool {
         let editor = contentRoot.editModeController
+        guard !didTearDown else { return false }
         guard editor.isActive else { return true }
+        guard !editor.isTransitioning, !editor.isSaving else { return false }
         if isVisible { makeKeyAndOrderFront(nil) }
-        let previous = editor.onExitOutcome
+        var departure: EditModeController.DepartureToken?
         let outcome = await withCheckedContinuation { (continuation: CheckedContinuation<EditExitOutcome, Never>) in
-            var resumed = false
-            editor.onExitOutcome = { outcome in
-                guard !resumed else { return }
-                resumed = true
+            editor.attemptExit(reason: reason) { outcome in
                 continuation.resume(returning: outcome)
             }
-            editor.attemptExit(reason: reason)
+            departure = editor.departureToken
         }
-        editor.onExitOutcome = previous
         switch outcome {
         case .exited: return true
         case .cancelled: return false
-        case .needsSave: return await saveEditedFile(asPanel: false) && !editor.isActive
-        case .needsSaveAs: return await saveEditedFile(asPanel: true) && !editor.isActive
+        case .needsSave, .needsSaveAs:
+            guard let departure else { return false }
+            let saved = await saveEditedFile(asPanel: outcome == .needsSaveAs, departure: departure) && !editor.isActive
+            if !saved { await editor.restoreCancelledDeparture(for: departure) }
+            return saved
         }
     }
 
@@ -114,12 +115,15 @@ extension ViewerWindow {
             body()
             return
         }
-        guard editExitTask == nil else { return }
+        guard editExitTask == nil, !contentRoot.editModeController.isTransitioning else { return }
+        let source = contentRoot.editModeController.sourceURL
         editExitTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let mayGoOn = await self.resolveUnsavedEdits(reason: reason)
             self.editExitTask = nil
-            if mayGoOn { body() }
+            if mayGoOn, !Task.isCancelled, !self.didTearDown,
+               !self.contentRoot.editModeController.isActive,
+               self.displayedItem?.group.primary == source { body() }
         }
     }
 
@@ -148,37 +152,89 @@ extension ViewerWindow {
 
     // MARK: - Save
 
-    /// ⌘S (`asPanel == false`) or ⇧⌘S. Returns true when the file was
-    /// written; edit mode is then closed.
+    /// ⌘S (`asPanel == false`) or ⇧⌘S. True authorizes completion of the
+    /// originating edit session. False can also mean an old export committed
+    /// after its UI ownership ended; it must not resume another photo's UI.
     @discardableResult
-    func saveEditedFile(asPanel: Bool) async -> Bool {
+    func saveEditedFile(asPanel: Bool, departure: EditModeController.DepartureToken? = nil) async -> Bool {
         let ctrl = contentRoot.editModeController
-        guard ctrl.isActive, let recipe = ctrl.recipe, let source = ctrl.sourceURL else { return false }
+        guard ctrl.isActive, !ctrl.isSaving, ctrl.acceptsDepartureSave(departure), let recipe = ctrl.recipe, let source = ctrl.sourceURL,
+              let item = displayedItem else { return false }
+        guard acceptsEditSave(recipe: recipe, source: source, item: item) else { return false }
+        guard await ctrl.prepareForSave(allowDecision: ctrl.isAwaitingDepartureSave),
+              acceptsEditSave(recipe: recipe, source: source, item: item),
+              !ctrl.isSaving, ctrl.acceptsDepartureSave(departure) else { return false }
+        guard ctrl.handOffDepartureToSave(departure) else { return false }
+        ctrl.setSaving(true)
+        defer { ctrl.finishSaving(for: recipe, departure: departure) }
+        let operations = await recipe.snapshot()
+        guard acceptsEditSave(recipe: recipe, source: source, item: item) else { return false }
+        if !asPanel, operations.isEmpty { ctrl.finalizeExit(); return true }
+        let capability = await Task.detached(priority: .userInitiated) {
+            ImageExporter.capability(for: source, operations: operations)
+        }.value
         let decision = await Task.detached(priority: .userInitiated) { SaveTarget.evaluate(source) }.value
-        if !asPanel, case .inPlace(let format) = decision {
+        guard acceptsEditSave(recipe: recipe, source: source, item: item) else { return false }
+        if !asPanel, !capability.requiresCopy, case .inPlace(let format) = decision {
             if await recipe.operations.isEmpty {
                 ctrl.finalizeExit()
                 return true
             }
-            return await saveInPlace(recipe: recipe, source: source, format: format)
+            return await saveInPlace(recipe: recipe, source: source, item: item, format: format)
         }
         let suggested = SaveTarget.saveAsURL(for: source, decision: decision)
         guard let (destination, format) = await askSaveAsDestination(
-            suggested: suggested, format: decision.format, message: decision.reason?.message(for: source)
+            suggested: suggested, format: decision.format, message: [decision.reason?.message(for: source), capability.conversionDisclosure].compactMap { $0 }.joined(separator: "\n")
         ) else { return false }
-        return await saveCopy(recipe: recipe, source: source, to: destination, format: format)
+        guard !Self.sameFile(source, destination) else {
+            contentRoot.toast(ToastContent("Choose a different file name to keep the original.", kind: .error))
+            return false
+        }
+        return await saveCopy(recipe: recipe, source: source, item: item, to: destination, format: format)
+    }
+
+    /// Pure ownership check, also safe AFTER a legitimate disk commit. It
+    /// deliberately compares accepted source identity rather than file mtime.
+    private func ownsEditSave(recipe: EditRecipe, source: URL, item: DisplayedItem) -> Bool {
+        let controller = contentRoot.editModeController
+        guard !didTearDown, navCoalescer.isIdle, controller.isActive,
+              controller.recipe === recipe, controller.sourceURL == source,
+              let current = displayedItem, current.group.primary == item.group.primary else { return false }
+        return editSourceMatchesDisplayed(source, item: current)
+    }
+
+    private func acceptsEditSave(recipe: EditRecipe, source: URL, item: DisplayedItem) -> Bool {
+        let controller = contentRoot.editModeController
+        guard !didTearDown, navCoalescer.isIdle, controller.isActive,
+              controller.recipe === recipe, controller.sourceURL == source,
+              editSourceMatchesDisplayed(source, item: item) else {
+            if !didTearDown {
+                contentRoot.toast(ToastContent("The displayed photo no longer matches this edit. Your edits are still open; no file was changed.", kind: .error))
+            }
+            return false
+        }
+        return true
+    }
+
+    fileprivate static func sameFile(_ a: URL, _ b: URL) -> Bool {
+        if a.standardizedFileURL.resolvingSymlinksInPath() == b.standardizedFileURL.resolvingSymlinksInPath() { return true }
+        guard let av = try? a.resourceValues(forKeys: [.fileResourceIdentifierKey]),
+              let bv = try? b.resourceValues(forKeys: [.fileResourceIdentifierKey]),
+              let ai = av.fileResourceIdentifier as? NSObject, let bi = bv.fileResourceIdentifier as? NSObject else { return false }
+        return ai.isEqual(bi)
     }
 
     private func exporter() -> ImageExporter? {
         guard let store = services.backupStore else { return nil }
-        return ImageExporter(backupStore: store, metadataStore: services.metadataStore)
+        return ImageExporter(backupStore: store, metadataStore: services.metadataStore, checkpoint: exportCheckpointForTesting)
     }
 
     private static func quality(for format: ExportFormat) -> Double {
         Double(format == .heic ? Prefs.editHEICQualityDefault : Prefs.editJPEGQualityDefault) / 100
     }
 
-    private func saveInPlace(recipe: EditRecipe, source: URL, format: ExportFormat) async -> Bool {
+    private func saveInPlace(recipe: EditRecipe, source: URL, item: DisplayedItem, format: ExportFormat) async -> Bool {
+        guard acceptsEditSave(recipe: recipe, source: source, item: item) else { return false }
         let name = source.lastPathComponent
         guard let exporter = exporter() else {
             contentRoot.toast(ToastContent(SaveCopy.saveFailed(name), kind: .error))
@@ -191,6 +247,9 @@ extension ViewerWindow {
                 quality: Self.quality(for: format),
                 preserveEXIF: Prefs.editPreserveEXIFOnSave, stripGPS: Prefs.editStripGPSOnSave
             )
+            // The exporter may have committed A after its viewer moved to B.
+            // That is a disk success, but does not authorize B UI or navigation.
+            guard ownsEditSave(recipe: recipe, source: source, item: item) else { return false }
             contentRoot.editModeController.finalizeExit(keepDisplay: true)
             didChangeFileOnDisk(source, fit: true)
             if let record {
@@ -202,13 +261,22 @@ extension ViewerWindow {
             }
             return true
         } catch ExportError.backupFailed(let underlying) {
-            _ = await presentFileAlert(
+            guard ownsEditSave(recipe: recipe, source: source, item: item) else { return false }
+            let answer = await presentFileAlert(
                 message: SaveCopy.backupFailedTitle(name),
-                information: SaveCopy.backupFailedMessage(volume: SaveCopy.volumeName(inBackupError: underlying)),
-                buttons: [ShrikeAlert.Button("OK", role: .default)]
+                information: "Shrike couldn't keep an original backup, so this file was not changed.",
+                buttons: [ShrikeAlert.Button("Save Copy…", role: .default), ShrikeAlert.Button("Cancel", role: .cancel)]
             )
+            if answer == 0 {
+                let suggested = SaveTarget.saveAsURL(for: source, decision: SaveTarget.evaluate(source))
+                if let (destination, copyFormat) = await askSaveAsDestination(suggested: suggested, format: format, message: "The original will not be changed."), !Self.sameFile(source, destination) {
+                    return await saveCopy(recipe: recipe, source: source, item: item, to: destination, format: copyFormat)
+                }
+            }
+            _ = underlying
             return false
         } catch {
+            guard ownsEditSave(recipe: recipe, source: source, item: item) else { return false }
             contentRoot.toast(ToastContent(SaveCopy.saveFailed(name), kind: .error))
             return false
         }
@@ -216,7 +284,8 @@ extension ViewerWindow {
 
     /// Save As: the viewer stays on the original; a copy in the same
     /// folder joins the list next to it, and the toast's Show jumps there.
-    private func saveCopy(recipe: EditRecipe, source: URL, to destination: URL, format: ExportFormat) async -> Bool {
+    private func saveCopy(recipe: EditRecipe, source: URL, item: DisplayedItem, to destination: URL, format: ExportFormat) async -> Bool {
+        guard acceptsEditSave(recipe: recipe, source: source, item: item) else { return false }
         guard let exporter = exporter() else {
             contentRoot.toast(ToastContent(SaveCopy.saveFailed(destination.lastPathComponent), kind: .error))
             return false
@@ -229,6 +298,7 @@ extension ViewerWindow {
                 preserveEXIF: Prefs.editPreserveEXIFOnSave, stripGPS: Prefs.editStripGPSOnSave
             )
         } catch ExportError.backupFailed(let underlying) {
+            guard ownsEditSave(recipe: recipe, source: source, item: item) else { return false }
             _ = await presentFileAlert(
                 message: SaveCopy.backupFailedTitle(destination.lastPathComponent),
                 information: SaveCopy.backupFailedMessage(volume: SaveCopy.volumeName(inBackupError: underlying)),
@@ -236,9 +306,11 @@ extension ViewerWindow {
             )
             return false
         } catch {
+            guard ownsEditSave(recipe: recipe, source: source, item: item) else { return false }
             contentRoot.toast(ToastContent(SaveCopy.saveFailed(destination.lastPathComponent), kind: .error))
             return false
         }
+        guard ownsEditSave(recipe: recipe, source: source, item: item) else { return false }
         contentRoot.editModeController.finalizeExit()
         if list.index(of: destination) != nil {
             didChangeFileOnDisk(destination, fit: false)
@@ -259,6 +331,9 @@ extension ViewerWindow {
     /// The Save panel with its accessory; returns the chosen URL and
     /// format. Tests answer through `savePanelResponderForTesting`.
     func askSaveAsDestination(suggested: URL, format: ExportFormat, message: String?) async -> (URL, ExportFormat)? {
+        if let responder = savePanelAsyncResponderForTesting {
+            return await responder(suggested, message).map { ($0, format) }
+        }
         if let responder = savePanelResponderForTesting {
             return responder(suggested, message).map { ($0, format) }
         }
@@ -268,6 +343,9 @@ extension ViewerWindow {
         panel.nameFieldStringValue = suggested.lastPathComponent
         let accessory = SaveAsAccessory(message: message, format: format, panel: panel)
         panel.accessoryView = accessory
+        let validation = CopyDestinationValidation(source: contentRoot.editModeController.sourceURL)
+        panel.delegate = validation
+        defer { withExtendedLifetime(validation) {} }
         let response = await panel.beginSheetModal(for: self)
         guard response == .OK, let url = panel.url else { return nil }
         return (url, accessory.format)
@@ -282,7 +360,11 @@ extension ViewerWindow {
         let url = item.group.primary
         let name = item.group.displayName
         Task { @MainActor [weak self] in
-            guard let original = await store.records(for: url).last, let self else { return }
+            let availability = await store.availability(for: url)
+            guard let self, !self.didTearDown, self.displayedItem?.group.primary == url else { return }
+            guard availability.canRevert, let original = availability.originalRecord else {
+                self.contentRoot.toast(ToastContent("Original backup unavailable", kind: .error)); self.refreshInspectorFileState(); return
+            }
             let choice = await self.presentFileAlert(
                 message: SaveCopy.revertTitle(name),
                 information: SaveCopy.revertMessage(original.createdAt),
@@ -392,5 +474,16 @@ extension ViewerWindow {
             self.contentRoot.refreshFilmstripMarks()
             self.backupStateGeneration &+= 1
         }
+    }
+}
+
+@MainActor
+private final class CopyDestinationValidation: NSObject, NSOpenSavePanelDelegate {
+    let source: URL?
+    init(source: URL?) { self.source = source }
+    func panel(_ sender: Any, validate url: URL) throws {
+        guard let source, ViewerWindow.sameFile(source, url) else { return }
+        throw NSError(domain: "app.shrike.SaveCopy", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Choose a different file name to keep the original."])
     }
 }

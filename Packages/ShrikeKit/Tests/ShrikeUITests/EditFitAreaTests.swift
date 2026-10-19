@@ -76,6 +76,7 @@ final class EditFitAreaTests: XCTestCase {
         let content = viewer.contentRootForTesting
         try await waitUntil("photo") {
             content.imageView.image != nil && !content.imageView.isCurrentImagePlaceholder
+                && viewer.canPerform(.editImage)
         }
         content.layoutSubtreeIfNeeded()
         return viewer
@@ -84,6 +85,8 @@ final class EditFitAreaTests: XCTestCase {
     private func edit(_ viewer: ViewerWindow) async {
         viewer.enterEditMode(landOn: .crop)
         await viewer.waitForEditLoad()
+        XCTAssertTrue(viewer.contentRootForTesting.isEditModeActive, "edit shell entered before measuring geometry")
+        XCTAssertTrue(viewer.contentRootForTesting.editModeController.isActive, "edit image finished loading")
         viewer.contentRootForTesting.layoutSubtreeIfNeeded()
     }
 

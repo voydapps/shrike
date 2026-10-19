@@ -26,17 +26,67 @@ public enum ShrikeDataPaths {
         NSClassFromString("XCTestCase") != nil
         || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
-    /// Per-process root used instead of `~/Library` under tests:
-    /// `$TMPDIR/shrike-tests-<pid>/`. Roots left by earlier test runs
-    /// (their process has exited) are deleted the first time this is read.
+    /// An explicit private base for test storage. Foundation's temporary
+    /// directory on macOS need not follow TMPDIR. This override is ignored
+    /// outside tests and must name an existing absolute directory.
+    public static let testTemporaryDirectoryEnvironmentKey = "SHRIKE_TEST_TEMP_DIRECTORY"
+
+    /// Per-process root used instead of `~/Library` under tests. With an
+    /// explicit override, both storage and stale-root cleanup stay inside
+    /// that base; otherwise the existing Foundation temporary base is used.
     public static let testRoot: URL = {
-        let tmp = FileManager.default.temporaryDirectory
+        let tmp: URL
+        do {
+            tmp = try resolveTestTemporaryBase(
+                isRunningTests: isRunningTests,
+                override: ProcessInfo.processInfo.environment[testTemporaryDirectoryEnvironmentKey],
+                defaultDirectory: FileManager.default.temporaryDirectory,
+                validateDirectory: validatedTestTemporaryDirectory)
+        } catch {
+            // A bad explicit isolation request must never fall back to the
+            // shared temporary directory or enumerate its stale test roots.
+            preconditionFailure("ShrikeDataPaths: invalid SHRIKE_TEST_TEMP_DIRECTORY")
+        }
         if isRunningTests { removeStaleTestRoots(in: tmp) }
         return tmp.appendingPathComponent(
             "\(testRootPrefix)\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
     }()
 
     static let testRootPrefix = "shrike-tests-"
+
+    enum TestTemporaryDirectoryError: Error, Equatable {
+        case invalidAbsolutePath
+        case notExistingDirectory
+    }
+
+    /// Selection is independently testable without consulting either the
+    /// shared temporary directory or user data. Validation only runs for a
+    /// syntactically valid, explicitly supplied test override.
+    static func resolveTestTemporaryBase(
+        isRunningTests: Bool, override: String?, defaultDirectory: URL,
+        validateDirectory: (URL) throws -> URL
+    ) throws -> URL {
+        guard isRunningTests, let override else { return defaultDirectory }
+        guard override.hasPrefix("/"), !override.hasPrefix("//"), !override.contains("\0") else {
+            throw TestTemporaryDirectoryError.invalidAbsolutePath
+        }
+        let requested = URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL
+        guard requested.path != "/" else { throw TestTemporaryDirectoryError.invalidAbsolutePath }
+        return try validateDirectory(requested)
+    }
+
+    static func validatedTestTemporaryDirectory(_ requested: URL) throws -> URL {
+        guard requested.isFileURL else { throw TestTemporaryDirectoryError.invalidAbsolutePath }
+        let canonical = requested.resolvingSymlinksInPath().standardizedFileURL
+        guard canonical.isFileURL, canonical.path != "/" else {
+            throw TestTemporaryDirectoryError.invalidAbsolutePath
+        }
+        guard let values = try? canonical.resourceValues(forKeys: [.isDirectoryKey]),
+              values.isDirectory == true else {
+            throw TestTemporaryDirectoryError.notExistingDirectory
+        }
+        return canonical
+    }
 
     /// `~/Library/Application Support`, or `<testRoot>/Application Support`
     /// under tests.
@@ -59,15 +109,35 @@ public enum ShrikeDataPaths {
         cachesBase.appendingPathComponent(bundleFolderName, isDirectory: true)
     }
 
+    /// Temporary storage used when the primary database or cache cannot open.
+    /// Test fallbacks stay private and outside the primary storage subtrees,
+    /// so an obstructed Application Support or Caches path cannot block them.
+    public static var fallbackDirectory: URL {
+        fallbackDirectory(isRunningTests: isRunningTests, testRoot: testRoot,
+                          temporaryDirectory: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true))
+    }
+
+    static func fallbackDirectory(isRunningTests: Bool, testRoot: URL, temporaryDirectory: URL) -> URL {
+        isRunningTests ? testRoot.appendingPathComponent("Fallback", isDirectory: true) : temporaryDirectory
+    }
+
     /// Deletes `shrike-tests-<pid>` folders whose process no longer runs.
-    private static func removeStaleTestRoots(in tmp: URL) {
+    static func removeStaleTestRoots(
+        in tmp: URL,
+        currentProcessIdentifier: Int32 = ProcessInfo.processInfo.processIdentifier,
+        isProcessRunning: (Int32) -> Bool = { pid in
+            !(kill(pid, 0) == -1 && errno == ESRCH)
+        }
+    ) {
         let fm = FileManager.default
-        let me = ProcessInfo.processInfo.processIdentifier
         guard let names = try? fm.contentsOfDirectory(atPath: tmp.path) else { return }
         for name in names where name.hasPrefix(testRootPrefix) {
-            guard let pid = Int32(name.dropFirst(testRootPrefix.count)), pid != me,
-                  kill(pid, 0) == -1, errno == ESRCH else { continue }
-            try? fm.removeItem(at: tmp.appendingPathComponent(name, isDirectory: true))
+            guard let pid = Int32(name.dropFirst(testRootPrefix.count)), pid > 0,
+                  pid != currentProcessIdentifier, !isProcessRunning(pid) else { continue }
+            let candidate = tmp.appendingPathComponent(name, isDirectory: true)
+            guard let values = try? candidate.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            try? fm.removeItem(at: candidate)
         }
     }
 

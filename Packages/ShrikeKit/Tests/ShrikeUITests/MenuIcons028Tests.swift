@@ -28,6 +28,9 @@ final class MenuIcons028Tests: XCTestCase {
         for entry in ShrikeMainMenu.menuIconTable {
             XCTAssertNotNil(NSImage(systemSymbolName: entry.symbol, accessibilityDescription: nil), entry.symbol)
         }
+        for entry in ShrikeMainMenu.menuSelectorIconTable {
+            XCTAssertNotNil(NSImage(systemSymbolName: entry.symbol, accessibilityDescription: nil), entry.symbol)
+        }
         for entry in ShrikeMainMenu.menuHolderIconTable {
             XCTAssertNotNil(NSImage(systemSymbolName: entry.symbol, accessibilityDescription: nil), entry.symbol)
         }
@@ -117,5 +120,12 @@ final class MenuIcons028Tests: XCTestCase {
         let sidebar = try XCTUnwrap(bar.items(for: .toggleSidebar).first)
         sidebar.title = "Show Sidebar"
         XCTAssertNotNil(sidebar.image, "the icon stays when the title flips")
+        let review = try XCTUnwrap(bar.allItems.first { $0.action == #selector(ViewerWindow.toggleReviewControls(_:)) })
+        review.title = "Hide Review Controls"
+        bar.applyAllIconsForTesting()
+        XCTAssertNotNil(review.image, "selector-only Review keeps its icon after a dynamic title update")
+        let view = try XCTUnwrap(bar.menu.items.first { $0.submenu?.title == "View" }?.submenu)
+        let compare = try XCTUnwrap(view.items.first { $0.submenu?.title == "Compare" })
+        XCTAssertNotNil(compare.image, "the Compare submenu holder shares the menu's icon policy")
     }
 }

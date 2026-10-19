@@ -90,13 +90,14 @@ public final class BatchModel: ObservableObject {
     public struct SkippedRow: Hashable, Sendable {
         public let name: String
         public let reason: String
+        public let source: URL
     }
 
     // MARK: Copy (new lines marked)
 
     public enum Copy {
         public static let defaultOutputFolderName = "Shrike Export"
-        public static let inPlaceRotate = "In place — originals are kept (Settings ▸ Editing)"
+        public static let inPlaceRotate = "Changes original files in place; recovery data is kept when available"
         public static let inPlace = "In place"
         public static let nameClash = "Name already used"
         /// The queue is empty.
@@ -111,12 +112,12 @@ public final class BatchModel: ObservableObject {
 
         public static func images(_ n: Int) -> String { n == 1 ? "1 image" : "\(n) images" }
         public static func title(_ n: Int) -> String { "Batch — \(images(n))" }
-        public static func runButton(_ n: Int) -> String { n == 1 ? "Run 1 Image" : "Run \(n) Images" }
+        public static func runButton(_ n: Int) -> String { n == 1 ? "Run 1 Photo" : "Run \(n) Photos" }
         public static func andMore(_ n: Int) -> String { "and \(n) more" }
         public static func unknownToken(_ token: String) -> String { "Unknown token {\(token)}." }
         public static func progress(_ done: Int, _ total: Int) -> String { "\(done) of \(total)" }
         public static func stopAlertInfo(_ done: Int, _ total: Int) -> String {
-            "\(done) of \(images(total)) are done."
+            "Completed: \(done) of \(images(total)). Completed changes are kept; remaining work stops after safe changes."
         }
     }
 
@@ -139,6 +140,7 @@ public final class BatchModel: ObservableObject {
     @Published public private(set) var templateError: String?
     /// True once the preview for the current form has arrived.
     @Published public private(set) var isPreviewCurrent = false
+    @Published public private(set) var conversionDisclosures: [String] = []
 
     @Published public private(set) var presets: [BatchPreset] = BatchPresetStore.builtIns
     @Published public private(set) var phase: Phase = .form
@@ -152,6 +154,7 @@ public final class BatchModel: ObservableObject {
     @Published public private(set) var result: BatchResult?
     @Published public private(set) var summary = ""
     @Published public private(set) var skippedRows: [SkippedRow] = []
+    @Published public var selectedResultRows: Set<URL> = []
 
     // MARK: Collaborators
 
@@ -174,6 +177,63 @@ public final class BatchModel: ObservableObject {
     private var startedAt: ContinuousClock.Instant?
     /// The plan of the last run (Done view actions, undo name).
     public private(set) var lastPlan: BatchPlan?
+    private var remainingPlan: BatchPlan?
+    @Published public private(set) var reviewingRemaining = false
+    @Published public private(set) var scopeDescription = "Custom selection"
+    public func setOriginScope(_ text: String) { scopeDescription = text }
+    public var consequenceSummary: String {
+        let recovery = "You can undo completed changes while their recovery data is available."
+        if reviewingRemaining, let plan = makePlan().plan {
+            let n = plan.items.count
+            let lead = "Resume unfinished steps for \(n) \(n == 1 ? "photo" : "photos"). Completed steps will not run again."
+            switch plan.output {
+            case .folder(let destination):
+                let originals = n == 1 ? "Original stays unchanged." : "Originals stay unchanged."
+                return lead + " Destination: \(UserFacingPath.string(destination)). " + originals
+                    + (plan.onConflict == .replace ? " Existing outputs: Replace." : "")
+            case .inPlace:
+                return lead + " Remaining work may change \(n == 1 ? "the original file" : "original files"). " + recovery
+            }
+        }
+        let n = queue.count
+        if form.writesToFolder {
+            let destination = outputFolder.map(UserFacingPath.string) ?? "the output folder"
+            let originals = n == 1 ? "Original stays unchanged." : "Originals stay unchanged."
+            return "Create \(n) new \(n == 1 ? "photo" : "photos") in \(destination). " + originals
+                + (form.onConflict == .replace ? " Existing outputs: Replace." : "")
+        }
+        let verb = form.rotateOn && form.renameOn ? "Rotate and rename" : (form.rotateOn ? "Rotate" : "Rename")
+        return "\(verb) \(n) original \(n == 1 ? "file" : "files"). " + recovery
+    }
+    public var resultTitle: String {
+        guard let result else { return "Batch" }
+        if result.cancelledCount > 0 { return "Batch stopped" }
+        if result.doneCount == 0 && result.failedCount > 0 { return "No photos completed" }
+        return skippedRows.isEmpty ? "Batch complete" : "Batch finished with issues"
+    }
+    public var canReviewRemaining: Bool {
+        guard let result, let lastPlan else { return false }
+        return !runner.retryPlan(for: result, original: lastPlan, selectedIntentionalSkips: selectedResultRows).items.isEmpty
+    }
+    public func reviewRemaining(includingIntentionalSkips: Bool = false) {
+        guard phase == .done, let result, let lastPlan else { return }
+        let plan = runner.retryPlan(for: result, original: lastPlan, includingIntentionalSkips: includingIntentionalSkips, selectedIntentionalSkips: selectedResultRows)
+        guard !plan.items.isEmpty else { return }
+        remainingPlan = plan; reviewingRemaining = true
+        queue = plan.items.map { BatchQueueItem(group: $0) }; selection = []
+        phase = .form; schedulePreview()
+    }
+    public func cancelRemainingReview() {
+        guard reviewingRemaining else { return }
+        queue = lastPlan?.items.map { BatchQueueItem(group: $0) } ?? []
+        remainingPlan = nil; reviewingRemaining = false; phase = .done
+    }
+    public func runAnother() {
+        guard phase == .done || reviewingRemaining else { return }
+        remainingPlan = nil; reviewingRemaining = false
+        queue = []; selection = []; result = nil; skippedRows = []; summary = ""; phase = .form
+        schedulePreview()
+    }
 
     public init(runner: BatchRunner, presetStore: BatchPresetStore = BatchPresetStore()) {
         self.runner = runner
@@ -185,12 +245,15 @@ public final class BatchModel: ObservableObject {
 
     /// Adds groups not already queued (by path), in order.
     public func add(_ groups: [ImageGroup]) {
+        guard !reviewingRemaining else { return }
         var known = Set(queue.map { GroupList.canonical($0.group.primary) })
         var fresh: [BatchQueueItem] = []
         for group in groups where known.insert(GroupList.canonical(group.primary)).inserted {
             fresh.append(BatchQueueItem(group: group))
         }
-        guard !fresh.isEmpty else { return }
+        guard !fresh.isEmpty, phase != .running else { return }
+        scopeDescription = "Custom selection"
+        if reviewingRemaining { remainingPlan = nil; reviewingRemaining = false }
         queue += fresh
         readSizes(of: fresh.map(\.group.primary))
         schedulePreview()
@@ -198,6 +261,7 @@ public final class BatchModel: ObservableObject {
 
     /// Drag to reorder (the order is the counter order).
     public func move(from source: IndexSet, to destination: Int) {
+        guard !reviewingRemaining else { return }
         let moving = source.sorted().map { queue[$0] }
         var rest = queue
         for index in source.sorted(by: >) { rest.remove(at: index) }
@@ -220,7 +284,9 @@ public final class BatchModel: ObservableObject {
     }
 
     public func removeSelected() {
+        guard !reviewingRemaining else { return }
         guard !selection.isEmpty else { return }
+        scopeDescription = "Custom selection"
         queue.removeAll { selection.contains($0.id) }
         selection = []
         schedulePreview()
@@ -273,6 +339,13 @@ public final class BatchModel: ObservableObject {
 
     /// The plan for the current form, or the template error.
     public func makePlan() -> (plan: BatchPlan?, templateError: String?) {
+        if var retry = remainingPlan {
+            // Only output location/conflict policy may change during recovery.
+            // Preserve original counter ordinals, outstanding phases and receipts.
+            if form.writesToFolder, let outputFolder { retry.output = .folder(outputFolder) }
+            retry.onConflict = form.onConflict
+            return (retry, nil)
+        }
         var rename: RenameTemplate?
         if form.renameOn {
             do {
@@ -289,7 +362,7 @@ public final class BatchModel: ObservableObject {
                              keepMetadata: form.keepMetadata, removeLocation: form.removeLocation)
             : nil
         let resize = form.resizeOn
-            ? ResizeOptions(mode: form.resizeMode, value: max(1, form.resizeValue), dontEnlarge: form.dontEnlarge)
+            ? ResizeOptions(mode: form.resizeMode, value: form.resizeValue, dontEnlarge: form.dontEnlarge)
             : nil
         let output: BatchOutput
         if form.writesToFolder, let folder = outputFolder {
@@ -327,6 +400,7 @@ public final class BatchModel: ObservableObject {
     // MARK: Preview (150 ms debounce, off main)
 
     func schedulePreview() {
+        conversionDisclosures = []
         previewTask?.cancel()
         previewGeneration += 1
         let generation = previewGeneration
@@ -343,8 +417,9 @@ public final class BatchModel: ObservableObject {
         previewTask = Task { [weak self] in
             try? await Task.sleep(for: Self.previewDebounce)
             if Task.isCancelled { return }
-            let (rows, validation) = await Self.evaluate(plan, runner: runner)
+            let (rows, validation, disclosures) = await Self.evaluate(plan, runner: runner)
             guard let self, !Task.isCancelled, generation == self.previewGeneration else { return }
+            self.conversionDisclosures = disclosures
             self.previewRows = rows
             self.moreCount = max(0, plan.items.count - Self.previewLimit)
             self.validationMessage = validation?.message
@@ -354,9 +429,24 @@ public final class BatchModel: ObservableObject {
 
     @concurrent
     nonisolated static func evaluate(_ plan: BatchPlan, runner: BatchRunner) async
-        -> ([BatchPreviewRow], BatchValidationError?) {
+        -> ([BatchPreviewRow], BatchValidationError?, [String]) {
         let rows = await runner.preview(plan, limit: previewLimit)
-        return (rows, plan.validationError)
+        var disclosures = Set<String>()
+        if plan.convert != nil || plan.resize != nil || !(plan.recipe?.isEmpty ?? true) {
+            let sizes = await headerSizes(plan.items.map(\.primary))
+            for group in plan.items {
+                if Task.isCancelled { break }
+                var ops = plan.recipe ?? []
+                if let rotate = plan.rotate, rotate % 4 != 0 { ops.append(.rotate90(quarters: rotate)) }
+                if let resize = plan.resize, let size = sizes[group.primary] {
+                    let target = resize.targetSize(for: size)
+                    ops.append(.resize(ResizeSpec(width: Int(target.width), height: Int(target.height), interpolation: .lanczos, preventUpscale: resize.dontEnlarge)))
+                }
+                let capability = ImageExporter.capability(for: group.primary, operations: ops, format: plan.convert?.format)
+                if let disclosure = capability.conversionDisclosure { disclosures.insert(disclosure) }
+            }
+        }
+        return (rows, plan.validationError, disclosures.sorted())
     }
 
     /// Waits for the pending preview (tests).
@@ -390,6 +480,7 @@ public final class BatchModel: ObservableObject {
     }
 
     public func apply(_ preset: BatchPreset) {
+        guard !reviewingRemaining else { return }
         var f = form
         f.convertOn = preset.convert != nil
         if let c = preset.convert {
@@ -549,9 +640,11 @@ public final class BatchModel: ObservableObject {
             switch item.outcome {
             case .done: return nil
             case .skipped(let reason):
-                return SkippedRow(name: item.source.primary.lastPathComponent, reason: reason.message)
-            case .failed:
-                return SkippedRow(name: item.source.primary.lastPathComponent, reason: Copy.failed)
+                return SkippedRow(name: item.source.primary.lastPathComponent, reason: (item.completedPhases.isEmpty ? "" : item.completedPhases.map(\.rawValue).joined(separator: "; ") + "; ") + reason.message, source: item.source.primary)
+            case .failed(let error):
+                let phases = item.completedPhases.map { $0 == .rotate ? "Rotated" : ($0 == .rename ? "Renamed" : "Exported") }.joined(separator: "; ")
+                let prefix = phases.isEmpty ? "" : phases + "; "
+                return SkippedRow(name: item.source.primary.lastPathComponent, reason: prefix + (item.failurePhase?.rawValue ?? "write") + " failed: " + error.localizedDescription, source: item.source.primary)
             }
         }
         phase = .done
@@ -573,6 +666,7 @@ public final class BatchModel: ObservableObject {
 
     /// Clears the queue for new items (a second ⌥⌘B after a finished run).
     public func replaceQueue(with groups: [ImageGroup]) {
+        guard !reviewingRemaining else { return }
         queue = []
         selection = []
         add(groups)
@@ -592,8 +686,13 @@ public final class BatchModel: ObservableObject {
 
     /// "Done. 40 images converted, 2 skipped."
     static func summary(_ result: BatchResult, verb: String) -> String {
-        let done = "Done. \(Copy.images(result.doneCount)) \(verb)"
-        return result.skippedCount > 0 ? "\(done), \(result.skippedCount) skipped." : "\(done)."
+        let partial = result.items.filter(\.isPartial).count
+        let failed = result.items.filter { if case .failed = $0.outcome { return !$0.isPartial }; return false }.count
+        let skipped = result.items.filter { if case .skipped(let why) = $0.outcome { return why != .cancelled && !$0.isPartial }; return false }.count
+        return [(result.doneCount, "completed"), (partial, "partially changed"), (failed, "failed"),
+                (skipped, "skipped"), (result.cancelledCount, "not processed")]
+            .filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }.joined(separator: " · ")
+
     }
 
     /// "about 47 s left" / "about 3 min left"; nil until one item is
@@ -619,7 +718,7 @@ public final class BatchModel: ObservableObject {
             case .skipped(let reason):
                 lines.append("\(name): \(reason.message)")
             case .failed(let error):
-                lines.append("\(name): \(Copy.failed) (\(error.localizedDescription))")
+                lines.append("\(name): \(item.completedPhases.map(\.rawValue).joined(separator: ", ")); \(item.failurePhase?.rawValue ?? "write") failed: \(error.localizedDescription); current: \(item.finalURL?.path ?? item.source.primary.path)")
             }
         }
         return lines.joined(separator: "\n")
@@ -627,7 +726,7 @@ public final class BatchModel: ObservableObject {
 
     /// Files the run made or changed (Show in Finder).
     public var doneURLs: [URL] {
-        result?.items.compactMap { if case .done(let url) = $0.outcome { return url }; return nil } ?? []
+        result?.items.compactMap { if case .done(let url) = $0.outcome { return url }; return $0.isPartial ? $0.finalURL : nil } ?? []
     }
 
     /// Folders to open in Shrike: the Output folder, or the folders of
@@ -658,14 +757,15 @@ public final class BatchModel: ObservableObject {
     /// when the run left nothing to undo in place.
     public var undoActionName: String? {
         guard let plan = lastPlan, let result, result.canUndo else { return nil }
-        if case .folder = plan.output, plan.convert != nil || plan.resize != nil { return nil }
+        if result.items.contains(where: { $0.recoveryRequired != nil }) { return "Batch Changes" }
+        if case .folder = plan.output, plan.convert != nil || plan.resize != nil { return result.replacedOriginals.isEmpty ? nil : "Batch Changes" }
         let rotated = !result.rotations.isEmpty
         let renamed = !result.renames.isEmpty
         switch (rotated, renamed) {
         case (true, true): return "Batch Rotate and Rename"
         case (true, false): return "Batch Rotate"
         case (false, true): return "Batch Rename"
-        case (false, false): return nil
+        case (false, false): return result.replacedOriginals.isEmpty ? nil : "Batch Changes"
         }
     }
 }

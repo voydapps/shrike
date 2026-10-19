@@ -54,7 +54,7 @@ final class ToastView: HUDSurfaceView {
         wantsLayer = true
         glassShape = .capsule
 
-        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.font = ChromeTypography.font(12, weight: .medium)
         label.textColor = .white
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
@@ -88,22 +88,13 @@ final class ErrorOverlayView: NSView {
     static let bodyFontSize: CGFloat = 13
     static let bodyWidth: CGFloat = cardWidth - 48
 
-    /// The wrapped height of the message at the body width (at most 3 lines), so the
-    /// card sizes right in one layout pass.
-    static let bodyHeight: CGFloat = {
-        let font = NSFont.systemFont(ofSize: bodyFontSize, weight: .regular)
-        let rect = (message as NSString).boundingRect(
-            with: NSSize(width: bodyWidth, height: CGFloat.greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
-        return min(ceil(rect.height), ceil(font.boundingRectForFont.height) * 3)
-    }()
-
     private let title = NSTextField(labelWithString: "Can't open")
     private let body = NSTextField(wrappingLabelWithString: ErrorOverlayView.message)
     let nextButton = NSButton(title: "Next", target: nil, action: nil)
     let revealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
     private let container = NSView()
     private(set) var glyph: NSImageView?
+    private var chromePreferences: ChromeTextObservation?
 
     /// Same action as the → key.
     var onNext: (() -> Void)?
@@ -129,17 +120,17 @@ final class ErrorOverlayView: NSView {
         glyph = icon
         icon.translatesAutoresizingMaskIntoConstraints = false
 
-        title.font = .systemFont(ofSize: Self.headingFontSize, weight: .semibold)
+        title.font = ChromeTypography.font(Self.headingFontSize, weight: .semibold)
         title.textColor = .white
         title.alignment = .center
         title.translatesAutoresizingMaskIntoConstraints = false
 
-        // Wraps inside the 320 pt card (272 pt of text), up to 3 lines.
-        body.font = .systemFont(ofSize: Self.bodyFontSize, weight: .regular)
+        // Intrinsic wrapping follows the current font at the actual text width.
+        body.font = ChromeTypography.font(Self.bodyFontSize)
         body.textColor = .secondaryLabelColor
         body.alignment = .center
         body.preferredMaxLayoutWidth = Self.bodyWidth
-        body.maximumNumberOfLines = 3
+        body.maximumNumberOfLines = 0
         // Word wrap: a truncating mode made AppKit draw ONE line ending in "…".
         body.lineBreakMode = .byWordWrapping
         body.cell?.wraps = true
@@ -150,7 +141,8 @@ final class ErrorOverlayView: NSView {
 
         for button in [nextButton, revealButton] {
             button.bezelStyle = .rounded
-            button.refusesFirstResponder = true   // the keys stay with the window
+            button.font = ChromeTypography.font(NSFont.systemFontSize)
+            button.refusesFirstResponder = false
             button.target = self
             button.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -191,11 +183,14 @@ final class ErrorOverlayView: NSView {
             body.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
             body.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
             body.widthAnchor.constraint(equalToConstant: Self.bodyWidth),
-            body.heightAnchor.constraint(equalToConstant: Self.bodyHeight),
             buttons.topAnchor.constraint(equalTo: body.bottomAnchor, constant: 12),
             buttons.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             buttons.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -20),
         ])
+        chromePreferences = ChromeTextObservation(root: self) { [weak nextButton] in
+            guard let nextButton else { return }
+            nextButton.setAccentTitle(nextButton.title)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -207,6 +202,13 @@ final class ErrorOverlayView: NSView {
     }
 
     func setNextEnabled(_ enabled: Bool) { nextButton.isEnabled = enabled }
+    func configureRecovery(title: String, revealAvailable: Bool, action: @escaping () -> Void) {
+        nextButton.isEnabled = true
+        nextButton.setAccentTitle(title); nextButton.setAccessibilityLabel(title)
+        nextButton.toolTip = title
+        revealButton.isHidden = !revealAvailable
+        onNext = action
+    }
 
     /// On show: VoiceOver says what happened.
     func announce() {
@@ -322,7 +324,7 @@ final class LivePhotoBadgeView: HUDSurfaceView {
         icon.contentTintColor = .white
         icon.imageScaling = .scaleProportionallyUpOrDown
 
-        label.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        label.font = ChromeTypography.font(11, weight: .semibold)
         label.textColor = .white
         label.translatesAutoresizingMaskIntoConstraints = false
 

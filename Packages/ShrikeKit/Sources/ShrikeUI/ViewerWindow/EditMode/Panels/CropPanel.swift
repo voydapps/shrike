@@ -13,7 +13,7 @@ import AppKit
 import ShrikeEdit
 
 @MainActor
-final class CropPanel: NSView {
+final class CropPanel: NSView, NSTextFieldDelegate {
 
     // MARK: - Types
 
@@ -67,7 +67,24 @@ final class CropPanel: NSView {
     /// Fired when the aspect picker selection changes.
     var onAspectChanged: ((Aspect) -> Void)?
     /// Fired when the user types a new W or H value.
-    var onDimensionsEdited: ((Int?, Int?) -> Void)?
+    var onDimensionsEdited: ((Int?, Int?, Axis) -> Void)?
+    var onDraftChanged: (() -> Void)?
+    private var editedDimension: Axis?
+    var dimensionDraft: (width: Int?, height: Int?, side: Axis)? {
+        editedDimension.map { (Int(widthField.stringValue), Int(heightField.stringValue), $0) }
+    }
+    func controlTextDidBeginEditing(_ notification: Notification) { trackDimensionDraft(notification) }
+    func controlTextDidChange(_ notification: Notification) { trackDimensionDraft(notification) }
+    func controlTextDidEndEditing(_ notification: Notification) {
+        editedDimension = nil
+        onDraftChanged?()
+    }
+    private func trackDimensionDraft(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField,
+              field === widthField || field === heightField else { return }
+        editedDimension = field === widthField ? .width : .height
+        onDraftChanged?()
+    }
     /// Fired when thirds-grid toggle flips.
     var onShowThirdsChanged: ((Bool) -> Void)?
     /// Fired when golden-grid toggle flips.
@@ -114,6 +131,7 @@ final class CropPanel: NSView {
     // MARK: - Layout
 
     private func build() {
+        for control in [aspectPopup, thirdsCheckbox, goldenCheckbox, resetButton, applyButton] { ChromeTypography.initializeNativeFont(control) }
         let aspectLabel = sectionLabel("Aspect")
 
         aspectPopup.translatesAutoresizingMaskIntoConstraints = false
@@ -196,24 +214,27 @@ final class CropPanel: NSView {
 
     private func sectionLabel(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 12, weight: .semibold)
+        label.font = ChromeTypography.font(12, weight: .semibold)
         label.translatesAutoresizingMaskIntoConstraints = false
         return label
     }
 
     private func fieldLabel(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 12, weight: .regular)
+        label.font = ChromeTypography.font(12, weight: .regular)
         label.translatesAutoresizingMaskIntoConstraints = false
         return label
     }
 
-    private func configureNumericField(_ field: NSTextField) {
+    private func configureNumericField(_ field: PanelTextField) {
         field.translatesAutoresizingMaskIntoConstraints = false
         field.isBezeled = true
         field.bezelStyle = .roundedBezel
+        field.delegate = self
+        // Resolve numeric geometry on ordinary focus changes as well as Return.
+        field.commitsOnFocusLoss = true
         field.alignment = .right
-        field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        field.font = .monospacedDigitSystemFont(ofSize: ChromeTypography.size(12), weight: .regular)
         field.placeholderString = "px"
     }
 
@@ -228,7 +249,9 @@ final class CropPanel: NSView {
     @objc private func handleDimensionEdit(_ sender: NSTextField) {
         let w = Int(widthField.stringValue)
         let h = Int(heightField.stringValue)
-        onDimensionsEdited?(w, h)
+        editedDimension = nil
+        onDimensionsEdited?(w, h, sender === widthField ? .width : .height)
+        onDraftChanged?()
     }
 
     @objc private func handleThirdsToggle(_ sender: NSButton) {
@@ -241,8 +264,6 @@ final class CropPanel: NSView {
 
     @objc private func handleReset(_ sender: NSButton) {
         onReset?()
-        widthField.stringValue = ""
-        heightField.stringValue = ""
     }
 
     @objc private func handleApply(_ sender: NSButton) {
@@ -252,8 +273,10 @@ final class CropPanel: NSView {
     // MARK: - Public setters
 
     func setDimensions(width: Int, height: Int) {
+        editedDimension = nil
         widthField.stringValue = String(width)
         heightField.stringValue = String(height)
+        onDraftChanged?()
     }
 
     func setAspect(_ preset: Aspect) {

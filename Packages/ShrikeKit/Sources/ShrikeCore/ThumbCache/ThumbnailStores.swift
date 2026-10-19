@@ -29,17 +29,21 @@ final class ThumbnailMemoryLRU: @unchecked Sendable {
         let key: String
         var image: CGImage
         var cost: Int
-        var prev: Node?
+        weak var prev: Node?
         var next: Node?
-        init(key: String, image: CGImage, cost: Int) {
+        var resourceLease: ImageResourceLease
+        init(key: String, image: CGImage, cost: Int, resourceLease: ImageResourceLease) {
             self.key = key
             self.image = image
             self.cost = cost
+            self.resourceLease = resourceLease
         }
     }
 
     let byteLimit: Int
     let countLimit: Int
+    private let resources: ImageResourceBudget
+    private let owner: ImageResourceOwner
 
     // Guarded by `lock`.
     private var nodes: [String: Node] = [:]
@@ -48,9 +52,10 @@ final class ThumbnailMemoryLRU: @unchecked Sendable {
     private var bytes = 0
     private let lock = NSLock()
 
-    init(byteLimit: Int, countLimit: Int) {
+    init(byteLimit: Int, countLimit: Int, resources: ImageResourceBudget = .shared, owner: ImageResourceOwner = .init()) {
         self.byteLimit = max(1, byteLimit)
         self.countLimit = max(1, countLimit)
+        self.resources = resources; self.owner = owner
     }
 
     /// Bytes an image pins in memory (its backing store estimate).
@@ -71,10 +76,12 @@ final class ThumbnailMemoryLRU: @unchecked Sendable {
         if let node = nodes[key] {
             bytes += cost - node.cost
             node.image = image
+            node.resourceLease = resources.retain(image: image, owner: owner, category: .thumbnail)
             node.cost = cost
             moveToFront(node)
         } else {
-            let node = Node(key: key, image: image, cost: cost)
+            let node = Node(key: key, image: image, cost: cost,
+                            resourceLease: resources.retain(image: image, owner: owner, category: .thumbnail))
             nodes[key] = node
             bytes += cost
             insertAtFront(node)
@@ -145,9 +152,14 @@ final class ThumbnailDiskStore: @unchecked Sendable {
     private let queue: OperationQueue
     private let pending = OSAllocatedUnfairLock(initialState: 0)
     private let generation = OSAllocatedUnfairLock(initialState: 0)
+    private let resources: ImageResourceBudget
+    private let resourceOwner = ImageResourceOwner()
+    private let byteDelta = OSAllocatedUnfairLock<Int64>(initialState: 0)
+    var changedBytes: Int64 { byteDelta.withLock { $0 } }
 
-    init(root: URL, writeConcurrency: Int = 2) {
+    init(root: URL, writeConcurrency: Int = 2, resources: ImageResourceBudget = .shared) {
         self.root = root
+        self.resources = resources
         let queue = OperationQueue()
         queue.name = "app.shrike.thumbs.write"
         queue.qualityOfService = .utility
@@ -174,6 +186,7 @@ final class ThumbnailDiskStore: @unchecked Sendable {
     /// write was dropped because too many are pending.
     @discardableResult
     func enqueueWrite(_ image: CGImage, to url: URL) -> Bool {
+        guard isAvailable else { return false }
         let accepted = pending.withLock { count -> Bool in
             guard count < Self.maxPendingWrites else { return false }
             count += 1
@@ -181,26 +194,39 @@ final class ThumbnailDiskStore: @unchecked Sendable {
         }
         guard accepted else { return false }
         acceptedTotal.withLock { $0 += 1 }
-        let box = UncheckedImage(image)
+        let payload = OSAllocatedUnfairLock<(image: UncheckedImage, lease: ImageResourceLease)?>(initialState:
+            (UncheckedImage(image), resources.retain(image: image, owner: resourceOwner, category: .thumbnail)))
         let gen = generation.withLock { $0 }
         let token = targets.withLock { state -> UInt64 in
             state.next &+= 1
             state.live[url] = state.next
             return state.next
         }
-        queue.addOperation { [pending, generation, targets] in
-            if generation.withLock({ $0 }) == gen {
+        queue.addOperation { [pending, generation, targets, byteDelta] in
+            // BlockOperation may retain its completed closure after a later
+            // barrier resumes. Transfer the payload out of that capture so
+            // real image ownership and its lease end with the work itself.
+            let write = payload.withLock { value in let write = value; value = nil; return write }
+            if let write, generation.withLock({ $0 }) == gen {
+                defer { withExtendedLifetime(write.lease) {} }
                 // The final rename happens under the `targets` lock, and only
                 // while this write is still wanted, so `cancelPendingWrites(
                 // namePrefix:)` + a delete can never be overtaken by a write.
-                Self.writeAtomically(box.image, to: url) { commit in
+                Self.writeAtomically(write.image.image, to: url) { commit in
                     // `withLockUnchecked`: the body captures the non-Sendable
                     // `commit` closure, and runs synchronously on this thread
                     // while the lock is held, so nothing crosses threads.
                     targets.withLockUnchecked { state -> Bool in
-                        guard state.live[url] == token else { return false }
+                        guard state.live[url] == token, state.available, generation.withLock({ $0 }) == gen else { return false }
                         state.live[url] = nil
-                        return commit()
+                        let oldBytes = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                        let result = commit()
+                        if result {
+                            state.committed[url] = token
+                            let newBytes = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                            byteDelta.withLock { $0 += newBytes - oldBytes }
+                        }
+                        return result
                     }
                 }
             }
@@ -225,6 +251,9 @@ final class ThumbnailDiskStore: @unchecked Sendable {
         var next: UInt64 = 0
         /// Final URL → token of the newest write queued for it.
         var live: [URL: UInt64] = [:]
+        var committed: [URL: UInt64] = [:]
+        var available = true
+        var tombstones: [URL] = []
     }
     private let targets = OSAllocatedUnfairLock(initialState: Targets())
 
@@ -242,9 +271,58 @@ final class ThumbnailDiskStore: @unchecked Sendable {
         }
     }
 
+    // Deterministically retain a completed operation in lifetime tests.
+    func setWritesSuspendedForTesting(_ suspended: Bool) { queue.isSuspended = suspended }
+    var operationsForTesting: [Operation] { queue.operations }
+
     /// Writes queued before this call are skipped ("Clear cache").
     func cancelPendingWrites() {
         generation.withLock { $0 &+= 1 }
+        targets.withLock { $0.live.removeAll() }
+    }
+
+    var isAvailable: Bool { targets.withLock { $0.available } }
+    var maintenanceToken: (epoch: Int, sequence: UInt64) {
+        targets.withLock { state in (generation.withLock { $0 }, state.next) }
+    }
+    func beginClear() {
+        targets.withLock { state in
+            state.available = false; state.live.removeAll()
+            generation.withLock { $0 &+= 1 }
+        }
+    }
+    /// Only root rename/create holds the commit gate; recursive cleanup
+    /// occurs afterwards on the utility worker.
+    func rotateRoot() throws -> [URL] {
+        try targets.withLock { state in
+            let fm = FileManager.default
+            if fm.fileExists(atPath: root.path) {
+                let tombstone = root.deletingLastPathComponent().appendingPathComponent(".\(root.lastPathComponent).clearing.\(UUID().uuidString)")
+                try fm.moveItem(at: root, to: tombstone)
+                state.tombstones.append(tombstone)
+            }
+            try fm.createDirectory(at: root, withIntermediateDirectories: true)
+            state.committed.removeAll(); state.available = true
+            return state.tombstones
+        }
+    }
+    func removeTombstones(_ urls: [URL]) throws {
+        for url in urls {
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            targets.withLock { $0.tombstones.removeAll { $0 == url } }
+        }
+    }
+    func removeFile(_ url: URL, token: (epoch: Int, sequence: UInt64)) -> Bool {
+        targets.withLock { state in
+            guard state.available, generation.withLock({ $0 }) == token.epoch,
+                  (state.committed[url] ?? 0) <= token.sequence else { return false }
+            do {
+                let bytes = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                try FileManager.default.removeItem(at: url); state.committed[url] = nil
+                byteDelta.withLock { $0 -= bytes }; return true
+            }
+            catch { return false }
+        }
     }
 
     /// Encode to a hidden temp file in the same folder, then `rename(2)`

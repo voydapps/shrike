@@ -158,18 +158,18 @@ final class GoToFolderSheet: NSObject, NSTextFieldDelegate {
 
     private func build(_ initialPath: String) {
         let label = NSTextField(labelWithString: GoToFolder.label)
-        label.font = .systemFont(ofSize: 13)
+        label.font = ChromeTypography.font(13)
 
         field.stringValue = initialPath
         field.placeholderString = GoToFolder.placeholder
-        field.font = .systemFont(ofSize: 13)
+        field.font = ChromeTypography.font(13)
         field.delegate = self
         field.lineBreakMode = .byTruncatingHead
         field.cell?.usesSingleLineMode = true
         field.setAccessibilityLabel("Folder path")
         field.setAccessibilityHelp("Type a folder path. Press Tab to complete a folder name.")
 
-        errorLabel.font = .systemFont(ofSize: 11)
+        errorLabel.font = ChromeTypography.font(11)
         errorLabel.textColor = .systemRed
         errorLabel.isHidden = true
 

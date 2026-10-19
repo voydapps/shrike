@@ -72,7 +72,7 @@ final class PreviewBadgeView: NSView {
         // default system font; the rounded variant reads as "label / tag"
         // rather than "control text". +0.5 pt tracking pushes the letters
         // apart just enough to keep the uppercase from looking cramped.
-        let baseFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let baseFont = ChromeTypography.font(11, weight: .semibold)
         let roundedDescriptor = baseFont.fontDescriptor.withDesign(.rounded)
         let font = roundedDescriptor.map { NSFont(descriptor: $0, size: 11) ?? baseFont } ?? baseFont
 

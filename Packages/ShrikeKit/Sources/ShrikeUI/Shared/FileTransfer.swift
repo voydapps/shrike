@@ -84,8 +84,10 @@ enum FileTransferCopy {
     /// "Copying 3 of 12…" — `completed` files are done, so the one in
     /// flight is `completed + 1`.
     static func progress(_ verb: FileVerb, completed: Int, total: Int) -> String {
+        let activity = verb == .copy ? "Copying" : "Moving"
+        if total == 1 { return "\(activity) 1 item…" }
         let current = min(total, completed + 1)
-        return "\(verb == .copy ? "Copying" : "Moving") \(current) of \(total)…"
+        return "\(activity) \(current) of \(total)…"
     }
 
     static func cancelled(_ verb: FileVerb, done: Int, total: Int) -> String {
@@ -166,13 +168,15 @@ final class FileTransferCoordinator {
     var slots: DestinationSlots = .standard
     /// Presents an alert on the owning window; returns the button index.
     var presentAlert: @MainActor (String, String, [ShrikeAlert.Button]) async -> Int? = { _, _, _ in nil }
-    /// Shows a toast in the owning window.
-    var showToast: @MainActor (ToastContent, (@MainActor () -> Void)?) -> Void = { _, _ in }
+    /// Window callbacks are weak; each run keeps only its latest presentation ticket.
+    var showProgressToast: @MainActor (ToastContent) -> ToastHostView.ProgressTicket? = { _ in nil }
+    var updateProgressToast: @MainActor (ToastContent, ToastHostView.ProgressTicket) -> ToastHostView.ProgressTicket? = { _, _ in nil }
+    var dismissProgressToast: @MainActor (ToastHostView.ProgressTicket) -> Void = { _ in }
 
     /// Test seams: the folder panel (title → folder, nil = Cancel) and
     /// the name-clash sheet.
     var panelResponder: ((String) -> URL?)?
-    var conflictResponder: ((FileConflict) -> ConflictAnswer)?
+    var conflictResponder: ((FileConflict) async -> ConflictAnswer)?
     /// Every conflict asked this session (tests).
     private(set) var conflictsAsked = 0
 
@@ -275,7 +279,7 @@ final class FileTransferCoordinator {
 
     func askConflict(_ conflict: FileConflict) async -> ConflictAnswer {
         conflictsAsked += 1
-        if let conflictResponder { return conflictResponder(conflict) }
+        if let conflictResponder { return await conflictResponder(conflict) }
         let incoming = conflict.incoming.primary
         let existing = conflict.existingPrimary ?? conflict.existing.first ?? incoming
         let details = await Task.detached(priority: .userInitiated) {
@@ -288,7 +292,7 @@ final class FileTransferCoordinator {
             buttons: [.cancel("Skip"), ShrikeAlert.Button("Replace"), ShrikeAlert.Button("Keep Both", role: .default)]
         )
         let label = NSTextField(wrappingLabelWithString: details)
-        label.font = .systemFont(ofSize: 11)
+        label.font = ChromeTypography.font(11)
         label.textColor = .secondaryLabelColor
         label.frame = NSRect(x: 0, y: 0, width: 300, height: 32)
         alert.accessoryView = label
@@ -345,19 +349,22 @@ final class FileTransferCoordinator {
             try? await Task.sleep(for: Self.progressDelay)
             guard !Task.isCancelled, let self, let last = box.last, !last.isFinished else { return }
             box.visible = true
-            self.showProgress(verb, last)
+            box.ticket = self.showProgress(verb, last)
         }
         var failure: (any Error)?
         do {
             for try await progress in stream {
                 box.last = progress
-                if box.visible, !progress.isFinished { showProgress(verb, progress) }
+                if box.visible, !progress.isFinished, let ticket = box.ticket {
+                    box.ticket = updateProgressToast(progressContent(verb, progress), ticket)
+                }
             }
         } catch {
             failure = error
         }
         progressTimer.cancel()
         isShowingProgress = false
+        if let ticket = box.ticket { dismissProgressToast(ticket) }
         let last = box.last
         let cancelled = Task.isCancelled || (last?.wasCancelled ?? false)
         return Outcome(
@@ -366,11 +373,17 @@ final class FileTransferCoordinator {
             error: failure, cancelled: cancelled, total: groups.count)
     }
 
-    private func showProgress(_ verb: FileVerb, _ progress: FileOpProgress) {
+    private func showProgress(_ verb: FileVerb, _ progress: FileOpProgress) -> ToastHostView.ProgressTicket? {
         isShowingProgress = true
+        return showProgressToast(progressContent(verb, progress))
+    }
+
+    private func progressContent(_ verb: FileVerb, _ progress: FileOpProgress) -> ToastContent {
         var content = ToastContent(FileTransferCopy.progress(verb, completed: progress.completed, total: progress.total))
         content.progress = progress.fractionCompleted
-        showToast(content, nil)
+        content.progressIsIndeterminate = !progress.isFinished
+            && (progress.total == 1 || progress.fractionCompleted <= 0)
+        return content
     }
 
     /// Esc while the progress toast shows: stop the rest.
@@ -445,6 +458,7 @@ final class FileTransferCoordinator {
 private final class ProgressBox {
     var last: FileOpProgress?
     var visible = false
+    var ticket: ToastHostView.ProgressTicket?
 }
 
 // MARK: - HUD view
@@ -541,7 +555,7 @@ final class DestinationHUDView: NSView {
         rowTitles = []
 
         let title = NSTextField(labelWithString: verb == .copy ? "Copy to…" : "Move to…")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.font = ChromeTypography.font(13, weight: .semibold)
         title.textColor = .labelColor
         stack.addArrangedSubview(title)
         stack.setCustomSpacing(8, after: title)
@@ -609,10 +623,10 @@ final class DestinationHUDRow: NSView {
 
     init(key: String, name: String, path: String?) {
         super.init(frame: .zero)
-        let name = Self.label(name, font: .systemFont(ofSize: 13), color: .labelColor)
+        let name = Self.label(name, font: ChromeTypography.font(13), color: .labelColor)
         var views: [NSView] = [Self.keyLabel(key), name]
         if let path {
-            let pathLabel = Self.label(path, font: .systemFont(ofSize: 11), color: .secondaryLabelColor)
+            let pathLabel = Self.label(path, font: ChromeTypography.font(11), color: .secondaryLabelColor)
             pathLabel.alignment = .right
             pathLabel.lineBreakMode = .byTruncatingMiddle
             pathLabel.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
@@ -624,7 +638,7 @@ final class DestinationHUDRow: NSView {
 
     init(key: String, emptyText: String) {
         super.init(frame: .zero)
-        build([Self.keyLabel(key), Self.label(emptyText, font: .systemFont(ofSize: 13), color: .tertiaryLabelColor)])
+        build([Self.keyLabel(key), Self.label(emptyText, font: ChromeTypography.font(13), color: .tertiaryLabelColor)])
         setAccessibilityLabel(emptyText)
     }
 

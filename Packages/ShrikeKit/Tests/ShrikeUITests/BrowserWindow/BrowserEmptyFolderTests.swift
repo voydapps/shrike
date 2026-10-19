@@ -18,13 +18,22 @@ final class BrowserEmptyFolderTests: XCTestCase {
 
     private var root: URL!
 
+    private let expansionKeys = ["shrike.browser.tree.expanded", "shrike.browser.tree.expanded.sections"]
+    private var savedExpansion: [String: Any] = [:]
+
     override func setUp() async throws {
+        savedExpansion = [:]
+        for key in expansionKeys { savedExpansion[key] = ShrikeDefaults.store.object(forKey: key) }
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("shrike-empty-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
 
     override func tearDown() async throws {
+        for key in expansionKeys {
+            if let value = savedExpansion[key] { ShrikeDefaults.store.set(value, forKey: key) }
+            else { ShrikeDefaults.store.removeObject(forKey: key) }
+        }
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -62,20 +71,32 @@ final class BrowserEmptyFolderTests: XCTestCase {
         XCTAssertTrue(state.symbolShown, "photo.on.rectangle icon")
     }
 
-    /// A temp folder is on no sidebar row, so the copy only
-    /// counts the subfolders; it makes no sidebar claim.
+    /// A collapsed sidebar cannot show children, even though the active
+    /// folder is represented by its own Current Folder root.
     func testEmptyFolderOutsideTheSidebarCountsItsSubfolders() async throws {
         let folder = try makeFolder("Trips")
         _ = try makeFolder("Trips/2025")
         _ = try makeFolder("Trips/2026")
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: folder)
         defer { browser.close() }
+        browser.splitController.splitViewItems[0].isCollapsed = true
         let shown = await waitUntil {
             browser.contentController.emptyStateForTesting?.subtitleText == "This folder has 2 subfolders."
         }
         XCTAssertTrue(shown, "message \(String(describing: browser.contentController.emptyStateForTesting?.subtitleText))")
         let inSidebar = await browser.sidebarShowsSubfolders(of: folder)
         XCTAssertFalse(inSidebar)
+        XCTAssertEqual(browser.treeController.dataSource.currentFolder, folder.standardizedFileURL)
+        let current = try XCTUnwrap(browser.treeController.dataSource.roots.first { $0.section == .currentFolder })
+        XCTAssertEqual(current.children.first?.url?.standardizedFileURL, folder.standardizedFileURL)
+        browser.splitController.splitViewItems[0].isCollapsed = false
+        browser.reloadCurrentFolder()
+        let reopened = await waitUntil {
+            browser.contentController.emptyStateForTesting?.subtitleText == "Subfolders are in the sidebar."
+        }
+        XCTAssertTrue(reopened)
+        let visibleInSidebar = await browser.sidebarShowsSubfolders(of: folder)
+        XCTAssertTrue(visibleInSidebar)
     }
 
     func testEmptyFolderSubtitleCopy() {

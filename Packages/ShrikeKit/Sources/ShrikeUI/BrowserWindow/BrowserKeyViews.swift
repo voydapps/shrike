@@ -290,6 +290,20 @@ final class BrowserCollectionView: NSCollectionView {
     /// automatic first-photo selection even when it hits the selected cell).
     var onUserMouseDown: (() -> Void)?
 
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        if let hit = indexPathForItem(at: point) {
+            onUserMouseDown?()
+            pendingSingleSelect = nil
+            dragBegan = false
+            if !selectionIndexPaths.contains(hit) {
+                apply(selection: [hit])
+                noteClick(on: hit, command: false)
+            }
+        }
+        return super.menu(for: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
         onUserMouseDown?()
         let point = convert(event.locationInWindow, from: nil)
@@ -451,39 +465,8 @@ final class BrowserCollectionView: NSCollectionView {
 @MainActor
 final class BrowserTableView: NSTableView {
 
-    /// Rows VoiceOver gets: the visible ones plus `overscan` each side (spec 27 B3).
-    static let accessibilityOverscan = 10
-
-    /// Row views that exist already; none is created for an accessibility query.
-    private func builtRowViews(overscan: Int) -> [NSView] {
-        let visible = rows(in: visibleRect)
-        guard visible.length > 0 else { return [] }
-        let lo = max(0, visible.location - overscan)
-        let hi = min(numberOfRows, visible.location + visible.length + overscan)
-        return (lo..<hi).compactMap { rowView(atRow: $0, makeIfNecessary: false) }
-    }
-
-    override func accessibilityRows() -> [any NSAccessibilityRow]? {
-        builtRowViews(overscan: Self.accessibilityOverscan).compactMap { $0 as? any NSAccessibilityRow }
-    }
-    override func accessibilityVisibleRows() -> [any NSAccessibilityRow]? {
-        builtRowViews(overscan: 0).compactMap { $0 as? any NSAccessibilityRow }
-    }
-    /// The true row count (the children list is only the rows near the screen).
+    /// Native AppKit owns semantic rows/children, including offscreen rows.
     var accessibleRowCount: Int { numberOfRows }
-    override func accessibilitySelectedRows() -> [any NSAccessibilityRow]? {
-        let window = Set(builtRowViews(overscan: Self.accessibilityOverscan).compactMap { view -> Int? in
-            guard let row = view as? NSTableRowView else { return nil }
-            return self.row(for: row)
-        })
-        return selectedRowIndexes.filter(window.contains)
-            .compactMap { rowView(atRow: $0, makeIfNecessary: false) }
-    }
-    override func accessibilityChildren() -> [Any]? {
-        var out: [Any] = builtRowViews(overscan: Self.accessibilityOverscan)
-        if let header = headerView { out.append(header) }
-        return out
-    }
 
     /// VoiceOver moved to a row that is off screen: scroll to it, then its row view exists.
     func accessibilityScroll(toRow row: Int) {

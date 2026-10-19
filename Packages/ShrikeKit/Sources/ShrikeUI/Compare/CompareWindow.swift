@@ -59,6 +59,10 @@ final class ComparePane {
     var decodedLongEdge = 0
     var pendingOrientation: PendingOrientation?
     var orientationTimer: Task<Void, Never>?
+    var pressureObservation: ImagePressureObservation?
+    private(set) var pressureHandledCount = 0
+
+    func didHandlePressure() { pressureHandledCount &+= 1 }
 
     init(view: ComparePaneView, queue: DecodeQueue, index: Int) {
         self.view = view
@@ -67,6 +71,7 @@ final class ComparePane {
     }
 
     func cancelWork() {
+        pressureObservation?.cancel(); pressureObservation = nil
         listTask?.cancel()
         loadTask?.cancel()
         infoTask?.cancel()
@@ -92,6 +97,10 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     private(set) var panes: [ComparePane] = []
     private(set) var focusedIndex = 0
     private(set) var isLocked = true
+    private(set) weak var referencePane: ComparePane?
+    private var referenceGeneration: UInt64 = 0
+    private var chromeObservation: ChromeTextObservation?
+    private var persistenceBanner: PersistenceBanner?
     weak var origin: (any CompareOrigin)?
     lazy var fileOps = FileOps(metadata: services.metadataStore, backups: services.backupStore)
     let compareUndoManager: UndoManager = {
@@ -153,7 +162,17 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         root.frame = NSRect(origin: .zero, size: contentRect(forFrameRect: self.frame).size)
         root.onLayout = { [weak self] in self?.layoutPanes() }
         contentView = root
+        chromeObservation = ChromeTextObservation(root: root)
         toastHost.install(in: root)
+        let banner = PersistenceBanner(store: services.metadataStore); persistenceBanner = banner
+        banner.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(banner)
+        NSLayoutConstraint.activate([banner.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 8),
+            banner.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            banner.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8)])
+        banner.onRecovered = { [weak self] in
+            guard let self, !self.isClosed else { return }
+            for pane in self.panes where self.list.indices.contains(pane.index) { self.readInfo(pane, url: self.list[pane.index].primary) }
+        }
         let toolbar = NSToolbar(identifier: "shrike.compare.toolbar")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
@@ -172,6 +191,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     // MARK: Panes
 
     private func configure(list: [ImageGroup], shown: [Int]) {
+        referencePane = nil; referenceGeneration &+= 1
         for pane in panes { tearDown(pane) }
         panes = []
         self.list = list
@@ -187,8 +207,26 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     private func addPane(index: Int, at slot: Int) -> ComparePane {
         let view = ComparePaneView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         view.imageView.delegate = self
-        let queue = DecodeQueue(windowRadius: 1, preparer: DisplayTextureFactory.preparer)
+        let owner = ImageResourceOwner()
+        let queue = DecodeQueue(windowRadius: 1, preparer: DisplayTextureFactory.preparer(resources: .shared, owner: owner), resourceOwner: owner)
         let pane = ComparePane(view: view, queue: queue, index: index)
+        view.imageView.resources = queue.resources; view.imageView.resourceOwner = queue.resourceOwner
+        view.onKeep = { [weak self, weak pane] in if let pane { self?.toggleReference(pane) } }
+        view.onPrevious = { [weak self, weak pane] in self?.stepPane(pane, delta: -1) }
+        view.onNext = { [weak self, weak pane] in self?.stepPane(pane, delta: 1) }
+        pane.pressureObservation = queue.resources.observePressure { [weak pane] pressure in
+            guard pressure != .normal else { return }
+            Task { @MainActor [weak pane] in
+                guard let pane else { return }
+                let view = pane.view.imageView
+                if view.isAtFit, !view.isZoomAnimating {
+                    pane.fullResTask?.cancel(); pane.fullResTask = nil
+                    view.dropFullResolution()
+                }
+                pane.didHandlePressure()
+
+            }
+        }
         root.addSubview(view, positioned: .below, relativeTo: toastHost)
         panes.insert(pane, at: min(slot, panes.count))
         pane.listTask = queueList(for: pane)
@@ -210,7 +248,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         flushPendingOrientation(pane)
         pane.cancelWork()
         pane.view.imageView.delegate = nil
-        pane.view.imageView.releaseResources()
+        pane.view.imageView.disposeAfterClose()
         pane.view.removeFromSuperview()
         let queue = pane.queue
         Task { await queue.purge() }
@@ -244,7 +282,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
 
     /// "2 images · Tab switches pane · ← → change its photo"; no hint for one pane.
     static func subtitle(paneCount: Int) -> String {
-        paneCount == 1 ? "1 image" : "\(paneCount) images · Tab switches pane · ← → change its photo"
+        paneCount == 1 ? "1 photo" : "\(paneCount) photos · Tab switches pane · arrows change candidates"
     }
 
     /// Tab / ⇧Tab: the next or previous pane, wrapping. Nothing with one pane.
@@ -314,7 +352,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         let view = pane.view.imageView
         isApplyingImage = true
         defer { isApplyingImage = false }
-        view.setImage(entry.image, sourceID: entry.sourceID, prepared: entry.prepared as? DisplayTexture)
+        view.setImage(entry.image, sourceID: entry.sourceID, prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy)
         view.resetOrientation()
         if let size = drawnSize(of: pane) { view.sourcePixelSize = size }
         pane.loadedURL = url
@@ -364,6 +402,8 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
             name: list[pane.index].displayName, rating: pane.record.rating, flagged: pane.record.flagged,
             pixelSize: drawnSize(of: pane), aperture: info?.aperture, shutter: info?.shutter, iso: info?.iso),
             name: list[pane.index].displayName)
+        pane.view.setReference(pane === referencePane, canPrevious: pane.index > 0, canNext: pane.index + 1 < list.count)
+        if pane === referencePane { pane.view.setFooter("Reference · " + CompareFooter.text(name: list[pane.index].displayName, rating: pane.record.rating, flagged: pane.record.flagged, pixelSize: drawnSize(of: pane), aperture: info?.aperture, shutter: info?.shutter, iso: info?.iso)) }
     }
 
     /// A larger pane (full screen, resize) gets a larger display texture.
@@ -394,7 +434,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
                   pane.index == index, pane.loadedURL == url,
                   max(entry.image.width, entry.image.height) > pane.decodedLongEdge else { return }
             let view = pane.view.imageView
-            if view.swapInLargerDisplayTexture(entry.image, prepared: entry.prepared as? DisplayTexture,
+            if view.swapInLargerDisplayTexture(entry.image, prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy,
                                                sourceID: entry.sourceID) {
                 pane.decodedLongEdge = max(entry.image.width, entry.image.height)
             }
@@ -419,7 +459,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
             pane.fullResTask = nil
             let view = pane.view.imageView
             guard let entry, !Task.isCancelled, pane.index == index, !view.isAtFit else { return }
-            view.swapInFullResolution(entry.image, prepared: entry.prepared as? DisplayTexture,
+            view.swapInFullResolution(entry.image, prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy,
                                       sourceID: sourceID)
         }
     }
@@ -469,7 +509,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     func setLocked(_ locked: Bool) {
         isLocked = locked
         refreshLockItem()
-        Culling.announce(locked ? "Zoom and pan locked" : "Zoom and pan unlocked")
+        Culling.announce(locked ? "Sync Zoom and Pan on" : "Sync Zoom and Pan off")
         if locked, let leader = focusedPane { syncOthers(from: leader) }
     }
 
@@ -492,13 +532,26 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         }
     }
 
+    func toggleReference(_ pane: ComparePane) {
+        guard panes.contains(where: { $0 === pane }) else { return }
+        referenceGeneration &+= 1
+        referencePane = referencePane === pane ? nil : pane
+        for candidate in panes { updateFooter(candidate) }
+        Culling.announce(referencePane == nil ? "Reference released" : "Photo kept as reference")
+    }
+    @objc func keepFocusedPhoto(_ sender: Any?) { if let pane = focusedPane { toggleReference(pane) } }
+    private func stepPane(_ pane: ComparePane?, delta: Int) {
+        guard let pane, let index = panes.firstIndex(where: { $0 === pane }) else { return }
+        focus(index); step(delta, allPanes: false)
+    }
+
     // MARK: Navigation
 
     /// ← / → in the focused pane; ⇧← / ⇧→ in every pane.
     func step(_ delta: Int, allPanes: Bool) {
         let targets = allPanes ? panes : (focusedPane.map { [$0] } ?? [])
         var moved = false
-        for pane in targets {
+        for pane in targets where pane !== referencePane {
             let next = pane.index + delta
             guard list.indices.contains(next) else { continue }
             flushPendingOrientation(pane)
@@ -506,7 +559,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
             moved = true
             load(pane)
         }
-        if !moved { NSSound.beep() }
+        if !moved { if focusedPane === referencePane { toast(ToastContent("Unpin to change this photo")) } else { NSSound.beep() } }
     }
 
     /// Wheel or swipe navigation moves that pane (and focuses it). The
@@ -523,7 +576,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
 
     public func metalImageView(_ view: MetalImageView, canNavigate forward: Bool) -> Bool {
         guard let pane = pane(of: view) else { return false }
-        return list.indices.contains(pane.index + (forward ? 1 : -1))
+        return pane !== referencePane && list.indices.contains(pane.index + (forward ? 1 : -1))
     }
 
     // MARK: Keys
@@ -622,8 +675,8 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         CullingUndo.perform(
             .rating, urls: urls, store: services.metadataStore, undoManager: compareUndoManager,
             compute: { Culling.ratingValues(stars, urls: urls, previous: $0) },
-            onChange: { [weak self] values in self?.cullingDidChange(values) })
-        Culling.announce(Culling.ratingAnnouncement(stars))
+            onChange: { [weak self] values in self?.cullingDidChange(values) },
+            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.rating, error: error), kind: .error)) })
     }
 
     func toggleFlag(allPanes: Bool) {
@@ -632,12 +685,11 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         let groups = targets.map { list[$0.index] }
         let urls = Culling.imageURLs(of: groups)
         let leaders = groups.map(\.primary)
-        let willFlag = targets.contains { !$0.record.flagged }
         CullingUndo.perform(
             .flag, urls: urls, store: services.metadataStore, undoManager: compareUndoManager,
             compute: { Culling.toggledFlagValues(urls: urls, leaders: leaders, previous: $0) },
-            onChange: { [weak self] values in self?.cullingDidChange(values) })
-        Culling.announce(Culling.flagAnnouncement(willFlag))
+            onChange: { [weak self] values in self?.cullingDidChange(values) },
+            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.flag, error: error), kind: .error)) })
     }
 
     private func cullingDidChange(_ values: [URL: FileRecord]) {
@@ -668,6 +720,8 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     public override func close() {
         guard !isClosed else { return }
         isClosed = true
+        persistenceBanner?.dispose(); persistenceBanner = nil
+        chromeObservation = nil
         // Esc, ⌘W or the last pane trashed: the window it came from gets
         // the keys back with its grid, list or canvas focused, so the
         // next ⇧→ acts at once. Not when another
@@ -700,10 +754,9 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         item.isBordered = true
         switch id {
         case Self.lockItem:
-            item.label = "Lock"
             item.action = #selector(toggleLockFromToolbar(_:))
-            item.toolTip = ShortcutTable.tooltip(for: .compareLock, context: .compare)
-            item.image = Self.lockImage(locked: isLocked)
+            item.toolTip = "Zoom and pan in all panes together. " + ShortcutTable.tooltip(for: .compareLock, context: .compare)
+            updateLockItem(item)
         case Self.fitAllItem:
             item.label = "Fit All"
             item.action = #selector(fitAllFromToolbar(_:))
@@ -723,8 +776,15 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     var lockToolbarItem: NSToolbarItem? { toolbar?.items.first { $0.itemIdentifier == Self.lockItem } }
     var fitAllToolbarItem: NSToolbarItem? { toolbar?.items.first { $0.itemIdentifier == Self.fitAllItem } }
 
+    private func updateLockItem(_ item: NSToolbarItem) {
+        item.label = isLocked ? "Sync Zoom and Pan: On" : "Sync Zoom and Pan: Off"
+        item.image = Self.lockImage(locked: isLocked)
+    }
+
     private func refreshLockItem() {
-        lockToolbarItem?.image = Self.lockImage(locked: isLocked)
+        if let item = lockToolbarItem { updateLockItem(item) }
+        fitAllToolbarItem?.label = isLocked ? "Fit All" : "Fit Selected"
+        fitAllToolbarItem?.toolTip = isLocked ? "Fit All" : "Fit Selected"
     }
 
     @objc func toggleLockFromToolbar(_ sender: Any?) { setLocked(!isLocked) }
@@ -737,6 +797,11 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
 
     public override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        case #selector(keepFocusedPhoto(_:)):
+            menuItem.state = focusedPane === referencePane ? .on : .off; return focusedPane != nil
+        case #selector(toggleLockFromToolbar(_:)):
+            menuItem.state = isLocked ? .on : .off; return true
+        case #selector(fitAllFromToolbar(_:)): return true
         case NSSelectorFromString("undo:"):
             menuItem.title = compareUndoManager.undoMenuItemTitle
             return compareUndoManager.canUndo
@@ -801,6 +866,8 @@ struct CompareTrashPlace {
     weak var pane: ComparePane?
     /// Its slot when it was trashed.
     let slot: Int
+    var wasReference = false
+    var referenceGeneration: UInt64 = 0
 }
 
 extension CompareWindow {
@@ -815,7 +882,7 @@ extension CompareWindow {
     func trash(listIndex index: Int) {
         guard list.indices.contains(index) else { return }
         let group = list[index]
-        let place = panes.firstIndex { $0.index == index }.map { CompareTrashPlace(pane: panes[$0], slot: $0) }
+        let place = panes.firstIndex { $0.index == index }.map { CompareTrashPlace(pane: panes[$0], slot: $0, wasReference: panes[$0] === referencePane, referenceGeneration: referenceGeneration) }
         removeFromList(at: index, shownBy: place?.pane)
         let ops = fileOps
         let previous = trashChain
@@ -844,7 +911,7 @@ extension CompareWindow {
     }
 
     private func removeFromList(at index: Int, shownBy pane: ComparePane?) {
-        if let pane { flushPendingOrientation(pane) }
+        if let pane { flushPendingOrientation(pane); if pane === referencePane { referencePane = nil } }
         list.remove(at: index)
         for other in panes where other !== pane && other.index > index { other.index -= 1 }
         for other in panes where other !== pane { other.listTask = queueList(for: other) }
@@ -923,6 +990,7 @@ extension CompareWindow {
         }
         for pane in panes { pane.listTask = queueList(for: pane) }
         if let target, let slot = panes.firstIndex(where: { $0 === target }) {
+            if place?.wasReference == true, place?.referenceGeneration == referenceGeneration, referencePane == nil { referencePane = target }
             focus(slot)
             load(target)
         }

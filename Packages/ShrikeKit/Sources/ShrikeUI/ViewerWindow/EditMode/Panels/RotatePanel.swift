@@ -11,11 +11,9 @@
 //      `onAngleChanged` with a `.draft` quality hint — the controller
 //      routes that through `EditRenderer.render(recipe:from:qualityHint:)`
 //      against a downsampled source for live feedback.
-//    * On mouseUp, the panel fires `onAngleCommitted` with `.full`; the
-//      controller re-renders at full-res and (when Apply is clicked)
-//      appends a `.rotate(degrees:)` op.
-//    * A 500 ms idle timer after the last continuous event also flushes
-//      to `.full`, like the coalescer.
+//    * A 500 ms idle timer after the last continuous event fires
+//      `onAngleCommitted`. The controller refines the owned preview at
+//      full resolution without appending another rotation step.
 //
 
 import AppKit
@@ -36,7 +34,6 @@ final class RotatePanel: NSView {
     var onAngleCommitted: ((Double) -> Void)?
     /// Fired when the slider reset to 0.
     var onReset: (() -> Void)?
-    /// Fired when the user clicks Apply.
     /// Fired when the auto-crop toggle flips.
     var onAutoCropChanged: ((Bool) -> Void)?
 
@@ -49,6 +46,7 @@ final class RotatePanel: NSView {
 
     /// Current slider angle in degrees, clamped to ±45°
     private(set) var angle: Double = 0
+    var autoCropEnabled: Bool { autoCropCheckbox.state == .on }
 
     // MARK: - Subviews
 
@@ -75,6 +73,7 @@ final class RotatePanel: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func build() {
+        for control in [quickCCW, quickHalf, quickCW, autoCropCheckbox, resetButton] { ChromeTypography.initializeNativeFont(control) }
         for btn in [quickCCW, quickHalf, quickCW] {
             btn.bezelStyle = .rounded
             btn.translatesAutoresizingMaskIntoConstraints = false
@@ -99,7 +98,7 @@ final class RotatePanel: NSView {
 
         angleLabel.translatesAutoresizingMaskIntoConstraints = false
         angleLabel.alignment = .center
-        angleLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        angleLabel.font = .monospacedDigitSystemFont(ofSize: ChromeTypography.size(11), weight: .regular)
 
         autoCropCheckbox.translatesAutoresizingMaskIntoConstraints = false
         autoCropCheckbox.state = .on
@@ -142,7 +141,7 @@ final class RotatePanel: NSView {
 
     private func sectionLabel(_ text: String) -> NSTextField {
         let l = NSTextField(labelWithString: text)
-        l.font = .systemFont(ofSize: 12, weight: .semibold)
+        l.font = ChromeTypography.font(12, weight: .semibold)
         l.translatesAutoresizingMaskIntoConstraints = false
         return l
     }
@@ -159,7 +158,7 @@ final class RotatePanel: NSView {
         angleSlider.setAccessibilityValueDescription(String(format: "%.1f degrees", angle))
         onAngleChanged?(angle)
 
-        // 500 ms idle-commit — matches the coalescer rule.
+        // Request full-quality pixels for this preview after 500 ms idle.
         idleCommitTask?.cancel()
         let latest = angle
         idleCommitTask = Task { [weak self] in
@@ -167,7 +166,7 @@ final class RotatePanel: NSView {
             try? await Task.sleep(nanoseconds: ns)
             if Task.isCancelled { return }
             await MainActor.run {
-                guard let self else { return }
+                guard !Task.isCancelled, let self else { return }
                 // Only commit if the user hasn't since re-entered the
                 // drag (slider has the same angle as when the timer
                 // fired; the timer is cancelled on every new event).
@@ -191,6 +190,12 @@ final class RotatePanel: NSView {
     }
 
 
+    /// A removed/reset panel must not commit its old slider state later.
+    func cancelPendingCommit() {
+        idleCommitTask?.cancel()
+        idleCommitTask = nil
+    }
+
     // MARK: - Public setters
 
     func setAngle(_ degrees: Double) {
@@ -205,6 +210,8 @@ final class RotatePanel: NSView {
     }
 
     // MARK: - Test seams
+
+    var pendingCommitForTesting: Task<Void, Never>? { idleCommitTask }
 
     internal var _angleSlider: NSSlider { angleSlider }
     internal var _quickCW: NSButton { quickCW }

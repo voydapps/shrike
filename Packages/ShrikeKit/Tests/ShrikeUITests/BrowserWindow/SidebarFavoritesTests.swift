@@ -16,7 +16,12 @@ final class SidebarFavoritesTests: XCTestCase {
 
     private var root: URL!
 
+    private let expansionKeys = ["shrike.browser.tree.expanded", "shrike.browser.tree.expanded.sections"]
+    private var savedExpansion: [String: Any] = [:]
+
     override func setUp() async throws {
+        savedExpansion = [:]
+        for key in expansionKeys { savedExpansion[key] = ShrikeDefaults.store.object(forKey: key) }
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("shrike-fav-\(UUID().uuidString)", isDirectory: true)
         for name in ["Client", "Italy", "Seed1", "Seed2"] {
@@ -26,6 +31,10 @@ final class SidebarFavoritesTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        for key in expansionKeys {
+            if let value = savedExpansion[key] { ShrikeDefaults.store.set(value, forKey: key) }
+            else { ShrikeDefaults.store.removeObject(forKey: key) }
+        }
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -152,6 +161,7 @@ final class SidebarFavoritesTests: XCTestCase {
         XCTAssertEqual(locations.children.map(\.symbolName), ["sdcard", "internaldrive", "externaldrive"])
 
         let outline = tree.outlineViewForTesting
+        outline.expandItem(locations)
         let sdRow = outline.row(forItem: locations.children[0])
         let sdCell = try XCTUnwrap(tree.cellForTesting(row: sdRow))
         let eject = try XCTUnwrap(sdCell.ejectButton)

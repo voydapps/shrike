@@ -499,7 +499,7 @@ final class InspectorPreviewImageView: NSImageView {
         // A file that can't be previewed: glyph and one line (spec 25 §2.2).
         brokenGlyph.image = Badges.brokenFileGlyph(pointSize: 32)
         brokenGlyph.contentTintColor = Badges.brokenFileTint
-        brokenLabel.font = .systemFont(ofSize: 13)
+        brokenLabel.font = ChromeTypography.font(13)
         brokenLabel.textColor = .secondaryLabelColor
         let stack = NSStackView(views: [brokenGlyph, brokenLabel])
         stack.orientation = .vertical

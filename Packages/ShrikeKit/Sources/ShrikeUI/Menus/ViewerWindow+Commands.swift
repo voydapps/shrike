@@ -34,6 +34,9 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
 
     override public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        case #selector(toggleReviewControls(_:)):
+            menuItem.state = Prefs.reviewControlsVisible ? .on : .off
+            return !contentRoot.isEditModeActive
         case ShrikeMainMenu.commandAction, #selector(NSText.copy(_:)):
             guard let command = menuItem.shrikeCommand else { return false }
             menuItem.state = menuState(for: command)
@@ -111,7 +114,7 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         case .editImage:
             // RAW is never written (spec 24 §4.5): edit the JPEG instead.
             // A photo that can't be opened has nothing to edit (spec 26 §2).
-            return hasPixels && !edit && !rawBlocksEditing(item) && !contentRoot.isShowingDecodeError
+            return hasPixels && !edit && canBeginEditingDisplayedPhoto && !rawBlocksEditing(item) && !contentRoot.isShowingDecodeError
         case .zoomIn:
             return hasPixels && contentRoot.imageView.canZoomIn
         case .zoomOut:
@@ -121,7 +124,7 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         case .editCrop, .editRotate, .editResize, .editColor,
              .levels, .autoContrast, .autoColor:
             // The edit tools never open on a RAW view (spec 24 §4.5), nor on a decode error.
-            return hasPixels && !rawBlocksEditing(item) && !contentRoot.isShowingDecodeError
+            return hasPixels && (edit || canBeginEditingDisplayedPhoto) && !rawBlocksEditing(item) && !contentRoot.isShowingDecodeError
         case .resetEdits:
             return edit && contentRoot.editModeController.hasPendingEdits
         case .toggleFilmstrip:

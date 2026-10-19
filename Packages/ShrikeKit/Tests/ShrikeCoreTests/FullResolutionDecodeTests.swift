@@ -9,6 +9,7 @@
 import XCTest
 import CoreGraphics
 import ImageIO
+import os
 @testable import ShrikeCore
 
 final class FullResolutionDecodeTests: XCTestCase {
@@ -75,6 +76,38 @@ final class FullResolutionDecodeTests: XCTestCase {
     private struct FakeTexture: PreparedDisplayImage {
         let width: Int, height: Int
         var byteCount: Int { width * height * 4 }
+    }
+
+    private final class LifetimeTexture: PreparedDisplayImage {
+        let byteCount = 1
+        let releases: OSAllocatedUnfairLock<Int>
+
+        init(releases: OSAllocatedUnfairLock<Int>) { self.releases = releases }
+        deinit { releases.withLock { $0 += 1 } }
+    }
+
+    func testFinishedFullResolution_doesNotRetainTextureAfterCallerReleasesIt() async throws {
+        let tmp = TempDir("fullres-lifetime")
+        defer { tmp.cleanup() }
+        let url = tmp.url.appendingPathComponent("image.jpg")
+        try F.write(F.quadrants(width: 240, height: 160), to: url)
+        let releases = OSAllocatedUnfairLock(initialState: 0)
+        let queue = DecodeQueue(preparer: DisplayPreparer { image, maxEdge in
+            if maxEdge == nil { return LifetimeTexture(releases: releases) }
+            return FakeTexture(width: image.width, height: image.height)
+        })
+        await queue.setNavigation(list: [FileImageSource(url: url)], currentIndex: 0)
+        var entry: DecodedImage? = try await queue.loadFullResolution(at: 0)
+        XCTAssertTrue(entry?.prepared is LifetimeTexture)
+        XCTAssertEqual(releases.withLock { $0 }, 0, "the caller still owns the full-size texture")
+        entry = nil
+        let deadline = Date().addingTimeInterval(2)
+        while releases.withLock({ $0 }) == 0, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(releases.withLock { $0 }, 1,
+                       "the live queue must not retain a completed full-resolution result")
+        await queue.purge()
     }
 
     func testWithPreparer_uprightGetsLazyTwin_rotatedGetsOrientedTexture() async throws {
@@ -191,6 +224,38 @@ final class FullResolutionDecodeTests: XCTestCase {
         do { _ = try await first.value; XCTFail("older request must be cancelled") } catch is CancellationError {}
         let img = try await second.value
         XCTAssertEqual(img.sourceID, FileImageSource(url: urls[1]).id)
+    }
+
+    func testOlderFullResolutionCompletion_preservesNewerCancellationHandle() async throws {
+        let tmp = TempDir("fullres-handle")
+        defer { tmp.cleanup() }
+        let urls = try (0..<2).map { i -> URL in
+            let url = tmp.url.appendingPathComponent("n\(i).jpg")
+            try F.write(F.quadrants(width: 240 + i * 16, height: 160), to: url)
+            return url
+        }
+        let started = OSAllocatedUnfairLock(initialState: false)
+        let release = DispatchSemaphore(value: 0)
+        let queue = DecodeQueue(preparer: DisplayPreparer { image, maxEdge in
+            if maxEdge == nil, image.width == 240 {
+                started.withLock { $0 = true }
+                release.wait()
+            }
+            return FakeTexture(width: image.width, height: image.height)
+        })
+        await queue.setNavigation(list: urls.map { FileImageSource(url: $0) }, currentIndex: 0)
+        defer { release.signal() }
+        let first = Task { try await queue.loadFullResolution(at: 0) }
+        while !started.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
+        let second = Task { try await queue.loadFullResolution(at: 1) }
+        do { _ = try await first.value; XCTFail("the older request must be cancelled") }
+        catch is CancellationError {}
+        // The older request's cleanup has run while the newer work is
+        // still blocked. Purge must retain the ability to cancel it.
+        await queue.purge()
+        release.signal()
+        do { _ = try await second.value; XCTFail("purge must cancel the newer request") }
+        catch is CancellationError {}
     }
 }
 

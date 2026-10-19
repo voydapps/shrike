@@ -46,8 +46,18 @@ final class SmallPolish028Tests: XCTestCase {
         defer { welcome.close() }
         XCTAssertEqual(welcome.openFolderButton.keyEquivalent, "\r")
         XCTAssertEqual(welcome.openButton.keyEquivalent, "")
-        XCTAssertEqual(welcome.openFolderButton.accentFillMechanism,
-                       { if #available(macOS 26, *) { return "prominent" } else { return "accent" } }())
+        XCTAssertEqual(welcome.openFolderButton.bezelStyle, .rounded)
+        XCTAssertTrue(welcome.openFolderButton.isBordered)
+        XCTAssertEqual(welcome.openFolderButton.bezelColor, ShrikeAccent.mark)
+        XCTAssertTrue(welcome.openFolderButton.isEnabled)
+        XCTAssertTrue(welcome.openFolderButton.acceptsFirstResponder)
+        var folderOpens = 0, photoOpens = 0
+        welcome.onOpenFolder = { folderOpens += 1 }
+        welcome.onOpenFiles = { photoOpens += 1 }
+        welcome.openFolderButton.performClick(nil)
+        welcome.openButton.performClick(nil)
+        XCTAssertEqual(folderOpens, 1)
+        XCTAssertEqual(photoOpens, 1)
     }
 
     // MARK: V5

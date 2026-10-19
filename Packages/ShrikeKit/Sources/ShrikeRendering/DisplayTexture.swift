@@ -58,6 +58,7 @@ public final class DisplayTexture: PreparedDisplayImage, @unchecked Sendable {
     public let texture: any MTLTexture
     /// Texture the pixels were written into (`rgba8Unorm` / `rgba16Float`).
     public let storage: any MTLTexture
+    public let resourceLease: ImageResourceLease?
     public let encoding: DisplayTextureEncoding
     /// Pixel size of the CGImage the texture was built from. The texture
     /// itself may be smaller (capped at the requested long edge).
@@ -66,8 +67,14 @@ public final class DisplayTexture: PreparedDisplayImage, @unchecked Sendable {
 
     public init(
         storage: any MTLTexture, sampled: any MTLTexture, encoding: DisplayTextureEncoding,
-        sourceWidth: Int? = nil, sourceHeight: Int? = nil
+        sourceWidth: Int? = nil, sourceHeight: Int? = nil,
+        resources: ImageResourceBudget = .shared, owner: ImageResourceOwner = ImageResourceOwner(),
+        resourceLease: ImageResourceLease? = nil
     ) {
+        self.resourceLease = resourceLease ?? resources.retain([
+            ImageResourceCost(identity: ImageResourceIdentity(object: storage, kind: .gpuTexture),
+                              bytes: storage.width * storage.height * (encoding.isEightBit ? 4 : 8))
+        ], owner: owner, category: .displayCache)
         self.storage = storage
         self.texture = sampled
         self.encoding = encoding
@@ -123,6 +130,17 @@ public enum DisplayTextureFactory {
             make(from: image, commandQueue: nil, waitUntilCompleted: true, maxLongEdge: maxLongEdge)
         }
     )
+
+    /// The decode lane and visible slots charge the same budget/owner.
+    public static func preparer(resources: ImageResourceBudget, owner: ImageResourceOwner) -> DisplayPreparer {
+        DisplayPreparer(oriented: { stored, orientation, size, edge in
+            make(from: stored, orientation: orientation, sourceSize: size, commandQueue: nil,
+                 waitUntilCompleted: true, maxLongEdge: edge, resources: resources, owner: owner)
+        }, { image, edge in
+            make(from: image, commandQueue: nil, waitUntilCompleted: true, maxLongEdge: edge,
+                 resources: resources, owner: owner)
+        })
+    }
 
     /// Creates the Metal device, upload queue and Core Image contexts on
     /// a background thread, so the first neighbour texture does not pay
@@ -214,7 +232,8 @@ public enum DisplayTextureFactory {
         sourceSize: (width: Int, height: Int)? = nil,
         commandQueue: (any MTLCommandQueue)?,
         waitUntilCompleted: Bool,
-        maxLongEdge: Int? = nil
+        maxLongEdge: Int? = nil,
+        resources: ImageResourceBudget = .shared, owner: ImageResourceOwner = ImageResourceOwner()
     ) -> DisplayTexture? {
         guard let device,
               let queue = commandQueue ?? backgroundQueue,
@@ -224,6 +243,11 @@ public enum DisplayTextureFactory {
         let orientedWidth = turns ? image.height : image.width
         let orientedHeight = turns ? image.width : image.height
         let size = cappedSize(width: orientedWidth, height: orientedHeight, maxLongEdge: maxLongEdge)
+        let (pixels, pixelOverflow) = size.width.multipliedReportingOverflow(by: size.height)
+        let (textureBytes, byteOverflow) = pixels.multipliedReportingOverflow(by: encoding.isEightBit ? 4 : 8)
+        guard !pixelOverflow, !byteOverflow, let reservation = resources.tryReserve(bytes: textureBytes,
+            owner: owner, category: .displayCache, priority: .visible, policy: .requiredImage) else { return nil }
+        defer { reservation.release() }
         let scaled = size.width != orientedWidth || size.height != orientedHeight
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: encoding.isEightBit ? .rgba8Unorm : .rgba16Float,
@@ -273,7 +297,8 @@ public enum DisplayTextureFactory {
         return DisplayTexture(
             storage: storage, sampled: sampled, encoding: encoding,
             sourceWidth: sourceSize?.width ?? orientedWidth,
-            sourceHeight: sourceSize?.height ?? orientedHeight
+            sourceHeight: sourceSize?.height ?? orientedHeight,
+            resources: resources, owner: owner
         )
     }
 

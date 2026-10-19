@@ -350,8 +350,17 @@ final class LivePhotoPlaybackTests: XCTestCase {
         let content = viewer.contentRootForTesting
         content.livePhotoBadgeForTesting.requestPlay(withSound: false, fromHover: false)
         try await waitUntil("playing") { self.state(content) == .playing }
+        let target = viewer.groups[0].primary
+        try await waitUntil("accepted live photo for editing") {
+            viewer.displayedItem?.listIndex == 0 && viewer.displayedItem?.shownURL == target
+                && content.imageView.sourceID == FileImageSource(url: target).id
+                && viewer.canPerform(.editImage)
+        }
+        XCTAssertEqual(state(content), .playing, "playback is running immediately before edit entry")
         viewer.enterEditMode(landOn: .crop)
         await viewer.waitForEditLoad()
+        XCTAssertTrue(content.isEditModeActive)
+        XCTAssertTrue(content.editModeController.isActive)
         XCTAssertEqual(state(content), .idle)
         content.playLivePhoto(withSound: false, fromHover: false)
         XCTAssertEqual(state(content), .idle, "no playback while editing")

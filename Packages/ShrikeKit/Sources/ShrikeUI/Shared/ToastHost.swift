@@ -4,8 +4,10 @@
 //
 //  The one toast used by the viewer, the browser, compare and slideshow
 //
-//  * Geometry: height 32 pt, width hugs the text (160–480 pt), 12 pt side
-//    padding, 8 pt between text and button, corner radius 8 pt.
+//  * Ordinary toast: 32 pt high, width hugs text (160–480 pt), 12 pt side
+//    padding, 8 pt before an action, capsule shape (glass in fullscreen).
+//  * Transfer progress: solid radius-16 card, preferred width 280 pt, at
+//    least 60 pt high, 16 pt side insets and a contained native progress bar.
 //  * Durations: 1.2 s glyph-only, 2.5 s text, 4 s with an action button.
 //    The timer pauses while the pointer is over the toast.
 //  * A new toast replaces the current one at once (no stacking).
@@ -36,9 +38,12 @@ public struct ToastContent: Equatable, Sendable {
     public var kind: Kind
     /// Title of the single action button ("Undo", "Show", "Revert").
     public var actionTitle: String?
-    /// 0…1 while a file operation runs: a 160 × 4 pt bar
-    /// under the text, toast height 44 pt, no auto-dismiss.
+    /// Completed-work fraction while a file operation runs. The progress card
+    /// remains visible until its matching operation dismisses it.
     public var progress: Double?
+    /// Group-level work can remain at zero during a filesystem call. Show
+    /// native busy progress without inventing a nonzero completed fraction.
+    public var progressIsIndeterminate = false
     /// Replaces the default duration (the Trash toast stays 6 s).
     public var customDuration: TimeInterval?
     /// VoiceOver label and tooltip of the action button, when they differ
@@ -103,7 +108,7 @@ final class ToastActionButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     private var titleAttributes: [NSAttributedString.Key: Any] {
-        [.font: font ?? NSFont.systemFont(ofSize: 13, weight: .semibold),
+        [.font: font ?? ChromeTypography.font(13, weight: .semibold),
          .foregroundColor: contentTintColor ?? ShrikeAccent.mark]
     }
 
@@ -135,7 +140,8 @@ final class ToastActionButton: NSButton {
 public final class ToastHostView: HUDSurfaceView {
 
     public static let height: CGFloat = 32
-    public static let progressHeight: CGFloat = 44
+    public static let progressHeight: CGFloat = 60
+    static let progressWidth: CGFloat = 280
     public static let minWidth: CGFloat = 160
     public static let maxWidth: CGFloat = 480
     static let fadeIn: TimeInterval = 0.12
@@ -143,6 +149,15 @@ public final class ToastHostView: HUDSurfaceView {
     /// Spec 27 N6: black 0.82 fill, 0.5 pt white 0.16 hairline, a tight shadow.
     static let pillStyle = SurfaceStyle(
         fill: NSColor.black.withAlphaComponent(0.82),
+        hairline: NSColor.white.withAlphaComponent(0.16),
+        hairlineWidth: 0.5,
+        shadowOpacity: 0.25,
+        shadowRadius: 3,
+        shadowOffset: CGSize(width: 0, height: -1)
+    )
+
+    static let progressStyle = SurfaceStyle(
+        fill: HUDGlass.opaqueSurfaceColor,
         hairline: NSColor.white.withAlphaComponent(0.16),
         hairlineWidth: 0.5,
         shadowOpacity: 0.25,
@@ -175,6 +190,10 @@ public final class ToastHostView: HUDSurfaceView {
     private var buttonCollapsed: NSLayoutConstraint?
     private var heightConstraint: NSLayoutConstraint?
     private var labelCenterY: NSLayoutConstraint?
+    private var labelLeading: NSLayoutConstraint?
+    private var ordinaryWidthConstraints: [NSLayoutConstraint] = []
+    private var progressConstraints: [NSLayoutConstraint] = []
+    private var progressEdgeConstraints: [NSLayoutConstraint] = []
     private let progressBar = NSProgressIndicator()
 
     // Timer that can pause on hover.
@@ -202,7 +221,7 @@ public final class ToastHostView: HUDSurfaceView {
         surfaceStyle = Self.pillStyle
         translatesAutoresizingMaskIntoConstraints = false
 
-        label.font = .systemFont(ofSize: 13)
+        label.font = ChromeTypography.font(13)
         label.textColor = .labelColor
         label.lineBreakMode = .byTruncatingMiddle
         label.maximumNumberOfLines = 1
@@ -213,7 +232,7 @@ public final class ToastHostView: HUDSurfaceView {
 
         button.isBordered = false
         button.bezelStyle = .inline
-        button.font = .systemFont(ofSize: 13, weight: .semibold)
+        button.font = ChromeTypography.font(13, weight: .semibold)
         // Accent text on the dark pill, lightened for 4.5:1.
         button.contentTintColor = ShrikeAccent.mark
         button.refusesFirstResponder = true
@@ -233,6 +252,7 @@ public final class ToastHostView: HUDSurfaceView {
         progressBar.minValue = 0
         progressBar.maxValue = 1
         progressBar.controlSize = .small
+        progressBar.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         progressBar.isHidden = true
         progressBar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(progressBar)
@@ -245,16 +265,34 @@ public final class ToastHostView: HUDSurfaceView {
         let centerY = label.centerYAnchor.constraint(equalTo: centerYAnchor)
         heightConstraint = height
         labelCenterY = centerY
-        NSLayoutConstraint.activate([
-            height,
+        let leading = label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12)
+        labelLeading = leading
+        ordinaryWidthConstraints = [
             widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minWidth),
             widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxWidth),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+        ]
+        let preferredWidth = widthAnchor.constraint(equalToConstant: Self.progressWidth)
+        preferredWidth.priority = .defaultHigh
+        let minimumWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: 240)
+        minimumWidth.priority = NSLayoutConstraint.Priority(999)
+        progressConstraints = [
+            preferredWidth,
+            minimumWidth,
+            widthAnchor.constraint(lessThanOrEqualToConstant: 360),
+            heightAnchor.constraint(greaterThanOrEqualToConstant: Self.progressHeight),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            label.heightAnchor.constraint(greaterThanOrEqualToConstant: 18),
+            progressBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            progressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            progressBar.heightAnchor.constraint(equalToConstant: 6),
+            progressBar.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 8),
+            progressBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
+        ]
+        NSLayoutConstraint.activate(ordinaryWidthConstraints)
+        NSLayoutConstraint.activate([
+            height,
+            leading,
             centerY,
-            progressBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            progressBar.widthAnchor.constraint(equalToConstant: 160),
-            progressBar.heightAnchor.constraint(equalToConstant: 4),
-            progressBar.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 6),
             button.trailingAnchor.constraint(equalTo: trailingAnchor),
             button.topAnchor.constraint(equalTo: topAnchor),
             button.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -278,6 +316,11 @@ public final class ToastHostView: HUDSurfaceView {
         // Below required, so a `keepBelow` rule can push the toast down.
         top.priority = .defaultHigh
         topConstraint = top
+        progressEdgeConstraints = [
+            leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 16),
+            trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -16),
+        ]
+        if content?.progress != nil { NSLayoutConstraint.activate(progressEdgeConstraints) }
         NSLayoutConstraint.activate([
             centerXAnchor.constraint(equalTo: container.centerXAnchor),
             top,
@@ -316,13 +359,47 @@ public final class ToastHostView: HUDSurfaceView {
 
     // MARK: - Show / dismiss
 
+    /// Identifies one presentation without keeping its host (or window) alive.
+    struct ProgressTicket {
+        fileprivate weak var host: ToastHostView?
+        fileprivate let generation: Int
+    }
+
+    func showProgress(_ content: ToastContent) -> ProgressTicket {
+        precondition(content.progress != nil)
+        show(content)
+        return ProgressTicket(host: self, generation: showGeneration)
+    }
+
+    func updateProgress(_ content: ToastContent, matching ticket: ProgressTicket) -> ProgressTicket? {
+        guard ownsProgress(ticket) else { return nil }
+        precondition(content.progress != nil)
+        present(content, action: nil, continuingProgress: true)
+        return ProgressTicket(host: self, generation: showGeneration)
+    }
+
+    private func ownsProgress(_ ticket: ProgressTicket) -> Bool {
+        ticket.host === self && ticket.generation == showGeneration && content?.progress != nil
+    }
+
+    /// Completion of older work must not hide a newer notice or progress owner.
+    func dismissProgress(matching ticket: ProgressTicket) {
+        guard ownsProgress(ticket) else { return }
+        dismiss()
+    }
+
     /// Shows `content`, replacing whatever toast is on screen.
     public func show(_ content: ToastContent, action: (@MainActor () -> Void)? = nil) {
+        present(content, action: action, continuingProgress: false)
+    }
+
+    private func present(_ content: ToastContent, action: (@MainActor () -> Void)?,
+                         continuingProgress: Bool) {
         cancelTimer()
         showGeneration &+= 1
         if !isShowing { applyAvoidance() }
         // A progress update of the same toast is not spoken again.
-        let continuing = self.content?.progress != nil && content.progress != nil
+        let continuing = continuingProgress && self.content?.progress != nil && content.progress != nil
         self.content = content
         self.action = content.actionTitle == nil ? nil : action
 
@@ -341,16 +418,7 @@ public final class ToastHostView: HUDSurfaceView {
             buttonCollapsed?.isActive = true
         }
 
-        if let progress = content.progress {
-            progressBar.doubleValue = progress
-            progressBar.isHidden = false
-            heightConstraint?.constant = Self.progressHeight
-            labelCenterY?.constant = -6
-        } else {
-            progressBar.isHidden = true
-            heightConstraint?.constant = Self.height
-            labelCenterY?.constant = 0
-        }
+        configureProgressPresentation(content)
 
         if let superview {
             topConstraint?.constant = placement.topOffset(safeAreaTop: superview.safeAreaInsets.top)
@@ -359,9 +427,16 @@ public final class ToastHostView: HUDSurfaceView {
         isHidden = false
         setAccessibilityElement(true)
         setAccessibilityLabel(content.message)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = Self.fadeIn
-            animator().alphaValue = 1
+        if continuing {
+            // A stream update is not a fresh reveal. Keep the owned card fully
+            // readable even when updates arrive during its first fade.
+            layer?.removeAnimation(forKey: "opacity")
+            alphaValue = 1
+        } else {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = Self.fadeIn
+                animator().alphaValue = 1
+            }
         }
         if !continuing {
             announce(content.message, content.announcementPriority)
@@ -374,6 +449,39 @@ public final class ToastHostView: HUDSurfaceView {
         // the new toast, so the 6 s clock would run under the Undo button.
         superview?.layoutSubtreeIfNeeded()
         if pointerIsInside { pauseTimer() }
+    }
+
+    private func configureProgressPresentation(_ content: ToastContent) {
+        let isProgress = content.progress != nil
+        NSLayoutConstraint.deactivate(progressConstraints + progressEdgeConstraints + ordinaryWidthConstraints)
+        heightConstraint?.isActive = !isProgress
+        labelCenterY?.isActive = !isProgress
+        labelLeading?.constant = isProgress ? 16 : 12
+        buttonCollapsed?.constant = isProgress ? -16 : -12
+        label.font = ChromeTypography.font(13, weight: isProgress ? .semibold : .regular)
+        label.textColor = isProgress ? .white : .labelColor
+        label.setContentCompressionResistancePriority(isProgress ? .required : .defaultHigh, for: .vertical)
+        glassShape = isProgress ? .panel : .capsule
+        usesOpaqueFill = isProgress
+        surfaceStyle = isProgress ? Self.progressStyle : Self.pillStyle
+        if isProgress {
+            NSLayoutConstraint.activate(progressConstraints + progressEdgeConstraints)
+            progressBar.isIndeterminate = content.progressIsIndeterminate
+            progressBar.doubleValue = min(1, max(0, content.progress ?? 0))
+            progressBar.setAccessibilityLabel(content.message)
+            progressBar.isHidden = false
+            if content.progressIsIndeterminate { progressBar.startAnimation(nil) }
+            else { progressBar.stopAnimation(nil) }
+        } else {
+            NSLayoutConstraint.activate(ordinaryWidthConstraints)
+            progressBar.stopAnimation(nil)
+            progressBar.isIndeterminate = false
+            progressBar.isHidden = true
+        }
+    }
+
+    override var increasedContrastBorderColor: NSColor? {
+        content?.progress != nil ? NSColor.white.withAlphaComponent(0.35) : nil
     }
 
     private var pointerIsInside: Bool {
@@ -389,6 +497,7 @@ public final class ToastHostView: HUDSurfaceView {
 
     public func dismiss(animated: Bool = true) {
         cancelTimer()
+        progressBar.stopAnimation(nil)
         content = nil
         action = nil
         setAccessibilityElement(false)
@@ -430,6 +539,7 @@ public final class ToastHostView: HUDSurfaceView {
     /// Test seam: the action button.
     var actionButtonForTesting: NSButton { button }
     var labelForTesting: NSTextField { label }
+    var progressBarForTesting: NSProgressIndicator { progressBar }
 
     /// Test seam: the button's title when visible.
     var actionTitleForTesting: String? { button.isHidden ? nil : button.title }

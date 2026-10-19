@@ -170,7 +170,7 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
         case .compareNextAll: return "Next Image in All Panes"
         case .comparePreviousAll: return "Previous Image in All Panes"
         case .compareFitAll: return "Fit All"
-        case .compareLock: return "Lock Zoom and Pan"
+        case .compareLock: return "Sync Zoom and Pan"
         case .compareFocus1: return "Focus Pane 1"
         case .compareFocus2: return "Focus Pane 2"
         case .compareFocus3: return "Focus Pane 3"

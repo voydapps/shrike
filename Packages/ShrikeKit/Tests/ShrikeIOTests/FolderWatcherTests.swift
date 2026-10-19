@@ -313,6 +313,64 @@ final class FolderWatcherTests: XCTestCase {
         XCTAssertTrue(finished, "releasing the watcher must finish the stream")
     }
 
+    /// Cancellation can run while Swift holds a task-status lock. The watch
+    /// queue can simultaneously be yielding into that task, so termination
+    /// must enqueue teardown rather than synchronously join the queue.
+    func testTerminationReturnsBeforeBusyWatcherQueueIsReleased() throws {
+        let watcher = try FolderWatcher(folder: root, options: fastOptions())
+        let queueEntered = DispatchSemaphore(value: 0)
+        let releaseQueue = DispatchSemaphore(value: 0)
+        let terminationStarted = DispatchSemaphore(value: 0)
+        let terminationReturned = DispatchSemaphore(value: 0)
+        watcher.enqueueOnQueueForTesting {
+            queueEntered.signal()
+            releaseQueue.wait()
+        }
+        // Always open the gate, including the expected failure against the
+        // synchronous implementation, and drain it before watcher teardown.
+        defer {
+            releaseQueue.signal()
+            watcher.stop()
+        }
+        guard queueEntered.wait(timeout: .now() + 2) == .success else {
+            return XCTFail("watcher queue fixture did not enter its gate")
+        }
+        DispatchQueue.global().async {
+            terminationStarted.signal()
+            watcher.invokeTerminationForTesting()
+            terminationReturned.signal()
+        }
+        guard terminationStarted.wait(timeout: .now() + 2) == .success else {
+            return XCTFail("termination invocation worker did not start")
+        }
+        let returnedWhileQueueHeld = terminationReturned.wait(timeout: .now() + 1)
+        releaseQueue.signal()
+        let workerDrained = returnedWhileQueueHeld == .success
+            || terminationReturned.wait(timeout: .now() + 2) == .success
+        XCTAssertTrue(workerDrained, "termination worker must finish after the gate opens")
+        XCTAssertEqual(returnedWhileQueueHeld, .success,
+                       "termination callback must not synchronously wait for the watcher queue")
+        watcher.stop()
+        XCTAssertFalse(watcher.isRunning)
+    }
+
+    func testCancellingConsumerAfterDeliveredChangeStopsWatcher() async throws {
+        let watcher = try FolderWatcher(folder: root, options: fastOptions())
+        let (collector, task) = startCollecting(watcher)
+        defer { task.cancel(); watcher.stop() }
+        try touch("before-cancellation.jpg")
+        let delivered = await waitUntil { await collector.added.contains("before-cancellation.jpg") }
+        XCTAssertTrue(delivered, "the real consumer must receive a filesystem change before cancellation")
+        // Delivery proves the consumer ran. It does not claim that AsyncStream
+        // has already registered the following next() as a suspended waiter.
+        task.cancel()
+        await task.value
+        let stopped = await waitUntil { !watcher.isRunning }
+        XCTAssertTrue(stopped)
+        let finished = await collector.finished
+        XCTAssertTrue(finished)
+    }
+
     func testCancellingConsumerStopsWatcher() async throws {
         let watcher = try FolderWatcher(folder: root, options: fastOptions())
         let task = Task { for await _ in watcher.changes {} }

@@ -20,9 +20,16 @@ extension BrowserWindowController {
             if let responder = self.alertResponderForTesting { return responder(title) }
             return await ShrikeAlert.run(message: title, information: info, buttons: buttons, on: self.window)
         }
-        coordinator.showToast = { [weak self] content, action in
-            self?.toast(content.message, kind: content.kind, actionTitle: content.actionTitle,
-                        progress: content.progress, action: action)
+        coordinator.showProgressToast = { [weak self] content in
+            guard let self else { return nil }
+            if self.toastHost.superview == nil { self.toastHost.install(in: self.contentController.view) }
+            return self.toastHost.showProgress(content)
+        }
+        coordinator.updateProgressToast = { [weak self] content, ticket in
+            self?.toastHost.updateProgress(content, matching: ticket)
+        }
+        coordinator.dismissProgressToast = { [weak self] ticket in
+            self?.toastHost.dismissProgress(matching: ticket)
         }
         coordinator.onHUDPick = { [weak self] verb, choice in
             self?.clearChord()

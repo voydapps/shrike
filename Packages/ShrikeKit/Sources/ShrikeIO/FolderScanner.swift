@@ -34,6 +34,16 @@ public enum FolderScannerError: Error, Equatable, Sendable {
     case unreadable(URL, reason: String)
 }
 
+public struct FolderScanIssue: Sendable, Hashable {
+    public let url: URL
+    public let reason: String
+}
+public struct FolderScanResult: Sendable {
+    public let groups: [ImageGroup]
+    public let skipped: [FolderScanIssue]
+    public var skippedCount: Int { skipped.count }
+}
+
 /// The folders on either side of a folder, in its parent, for ⌥⌘← / ⌥⌘→.
 public struct SiblingFolders: Sendable, Equatable {
     /// The nearest earlier sibling that holds at least one image.
@@ -80,6 +90,14 @@ public enum FolderScanner {
         return ImageGrouping.group(urls, options: grouping)
     }
 
+    @concurrent
+    public static func imageGroupsWithDiagnostics(in folder: URL, including: URL? = nil, showHidden: Bool = false,
+        grouping: ImageGrouping.Options = ImageGroupingPreference.options) async throws -> FolderScanResult {
+        let result = try scanURLs(in: folder, including: including, showHidden: showHidden)
+        try Task.checkCancellation()
+        return FolderScanResult(groups: ImageGrouping.group(result.urls, options: grouping), skipped: result.skipped)
+    }
+
     /// The flat, sorted file list `imageGroups` groups. Synchronous; call
     /// it off the main actor.
     public static func imageURLs(
@@ -87,6 +105,11 @@ public enum FolderScanner {
         including: URL? = nil,
         showHidden: Bool = false
     ) throws -> [URL] {
+        try scanURLs(in: folder, including: including, showHidden: showHidden).urls
+    }
+
+    private static func scanURLs(in folder: URL, including: URL?, showHidden: Bool) throws
+        -> (urls: [URL], skipped: [FolderScanIssue]) {
         let fm = FileManager.default
         let base = folder.standardizedFileURL
         var isDirectory: ObjCBool = false
@@ -108,19 +131,30 @@ public enum FolderScanner {
         }
 
         var names: [String] = []
+        var skipped: [FolderScanIssue] = []
         names.reserveCapacity(entries.count)
         for (i, entry) in entries.enumerated() {
             if i & 1023 == 0, Task.isCancelled { throw CancellationError() }
-            guard ImageFormat.isFolderScanCandidate(entry), isFile(entry) else { continue }
+            guard ImageFormat.isFolderScanCandidate(entry) else { continue }
+            do {
+                let values = try entry.resourceValues(forKeys: Set(keys))
+                guard values.isRegularFile == true || (values.isSymbolicLink == true && isFile(entry)) else { continue }
+                guard fm.isReadableFile(atPath: entry.path) else {
+                    skipped.append(FolderScanIssue(url: entry, reason: "Permission denied or file unavailable.")); continue
+                }
+            } catch {
+                skipped.append(FolderScanIssue(url: entry, reason: error.localizedDescription)); continue
+            }
             names.append(entry.lastPathComponent)
         }
 
         if let including, let name = matchingName(of: including, in: base, listed: names) {
             if !names.contains(name) { names.append(name) }
+            skipped.removeAll { $0.url.lastPathComponent == name }
         }
 
         names.sort { $0.localizedStandardCompare($1) == .orderedAscending }
-        return names.map { base.appendingPathComponent($0, isDirectory: false) }
+        return (names.map { base.appendingPathComponent($0, isDirectory: false) }, skipped)
     }
 
     // MARK: - Sibling folders

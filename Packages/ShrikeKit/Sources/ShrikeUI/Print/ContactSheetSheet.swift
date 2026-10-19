@@ -24,10 +24,11 @@ struct ContactSheetScope: Equatable {
     var defaultsToSelection: Bool { selectedCount >= 2 }
     /// "All 180 in “Italy 2026”" ("All 180 images" with no folder).
     var allTitle: String {
-        folderName.isEmpty ? "All \(allCount) images" : "All \(allCount) in “\(folderName)”"
+        let photos = allCount == 1 ? "photo" : "photos"
+        return folderName.isEmpty ? "All \(allCount) visible \(photos)" : "All \(allCount) visible \(photos) in ‘\(folderName)’"
     }
     /// "The 12 selected".
-    var selectedTitle: String { "The \(selectedCount) selected" }
+    var selectedTitle: String { "\(selectedCount) selected \(selectedCount == 1 ? "photo" : "photos")" }
 }
 
 /// The sheet's answer.
@@ -85,8 +86,22 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
     /// Tests answer here instead of a sheet (nil = Cancel).
     static var responderForTesting: ((ContactSheetScope, ContactSheetOptions) -> ContactSheetRequest?)?
 
+    static var previewRendererForTesting: (@Sendable ([ImageGroup], ContactSheetOptions) async throws -> CGImage)?
+
     private let scope: ContactSheetScope
     private let initial: ContactSheetOptions
+    private var allGroups: [ImageGroup] = []
+    private var selectedGroups: [ImageGroup] = []
+    private var thumbnails: ThumbnailCache?
+    private var previewTask: Task<Void, Never>?
+    private var previewGeneration = 0
+    private let previewImage = NSImageView()
+    private let previewStatus = NSTextField(labelWithString: "Page Preview")
+    private let countLabel = NSTextField(labelWithString: "")
+    private let previewToggle = NSButton(checkboxWithTitle: "Show Page Preview", target: nil, action: nil)
+    private var previewContainer: NSStackView?
+    private var compact = false
+    private var previewBottomConstraint: NSLayoutConstraint?
     private var panel: NSPanel?
     private let allRadio = NSButton(radioButtonWithTitle: "", target: nil, action: nil)
     private let selectedRadio = NSButton(radioButtonWithTitle: "", target: nil, action: nil)
@@ -106,6 +121,7 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
 
     /// Shows the sheet on `window` (or answers from the test responder).
     static func present(on window: NSWindow?, scope: ContactSheetScope, initial: ContactSheetOptions,
+                        allGroups: [ImageGroup] = [], selectedGroups: [ImageGroup] = [], thumbnails: ThumbnailCache? = nil,
                         completion: @escaping (ContactSheetRequest?) -> Void) {
         if let responder = responderForTesting {
             completion(responder(scope, initial))
@@ -114,6 +130,8 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
         open?.finish(nil)
         let sheet = ContactSheetSheet(scope: scope, initial: initial)
         sheet.completion = completion
+        sheet.allGroups = allGroups; sheet.selectedGroups = selectedGroups; sheet.thumbnails = thumbnails
+        sheet.compact = (window?.screen?.visibleFrame.width ?? NSScreen.main?.visibleFrame.width ?? 1280) < 700
         open = sheet
         let panel = sheet.build()
         if let window {
@@ -140,6 +158,7 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
             radio.target = self
             radio.action = #selector(radioChanged(_:))
         }
+        titleField.delegate = self
         titleField.stringValue = initial.title
         titleField.placeholderString = "Contact sheet"
         titleField.setAccessibilityLabel("Title")
@@ -173,9 +192,11 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
         paperPopup.addItems(withTitles: ContactSheetForm.papers.map(\.title))
         paperPopup.selectItem(at: ContactSheetForm.papers.firstIndex { $0.value == initial.paper } ?? 0)
         paperPopup.setAccessibilityLabel("Paper")
+        paperPopup.target = self; paperPopup.action = #selector(previewChanged)
         captionPopup.addItems(withTitles: ContactSheetForm.captions.map(\.title))
         captionPopup.selectItem(at: ContactSheetForm.captions.firstIndex { $0.value == initial.caption } ?? 1)
         captionPopup.setAccessibilityLabel("Caption")
+        captionPopup.target = self; captionPopup.action = #selector(previewChanged)
 
         var rows: [[NSView]] = [[label("Images:"), allRadio]]
         if scope.offersSelection { rows.append([NSGridCell.emptyContentView, selectedRadio]) }
@@ -201,22 +222,48 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
         let buttons = NSStackView(views: [cancel, export])
         buttons.spacing = 12
 
+        let preview = NSStackView(views: [previewStatus, previewImage])
+        preview.orientation = .vertical; preview.spacing = 6
+        previewImage.imageScaling = .scaleProportionallyUpOrDown
+        previewImage.setAccessibilityLabel("Contact sheet first page preview")
+        previewContainer = preview
+        previewToggle.target = self; previewToggle.action = #selector(togglePreview)
+        previewToggle.isHidden = !compact
+        preview.isHidden = compact
+        previewImage.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        previewImage.heightAnchor.constraint(equalToConstant: 260).isActive = true
+        countLabel.font = ChromeTypography.font(12)
         let content = NSView()
-        for v in [heading, grid, buttons] as [NSView] {
+        for v in [heading, grid, buttons, countLabel, previewToggle, preview] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
+        let previewBottom = buttons.topAnchor.constraint(greaterThanOrEqualTo: preview.bottomAnchor, constant: 16)
+        previewBottomConstraint = previewBottom
+        previewBottom.isActive = !compact
         NSLayoutConstraint.activate([
-            content.widthAnchor.constraint(equalToConstant: ContactSheetForm.width),
+            content.widthAnchor.constraint(equalToConstant: compact ? 440 : 660),
             heading.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
             heading.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             grid.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 16),
             grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             grid.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -20),
-            buttons.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 20),
+            countLabel.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 12),
+            countLabel.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
+            previewToggle.topAnchor.constraint(equalTo: countLabel.bottomAnchor, constant: 8),
+            previewToggle.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
+            buttons.topAnchor.constraint(greaterThanOrEqualTo: previewToggle.bottomAnchor, constant: 16),
+
             buttons.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             buttons.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
         ])
+        if compact {
+            NSLayoutConstraint.activate([preview.topAnchor.constraint(equalTo: previewToggle.bottomAnchor, constant: 8),
+                preview.centerXAnchor.constraint(equalTo: content.centerXAnchor)])
+        } else {
+            NSLayoutConstraint.activate([preview.topAnchor.constraint(equalTo: heading.topAnchor),
+                preview.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16)])
+        }
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: ContactSheetForm.width, height: 300),
                             styleMask: [.titled], backing: .buffered, defer: true)
         panel.title = "Contact Sheet"
@@ -225,18 +272,21 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
         panel.defaultButtonCell = export.cell as? NSButtonCell
         panel.isReleasedWhenClosed = false
         self.panel = panel
+        schedulePreview()
         return panel
     }
 
     @objc private func radioChanged(_ sender: NSButton) {
         allRadio.state = sender === allRadio ? .on : .off
         selectedRadio.state = sender === selectedRadio ? .on : .off
+        schedulePreview()
     }
 
-    @objc private func stepperChanged() { columnsField.integerValue = stepper.integerValue }
+    @objc private func stepperChanged() { columnsField.integerValue = stepper.integerValue; schedulePreview() }
 
     /// A typed number in 3…8 moves the stepper at once.
     func controlTextDidChange(_ obj: Notification) {
+        defer { schedulePreview() }
         guard let n = Int(columnsField.stringValue.trimmingCharacters(in: .whitespaces)),
               ContactSheetOptions.columnRange.contains(n) else { return }
         stepper.integerValue = n
@@ -264,6 +314,8 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
     }
 
     private func finish(_ request: ContactSheetRequest?) {
+        previewGeneration += 1; previewTask?.cancel(); previewTask = nil
+        previewImage.image = nil; allGroups = []; selectedGroups = []; thumbnails = nil
         if let panel {
             if let parent = panel.sheetParent { parent.endSheet(panel) } else { panel.orderOut(nil) }
         }
@@ -272,6 +324,44 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
         self.completion = nil
         if Self.open === self { Self.open = nil }
         completion?(request)
+    }
+
+    @objc private func previewChanged() { schedulePreview() }
+    @objc private func togglePreview() {
+        previewContainer?.isHidden = previewToggle.state != .on
+        previewBottomConstraint?.isActive = previewToggle.state == .on
+        schedulePreview()
+        if let panel, let content = panel.contentView { panel.setContentSize(content.fittingSize) }
+    }
+    private func schedulePreview() {
+        previewTask?.cancel(); previewGeneration += 1
+        let generation = previewGeneration
+        let selected = scope.offersSelection && selectedRadio.state == .on
+        let count = selected ? scope.selectedCount : scope.allCount
+        let options = ContactSheetForm.options(title: titleField.currentEditor()?.string ?? titleField.stringValue, columns: stepper.integerValue,
+            paperIndex: paperPopup.indexOfSelectedItem, captionIndex: captionPopup.indexOfSelectedItem)
+        let pages = ContactSheetLayout(options: options).pageCount(for: count)
+        countLabel.stringValue = "\(count) \(count == 1 ? "photo" : "photos") · \(pages) \(pages == 1 ? "page" : "pages")"
+        previewStatus.stringValue = "Page 1 of \(pages)"
+        guard !compact || previewToggle.state == .on else { return }
+        let render: @Sendable ([ImageGroup], ContactSheetOptions) async throws -> CGImage
+        if let injected = Self.previewRendererForTesting { render = injected }
+        else if let thumbnails { render = { try await ContactSheetRenderer.firstPagePreview($0, options: $1, thumbnails: thumbnails, maxLongEdge: 512) } }
+        else { previewStatus.stringValue = "Preview unavailable. You can still export."; return }
+        let groups = selected ? selectedGroups : allGroups
+        previewStatus.stringValue = "Loading Page Preview…"
+        previewTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(150))
+                let image = try await render(groups, options)
+                guard !Task.isCancelled, let self, self.previewGeneration == generation, self.panel != nil else { return }
+                self.previewImage.image = NSImage(cgImage: image, size: .zero)
+                self.previewStatus.stringValue = "Page 1 of \(pages)"
+            } catch {
+                guard !Task.isCancelled, let self, self.previewGeneration == generation else { return }
+                self.previewImage.image = nil; self.previewStatus.stringValue = "Preview unavailable. You can still export."
+            }
+        }
     }
 
     // MARK: Test seams
@@ -283,6 +373,11 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
         _ = sheet.build()
         return sheet
     }
+    var previewTaskForTesting: Task<Void, Never>? { previewTask }
+    var previewForTesting: NSImage? { previewImage.image }
+    var countForTesting: String { countLabel.stringValue }
+    func updatePreviewForTesting() { schedulePreview() }
+    func waitForPreviewForTesting() async { await previewTask?.value }
     var panelForTesting: NSPanel? { panel }
     var columnsFieldForTesting: NSTextField { columnsField }
     var stepperForTesting: NSStepper { stepper }
@@ -313,7 +408,7 @@ extension BrowserWindowController {
         let scope = ContactSheetScope(allCount: all.count, folderName: folder, selectedCount: selected.count)
         let store = PrintSettingsStore.standard
         let initial = ContactSheetOptions(title: folder, settings: store.load())
-        ContactSheetSheet.present(on: window, scope: scope, initial: initial) { [weak self] request in
+        ContactSheetSheet.present(on: window, scope: scope, initial: initial, allGroups: all, selectedGroups: selected, thumbnails: services.thumbnailCache) { [weak self] request in
             guard let self, let request else { return }
             store.update { $0.remember(request.options) }
             let groups = request.selectedOnly ? selected : all
@@ -353,7 +448,7 @@ extension BrowserWindowController {
         let cache = services.thumbnailCache
         let name = url.lastPathComponent
         contactSheetExport?.cancel()
-        toast(ContactSheetForm.progressText(0), progress: 0)
+        toast(ContactSheetForm.progressText(0), actionTitle: "Stop", progress: 0) { [weak self] in self?.contactSheetExport?.cancel() }
         contactSheetExport = Task { @MainActor [weak self] in
             var shown = 0
             do {
@@ -362,7 +457,7 @@ extension BrowserWindowController {
                     let percent = ContactSheetForm.percent(fraction)
                     guard percent != shown, !Task.isCancelled, let self else { continue }
                     shown = percent
-                    self.toast(ContactSheetForm.progressText(fraction), progress: fraction)
+                    self.toast(ContactSheetForm.progressText(fraction), actionTitle: "Stop", progress: fraction) { [weak self] in self?.contactSheetExport?.cancel() }
                 }
                 guard !Task.isCancelled, let self else { return }
                 self.toast(ContactSheetForm.savedText(name), actionTitle: "Show") {

@@ -30,17 +30,21 @@ struct EditingTab: View {
                 QualityRow(title: "HEIC quality", value: store.editHEICQuality)
                 Toggle("Keep metadata when saving", isOn: store.editPreserveEXIFOnSave)
                 Toggle("Remove location when saving", isOn: store.editStripGPSOnSave)
+                Text("Some basic edits use 8-bit colour. When conversion is needed, Save Copy protects the higher-precision original.")
+                    .font(.system(size: ChromeTypography.size(12))).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } header: {
                 Text("Saving").font(.headline)
             }
 
             Section {
-                Picker("Keep originals for", selection: store.backupRetentionDays) {
+                Picker("Keep older backups for", selection: store.backupRetentionDays) {
                     ForEach(SettingsChoices.including(store.backupRetentionDays.wrappedValue,
                                                       in: Self.retentionOptions), id: \.self) { days in
                         Text(verbatim: "\(days) days").tag(days)
                     }
                 }
+                Text("The original backup is kept while the original file remains at its recorded location. Older versions and backups of missing files can be removed after this period or to meet the storage limit.")
+                    .font(.system(size: ChromeTypography.size(12))).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Text(Self.usageLine(bytes: backupBytes))
                         .foregroundStyle(.secondary)
@@ -49,7 +53,7 @@ struct EditingTab: View {
                         .disabled(backupStore == nil)
                 }
             } header: {
-                Text("Originals").font(.headline)
+                Text("Backups").font(.headline)
             }
 
             Section {
@@ -67,10 +71,7 @@ struct EditingTab: View {
             guard let backupStore else { return }
             backupBytes = await backupStore.totalBytes()
         }
-        .safeAreaInset(edge: .bottom) {
-            PreferencesResetFooter(label: "Reset Editing to Defaults", tab: .editing)
-                .environmentObject(store)
-        }
+        .preferencesResetFooter("Reset Editing to Defaults", tab: .editing)
     }
 
     static func usageLine(bytes: Int64?) -> String {

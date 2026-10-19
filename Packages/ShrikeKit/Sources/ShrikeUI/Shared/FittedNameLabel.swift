@@ -51,7 +51,7 @@ final class FittedNameLabel: NSTextField {
     }
 
     private func width(of text: String) -> CGFloat {
-        (text as NSString).size(withAttributes: [.font: font ?? NSFont.systemFont(ofSize: 12)]).width
+        (text as NSString).size(withAttributes: [.font: font ?? ChromeTypography.font(12)]).width
     }
 
     /// The text as it fits now (tests read this through `stringValue`).

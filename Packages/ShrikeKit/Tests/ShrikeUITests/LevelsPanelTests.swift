@@ -372,6 +372,193 @@ final class LevelsPanelTests: XCTestCase {
         XCTAssertLessThan(LevelsRules.position(.gamma, of: bright), 0.5)
         XCTAssertEqual(LevelsRules.value(.gamma, at: LevelsRules.position(.gamma, of: bright), in: bright),
                        2, accuracy: 0.01, "position and value round-trip")
+        var bounded = LevelsChannel.identity
+        bounded.inBlack = 20; bounded.inWhite = 200
+        for huge in [1e100, Double.greatestFiniteMagnitude] {
+            XCTAssertEqual(LevelsRules.setting(.inBlack, to: huge, in: bounded).inBlack, 198)
+            XCTAssertEqual(LevelsRules.setting(.inWhite, to: huge, in: bounded).inWhite, 255)
+            XCTAssertEqual(LevelsRules.setting(.outBlack, to: huge, in: bounded).outBlack, 255)
+            XCTAssertEqual(LevelsRules.setting(.outWhite, to: huge, in: bounded).outWhite, 255)
+            XCTAssertEqual(LevelsRules.setting(.inBlack, to: -huge, in: bounded).inBlack, 0)
+            XCTAssertEqual(LevelsRules.setting(.inWhite, to: -huge, in: bounded).inWhite, 22)
+            XCTAssertEqual(LevelsRules.setting(.outBlack, to: -huge, in: bounded).outBlack, 0)
+            XCTAssertEqual(LevelsRules.setting(.outWhite, to: -huge, in: bounded).outWhite, 0)
+        }
+        for kind in LevelsHandleKind.allCases {
+            for invalid in [Double.nan, Double.infinity, -Double.infinity] {
+                XCTAssertEqual(LevelsRules.setting(kind, to: invalid, in: bounded), bounded)
+            }
+        }
+        for kind in [LevelsHandleKind.inBlack, .inWhite, .outBlack, .outWhite] {
+            XCTAssertEqual(LevelsRules.value(kind, of: LevelsRules.setting(kind, to: 127.49, in: bounded)), 127)
+            XCTAssertEqual(LevelsRules.value(kind, of: LevelsRules.setting(kind, to: 127.5, in: bounded)), 128)
+        }
+    }
+
+    func testFocusedDraftProjectsAllFieldsAndChannelsWithoutCommitting() throws {
+        let panel = LevelsPanel()
+        var baseline = LevelsParams.identity
+        baseline.master.outBlack = 4; baseline.red.gamma = 1.2
+        baseline.green.inWhite = 200; baseline.blue.inBlack = 5
+        var committed: [LevelsParams] = [], notifications = 0
+        panel.onEditEnded = { committed.append($0) }
+        panel.onDraftChanged = { notifications += 1 }
+        for channel in LevelsPanelChannel.allCases {
+            for kind in LevelsHandleKind.allCases {
+                panel.setParams(baseline); panel.setChannel(channel)
+                let field = try XCTUnwrap(panel._field(kind))
+                var expected = baseline
+                switch kind {
+                case .inBlack: field.stringValue = " 30,49 "; expected[channel].inBlack = 30
+                case .gamma: field.stringValue = "1,234"; expected[channel].gamma = 1.23
+                case .inWhite: field.stringValue = "170.5"; expected[channel].inWhite = 171
+                case .outBlack: field.stringValue = "127.5"; expected[channel].outBlack = 128
+                case .outWhite: field.stringValue = "-10"; expected[channel].outWhite = 0
+                }
+                let beforeNotifications = notifications, beforeCommits = committed.count
+                panel.controlTextDidBeginEditing(Notification(name: NSControl.textDidBeginEditingNotification, object: field))
+                panel.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
+                XCTAssertEqual(panel.projectedParams, expected, "\(channel) \(kind)")
+                XCTAssertEqual(panel.params, baseline, "projection keeps every stored channel untouched")
+                XCTAssertEqual(committed.count, beforeCommits)
+                XCTAssertEqual(notifications, beforeNotifications + 2)
+                _ = field.sendAction(field.action, to: field.target)
+                XCTAssertEqual(panel.params, expected, "real commitment agrees with the projection")
+                XCTAssertEqual(committed.count, beforeCommits + 1)
+                XCTAssertEqual(committed.last, expected)
+                XCTAssertNil(panel.projectedParams)
+            }
+        }
+    }
+
+    func testDraftIdentityInvalidChannelResetAndProgrammaticRestoreClearOwnership() throws {
+        let panel = LevelsPanel()
+        func draft(_ value: String, _ kind: LevelsHandleKind = .inBlack) throws {
+            let field = try XCTUnwrap(panel._field(kind))
+            field.stringValue = value
+            panel.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
+        }
+        for text in ["", "invalid", "nan", "inf", "-inf", "1e999", "0", "-1e100", "0.49"] {
+            try draft(text)
+            XCTAssertNil(panel.projectedParams, text)
+            XCTAssertEqual(panel.params, .identity)
+        }
+        try draft(" 1,000 ", .gamma); XCTAssertNil(panel.projectedParams)
+        try draft("1e100", .outWhite); XCTAssertNil(panel.projectedParams, "clamping to the current value is clean")
+        var changed = LevelsParams.identity; changed.master.inBlack = 10
+        panel.setParams(changed)
+        try draft("0")
+        XCTAssertEqual(panel.projectedParams, .identity, "reversing a committed value is meaningful")
+        XCTAssertEqual(panel.params, changed)
+        panel.setChannel(.red)
+        XCTAssertNil(panel.projectedParams)
+        let field = try XCTUnwrap(panel._field(.inBlack))
+        XCTAssertEqual(field.stringValue, "0")
+        _ = field.sendAction(field.action, to: field.target)
+        XCTAssertEqual(panel.params, changed, "old RGB text is not committed into Red")
+        try draft("20")
+        XCTAssertEqual(panel.projectedParams?.red.inBlack, 20)
+        panel.reset(channelOnly: false)
+        XCTAssertNil(panel.projectedParams); XCTAssertEqual(panel.params, .identity)
+        XCTAssertEqual(field.stringValue, "0")
+        try draft("20")
+        panel.setParams(changed)
+        XCTAssertNil(panel.projectedParams); XCTAssertEqual(panel.params, changed)
+        XCTAssertEqual(field.stringValue, "0", "programmatic restore normalizes the selected Red field")
+        try draft("20")
+        panel.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        XCTAssertNil(panel.projectedParams)
+        XCTAssertEqual(panel.params, changed)
+    }
+
+    @MainActor
+    private final class RefusingFieldEditor: NSTextView {
+        var refusesResignation = false
+        override func resignFirstResponder() -> Bool {
+            refusesResignation ? false : super.resignFirstResponder()
+        }
+    }
+    @MainActor
+    private final class FieldEditorOwner: NSObject, NSWindowDelegate {
+        let editor = RefusingFieldEditor(frame: .zero)
+        override init() { super.init(); editor.isFieldEditor = true }
+        func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? { editor }
+    }
+    private func nextMainTurn() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+    }
+
+    func testNumericReturnHonorsOrdinaryFocusRefusalAndLeavesOtherCommandsAlone() async throws {
+        let panel = LevelsPanel()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 620),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.alphaValue = 0
+        window.contentView = panel
+        let owner = FieldEditorOwner(); window.delegate = owner
+        defer { owner.editor.refusesResignation = false; window.close(); withExtendedLifetime(owner) {} }
+        window.makeKeyAndOrderFront(nil)
+        let field = try XCTUnwrap(panel._field(.inBlack))
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        XCTAssertTrue(editor === owner.editor)
+        editor.selectAll(nil); editor.insertText("20", replacementRange: editor.selectedRange())
+        var commits = 0
+        panel.onEditEnded = { _ in commits += 1 }
+        for command in [#selector(NSResponder.insertTab(_:)), #selector(NSResponder.insertBacktab(_:)),
+                        #selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.moveLeft(_:))] {
+            XCTAssertFalse(panel.control(field, textView: editor, doCommandBy: command))
+        }
+        owner.editor.refusesResignation = true
+        editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        await nextMainTurn()
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertEqual(panel.params, .identity); XCTAssertEqual(commits, 0)
+        owner.editor.refusesResignation = false
+        editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        await nextMainTurn()
+        XCTAssertNil(field.currentEditor())
+        XCTAssertEqual(panel.params.master.inBlack, 20); XCTAssertEqual(commits, 1)
+    }
+
+    func testDeferredNumericReturnCannotStealNewFocusOrActAfterChannelRemovalOrClose() async throws {
+        for outcome in ["new-focus", "channel", "removed", "closed"] {
+            let panel = LevelsPanel()
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 620),
+                styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.alphaValue = 0
+            window.contentView = panel; window.makeKeyAndOrderFront(nil)
+            defer { window.close() }
+            let field = try XCTUnwrap(panel._field(.inBlack))
+            XCTAssertTrue(window.makeFirstResponder(field))
+            let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+            editor.selectAll(nil); editor.insertText("20", replacementRange: editor.selectedRange())
+            var commits = 0
+            panel.onEditEnded = { _ in commits += 1 }
+            editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+            XCTAssertEqual(panel.params, .identity, "the public command defers its field action")
+            var nextEditor: NSText?
+            switch outcome {
+            case "new-focus":
+                let next = try XCTUnwrap(panel._field(.gamma))
+                XCTAssertTrue(window.makeFirstResponder(next)); nextEditor = next.currentEditor()
+                XCTAssertEqual(panel.params.master.inBlack, 20, "ordinary focus change commits the first field")
+                XCTAssertEqual(commits, 1)
+            case "channel": panel.setChannel(.red)
+            case "removed": window.contentView = NSView(frame: panel.frame)
+            default: window.close()
+            }
+            let afterExternalAction = commits, params = panel.params
+            await nextMainTurn()
+            XCTAssertEqual(commits, afterExternalAction, outcome)
+            XCTAssertEqual(panel.params, params, outcome)
+            if outcome == "new-focus" { XCTAssertTrue(window.firstResponder === nextEditor) }
+            if outcome == "channel" {
+                XCTAssertEqual(panel.channel, .red); XCTAssertEqual(panel.params, .identity)
+                XCTAssertTrue(window.firstResponder === editor)
+            }
+        }
     }
 
     func testArrowKeysStepAndShareOneUndoStep() async throws {
@@ -459,7 +646,12 @@ final class LevelsPanelTests: XCTestCase {
         defer { viewer.close() }
         viewer.setContentSize(NSSize(width: 800, height: 600))
         let content = viewer.contentRootForTesting
-        try await waitUntil("photo") { content.imageView.image != nil && !content.imageView.isCurrentImagePlaceholder }
+        try await waitUntil("accepted photo") {
+            content.imageView.image != nil && !content.imageView.isCurrentImagePlaceholder
+                && viewer.displayedItem?.shownURL == url
+                && content.imageView.sourceID == FileImageSource(url: url).id
+                && viewer.canPerform(.editImage) && viewer.canPerform(.autoColor)
+        }
 
         XCTAssertFalse(content.isEditModeActive)
         XCTAssertTrue(viewer.canPerform(.autoColor))
@@ -468,6 +660,7 @@ final class LevelsPanelTests: XCTestCase {
         await viewer.waitForEditLoad()
         try await waitUntil("edit mode") { content.isEditModeActive }
         let c = content.editModeController
+        XCTAssertTrue(c.isActive, "Auto Color has an active edit source")
         await c.settleForTesting()
         XCTAssertEqual(c.currentTool, .levels, "edit mode opens on Levels")
         let ops = await c.recipe!.snapshot()

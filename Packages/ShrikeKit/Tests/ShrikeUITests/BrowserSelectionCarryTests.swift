@@ -424,4 +424,138 @@ final class BrowserSelectionCarryTests: XCTestCase {
         grid.keyDown(with: Self.key("\u{F700}", keyCode: 126, mods: [.shift, .numericPad, .function]))
         XCTAssertEqual(items(grid.selectionIndexPaths), [1])
     }
+
+    // MARK: Context menus use the real pointer hit in Grid and Filmstrip
+
+    private func contextEvent(at item: Int?, in grid: BrowserCollectionView,
+                              controlClick: Bool = false, mods: NSEvent.ModifierFlags = []) throws -> NSEvent {
+        grid.window?.contentView?.layoutSubtreeIfNeeded(); grid.layoutSubtreeIfNeeded()
+        let point: NSPoint
+        if let item {
+            let path = ip(item)
+            let frame = try XCTUnwrap(grid.layoutAttributesForItem(at: path)?.frame)
+            grid.scrollToVisible(frame)
+            point = NSPoint(x: frame.midX, y: frame.midY)
+            XCTAssertTrue(grid.visibleRect.contains(point), "actual context hit must be inside the visible collection")
+            XCTAssertEqual(grid.indexPathForItem(at: point), path)
+        } else {
+            let visible = grid.visibleRect
+            let candidates = [NSPoint(x: visible.minX + 1, y: visible.minY + 1),
+                              NSPoint(x: visible.maxX - 1, y: visible.minY + 1),
+                              NSPoint(x: visible.minX + 1, y: visible.maxY - 1),
+                              NSPoint(x: visible.maxX - 1, y: visible.maxY - 1)]
+            point = try XCTUnwrap(candidates.first { grid.indexPathForItem(at: $0) == nil },
+                                  "an actual empty point in the visible collection")
+        }
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: controlClick ? .leftMouseDown : .rightMouseDown,
+            location: grid.convert(point, to: nil), modifierFlags: controlClick ? mods.union(.control) : mods,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: grid.window?.windowNumber ?? 0,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        XCTAssertEqual(grid.indexPathForItem(at: grid.convert(event.locationInWindow, from: nil)), item.map(ip))
+        return event
+    }
+
+    private func rateFromActualContextMenu(_ menu: NSMenu, browser: BrowserWindowController,
+                                           rating: Int, expected: [Int]) async throws {
+        let submenu = try XCTUnwrap(menu.items.first { $0.title == "Rating" }?.submenu)
+        let position = try XCTUnwrap(submenu.items.firstIndex { $0.tag == rating && $0.action == NSSelectorFromString("menuRate:") })
+        XCTAssertTrue(submenu.items[position].target === browser.contentController)
+        let manager = try XCTUnwrap(browser.window?.undoManager)
+        manager.groupsByEvent = false; manager.beginUndoGrouping()
+        submenu.performActionForItem(at: position)
+        manager.endUndoGrouping(); await CullingUndo.waitForPendingWrites()
+        let urls = (0..<6).map { dir.appendingPathComponent(String(format: "p%02d.jpg", $0)) }
+        let records = await browser.services.metadataStore.records(for: urls)
+        XCTAssertEqual(browser.contentController.visibleItems.map(\.rating), expected)
+        XCTAssertEqual(urls.map { records[$0]?.rating ?? 0 }, expected, "actual menu target reaches the private test store")
+        XCTAssertEqual(manager.undoActionName, "Rating")
+        manager.undo(); await CullingUndo.waitForPendingWrites()
+        let restored = await browser.services.metadataStore.records(for: urls)
+        XCTAssertEqual(browser.contentController.visibleItems.map(\.rating), Array(repeating: 0, count: 6))
+        XCTAssertEqual(urls.map { restored[$0]?.rating ?? 0 }, Array(repeating: 0, count: 6), "Undo restores every file's rating")
+    }
+
+    /// Component menu boundary with positioned NSEvents and actual layout;
+    /// normal-production pointer/menu interaction remains separate native QA.
+    func testContextHitSelectsBeforeMenuAndActualRatingUndoTargetsItInBothLayouts() async throws {
+        let browser = try await browser(count: 6)
+        defer { browser.close() }
+        let content = browser.contentController, grid = content.collectionViewForTesting
+        for mode in [BrowserViewMode.grid, .filmstrip] {
+            browser.setMode(mode)
+            XCTAssertTrue(content.select(url: dir.appendingPathComponent("p05.jpg")))
+            grid.noteClick(on: ip(5), command: false)
+            let event = try contextEvent(at: 1, in: grid)
+            let menu = try XCTUnwrap(grid.menu(for: event))
+            XCTAssertTrue(menu === grid.menu)
+            XCTAssertEqual(items(grid.selectionIndexPaths), [1], "selection is correct before the menu is returned")
+            XCTAssertEqual(names(browser), ["p01.jpg"])
+            XCTAssertEqual(grid.selectionAnchor, ip(1))
+            XCTAssertEqual(browser.inspectorStateForTesting.count, 1, "existing selection delegates update the inspector")
+            XCTAssertFalse(content.firstOnOpenPending)
+            try await rateFromActualContextMenu(menu, browser: browser, rating: 2, expected: [0, 2, 0, 0, 0, 0])
+            if mode == .filmstrip {
+                let followed = await waitUntil { content.filmstripPreviewURL == self.dir.appendingPathComponent("p01.jpg") }
+                XCTAssertTrue(followed, "the Browser preview follows the contextual selection")
+            }
+        }
+    }
+
+    func testContextPreservesSelectedMultiAndEmptyAreaThenControlHitResetsRangeInBothLayouts() async throws {
+        let browser = try await browser(count: 6)
+        defer { browser.close() }
+        let content = browser.contentController, grid = content.collectionViewForTesting
+        for mode in [BrowserViewMode.grid, .filmstrip] {
+            browser.setMode(mode)
+            XCTAssertTrue(content.select(urls: [1, 2].map { dir.appendingPathComponent(String(format: "p%02d.jpg", $0)) }))
+            grid.noteClick(on: ip(1), command: false); grid.extendSelection(to: ip(2))
+            let selectedMenu = try XCTUnwrap(grid.menu(for: contextEvent(at: 2, in: grid, mods: [.shift, .command])))
+            XCTAssertEqual(items(grid.selectionIndexPaths), [1, 2])
+            XCTAssertEqual(grid.selectionAnchor, ip(1), "context inside a selection preserves its range anchor")
+            try await rateFromActualContextMenu(selectedMenu, browser: browser, rating: 3, expected: [0, 3, 3, 0, 0, 0])
+            let emptyMenu = try XCTUnwrap(grid.menu(for: contextEvent(at: nil, in: grid)))
+            XCTAssertTrue(emptyMenu === grid.menu)
+            XCTAssertEqual(items(grid.selectionIndexPaths), [1, 2], "empty-area context preserves the existing selection policy")
+            XCTAssertEqual(grid.selectionAnchor, ip(1))
+            _ = try XCTUnwrap(grid.menu(for: contextEvent(at: 4, in: grid, controlClick: true)))
+            XCTAssertEqual(items(grid.selectionIndexPaths), [4], "Control-click outside the selection uses its real hit")
+            XCTAssertEqual(grid.selectionAnchor, ip(4), "a new contextual singleton drops the stale range anchor")
+            let shiftFrame = try XCTUnwrap(grid.layoutAttributesForItem(at: ip(5))?.frame)
+            grid.scrollToVisible(shiftFrame)
+            XCTAssertTrue(grid.visibleRect.contains(NSPoint(x: shiftFrame.midX, y: shiftFrame.midY)))
+            grid.mouseDown(with: try mouse(.leftMouseDown, at: 5, in: grid, mods: .shift))
+            XCTAssertEqual(items(grid.selectionIndexPaths), [4, 5], "the next real Shift-click extends from the contextual target")
+        }
+    }
+
+    func testContextEndsAutomaticFirstSelectionAndCancelsStaleMouseUpNarrowing() async throws {
+        let browser = try await browser(count: 6)
+        defer { browser.close() }
+        let content = browser.contentController, grid = content.collectionViewForTesting
+        for mode in [BrowserViewMode.grid, .filmstrip] {
+            browser.setMode(mode)
+            content.deselectAll(); content.selectFirstOnOpen()
+            XCTAssertTrue(content.firstOnOpenPending)
+            _ = try XCTUnwrap(grid.menu(for: contextEvent(at: nil, in: grid)))
+            XCTAssertTrue(content.firstOnOpenPending, "empty-area contextual policy remains unchanged")
+            let anchor = grid.selectionAnchor
+            _ = try XCTUnwrap(grid.menu(for: contextEvent(at: 0, in: grid)))
+            XCTAssertFalse(content.firstOnOpenPending, "a contextual click on the automatic selection is a user choice")
+            XCTAssertEqual(grid.selectionAnchor, anchor)
+            XCTAssertEqual(items(grid.selectionIndexPaths), [0])
+            XCTAssertTrue(content.select(urls: [1, 2, 3].map { dir.appendingPathComponent(String(format: "p%02d.jpg", $0)) }))
+            grid.noteClick(on: ip(1), command: false)
+            clearCurrentEvent()
+            grid.mouseTrackingForTesting = { _ in }
+            defer { grid.mouseTrackingForTesting = nil }
+            grid.mouseDown(with: try mouse(.leftMouseDown, at: 2, in: grid))
+            let clickedAnchor = grid.selectionAnchor
+            _ = try XCTUnwrap(grid.menu(for: contextEvent(at: 3, in: grid)))
+            grid.mouseUp(with: try mouse(.leftMouseUp, at: 2, in: grid))
+            grid.mouseTrackingForTesting = nil
+            XCTAssertEqual(items(grid.selectionIndexPaths), [1, 2, 3], "a context menu must not inherit a prior left-click narrowing")
+            XCTAssertEqual(grid.selectionAnchor, clickedAnchor)
+        }
+    }
+
 }

@@ -54,6 +54,55 @@ public actor EditRenderer {
         self.draftLongEdge = draftLongEdge
     }
 
+    /// Full-quality replay dimensions without decoding or rendering pixels.
+    /// Uses the tools' same crop snapping, resize clamping and rotated CI
+    /// extent, integerized after each operation. Nil means invalid or
+    /// unrepresentable dimensions. Source dimensions must be integer pixels.
+    /// Render allocation failures can return a tool's input instead; the
+    /// actual rendered image remains authoritative in that fallback case.
+    public nonisolated static func outputPixelSize(
+        from sourceSize: CGSize, operations: [EditOperation]
+    ) -> CGSize? {
+        var size = sourceSize
+        guard pixelDimensions(size) != nil else { return nil }
+        for operation in EditRecipe.effectiveOperations(operations) {
+            guard let (width, height) = pixelDimensions(size) else { return nil }
+            switch operation {
+            case .crop(let crop):
+                // A valid normalized rect may exceed 1 by the existing
+                // epsilon. Refuse overflow before the shared Int snapping.
+                if crop.isValid {
+                    let scalars = [crop.originX * Double(width), crop.originY * Double(height),
+                                   crop.width * Double(width), crop.height * Double(height)]
+                    guard scalars.allSatisfy({ Int(exactly: $0.rounded()) != nil }) else { return nil }
+                }
+                if let rect = CropTool.pixelRect(crop, width: width, height: height) { size = rect.size }
+            case .resize(let spec):
+                let (w, h) = ResizeTool.targetDimensions(spec, width: width, height: height)
+                size = CGSize(width: w, height: h)
+            case .rotate(let degrees):
+                guard let rotated = RotateTool.outputPixelSize(from: size, degrees: degrees) else { return nil }
+                size = rotated
+            case .rotateAutoCrop(let degrees):
+                guard let rotated = RotateTool.outputPixelSize(from: size, degrees: degrees, autocrop: true) else { return nil }
+                size = rotated
+            case .rotate90(let quarters):
+                guard let rotated = RotateTool.outputPixelSize(from: size, quarters: quarters) else { return nil }
+                size = rotated
+            case .colorAdjust, .levels:
+                break
+            }
+            guard pixelDimensions(size) != nil else { return nil }
+        }
+        return size
+    }
+
+    private nonisolated static func pixelDimensions(_ size: CGSize) -> (Int, Int)? {
+        guard let width = Int(exactly: size.width), let height = Int(exactly: size.height),
+              width > 0, height > 0 else { return nil }
+        return (width, height)
+    }
+
     /// Replay `recipe` against `original`. Returns the final `CGImage`
     /// or `nil` if a newer `render` / `renderLatest` call superseded this
     /// one at any `await` boundary.
@@ -163,13 +212,9 @@ public actor EditRenderer {
         case .crop(let rect):
             return CropTool.apply(rect, to: image)
         case .rotate(let degrees):
-            // Recipe-level free rotate always autocrops; the recipe
-            // records only the degrees. The "auto-crop corners" checkbox
-            // in the UI maps to whether the tool dispatches a
-            // `.rotate(…)` followed by a `.crop(…)` (checkbox on) or a
-            // bare `.rotate(…)` (checkbox off). The render just applies
-            // what's in the recipe.
             return RotateTool.apply(degrees: degrees, to: image, autocrop: false)
+        case .rotateAutoCrop(let degrees):
+            return RotateTool.apply(degrees: degrees, to: image, autocrop: true)
         case .rotate90(let quarters):
             return RotateTool.apply90(quarters: quarters, to: image)
         case .resize(let spec):

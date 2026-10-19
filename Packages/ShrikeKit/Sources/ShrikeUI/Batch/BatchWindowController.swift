@@ -45,6 +45,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         public static let savePresetTitle = "Save Preset"
         public static let savePresetInfo = "Name the preset. A saved preset with the same name is replaced."
         public static let presetFailed = "Shrike couldn't save the preset."
+        public static let logCopied = "Batch log copied"
         /// "Delete the preset “Night JPEGs”?"
         public static func deletePresetTitle(_ name: String) -> String { "Delete the preset “\(name)”?" }
         public static let deletePresetInfo = "You can't undo this action."
@@ -80,6 +81,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
     var revealInFinder: ([URL]) -> Void = { NSWorkspace.shared.activateFileViewerSelecting($0) }
     var openInShrike: ([URL]) -> Void = { WindowCoordinator.shared.openFolders($0) }
     var pasteboard: NSPasteboard = .general
+    let toastHost = ToastHostView(placement: .browser)
 
     // MARK: Opening
 
@@ -91,6 +93,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         services: ShrikeServices,
         launcher: NSWindow?,
         renameOn: Bool = false,
+        originScope: String? = nil,
         toast: (@MainActor @Sendable (String) -> Void)? = nil
     ) -> BatchWindowController {
         let isNew = current == nil
@@ -98,7 +101,9 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         current = controller
         controller.launcher = launcher
         controller.launcherToast = toast
+        let replacesQueue = isNew || controller.model.phase == .done || controller.model.queue.isEmpty
         controller.receive(groups, renameOn: renameOn, isNew: isNew)
+        if replacesQueue, let originScope, controller.model.phase == .form, !controller.model.reviewingRemaining { controller.model.setOriginScope(originScope) }
         controller.present()
         return controller
     }
@@ -111,7 +116,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         return BatchRunner(fileOps: ops, backups: backups, metadata: services.metadataStore)
     }
 
-    init(model: BatchModel) {
+    init(model: BatchModel, launcher: NSWindow? = nil) {
         self.model = model
         let window = BatchWindow(
             contentRect: NSRect(origin: .zero, size: Self.contentSize),
@@ -129,15 +134,24 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
                                             .priority: NSAccessibilityPriorityLevel.high.rawValue])
         }
         super.init(window: window)
+        self.launcher = launcher
         window.delegate = self
         window.escapeHandler = { [weak self] in self?.escapePressed() }
 
         // One accent, the system's.
+        let contentRoot = NSView(frame: NSRect(origin: .zero, size: Self.contentSize))
+        contentRoot.autoresizingMask = [.width, .height]
+        window.contentView = contentRoot
+
         let host = NSHostingView(rootView: BatchRootView(model: model, actions: makeActions(), inserter: inserter)
             .tint(Color(nsColor: ShrikeAccent.fill)))
+        host.frame = contentRoot.bounds
         host.autoresizingMask = [.width, .height]
         host.sizingOptions = []
-        window.contentView = host
+        contentRoot.addSubview(host)
+        // Keep the toast outside SwiftUI's compositing tree and above the
+        // hosted Batch view, so a visible confirmation is actually painted.
+        toastHost.install(in: contentRoot)
         window.setContentSize(Self.contentSize)
 
         model.$queue
@@ -151,6 +165,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
     private func receive(_ groups: [ImageGroup], renameOn: Bool, isNew: Bool) {
+        guard !model.reviewingRemaining else { return }
         switch model.phase {
         case .form:
             if renameOn {
@@ -302,7 +317,8 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
 
     func copyLog() {
         pasteboard.clearContents()
-        pasteboard.setString(model.logText, forType: .string)
+        guard pasteboard.setString(model.logText, forType: .string) else { return }
+        toastHost.show(ToastContent(Copy.logCopied))
     }
 
     func showInFinder() {

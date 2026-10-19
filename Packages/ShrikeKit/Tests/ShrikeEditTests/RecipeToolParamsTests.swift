@@ -164,6 +164,7 @@ final class RecipeToolParamsTests: XCTestCase {
         let recipe: [EditOperation] = [
             .crop(CropRect(originX: 0.1, originY: 0.2, width: 0.3, height: 0.4)),
             .rotate(degrees: 12.5),
+            .rotateAutoCrop(degrees: -12.5),
             .rotate90(quarters: 2),
             .resize(ResizeSpec(width: 1600, height: 1067, interpolation: .lanczos, preventUpscale: true)),
             .colorAdjust(ColorAdjustParams(brightness: 0.1, contrast: -0.2, saturation: 0.05,
@@ -172,5 +173,134 @@ final class RecipeToolParamsTests: XCTestCase {
         let data = try JSONEncoder().encode(recipe)
         let decoded = try JSONDecoder().decode([EditOperation].self, from: data)
         XCTAssertEqual(recipe, decoded)
+    }
+
+    // MARK: Metadata-only full-quality dimensions.
+
+    func test_outputPixelSize_matchesRenderedFreeRotationIncludingFractionalOrigins() async {
+        let renderer = EditRenderer()
+        for size in [CGSize(width: 5, height: 5), CGSize(width: 13, height: 7), CGSize(width: 1, height: 9)] {
+            let source = EditFixture.solidRGB(width: Int(size.width), height: Int(size.height),
+                                             red: 0.2, green: 0.4, blue: 0.6)
+            for angle in [0.0, 0.00000001, 0.00001, 30, -30, 45, -45, 90, 180, 270, 390, -390] {
+                let operations: [EditOperation] = [.rotate(degrees: angle)]
+                let image = await renderer.renderFinal(recipe: EditRecipe(operations: operations), from: source)
+                XCTAssertEqual(EditRenderer.outputPixelSize(from: size, operations: operations),
+                               CGSize(width: image.width, height: image.height), "\(size), angle \(angle)")
+            }
+        }
+    }
+
+    func test_autoCropDimensionsMatchPixelsAcrossAnglesAndSequentialGeometry() async {
+        let renderer = EditRenderer()
+        for size in [CGSize(width: 37, height: 23), CGSize(width: 23, height: 37), CGSize(width: 1, height: 9)] {
+            let source = EditFixture.solidRGB(width: Int(size.width), height: Int(size.height),
+                                             red: 0.2, green: 0.4, blue: 0.6)
+            for angle in [0.0, 0.00000001, 12.5, -12.5, 45, -45, 90, 180, 390] {
+                let operations: [EditOperation] = [.rotateAutoCrop(degrees: angle), .rotate90(quarters: 1),
+                    .crop(.init(originX: 0, originY: 0, width: 0.5, height: 1))]
+                let image = await renderer.renderFinal(recipe: EditRecipe(operations: operations), from: source)
+                XCTAssertEqual(EditRenderer.outputPixelSize(from: size, operations: operations),
+                               CGSize(width: image.width, height: image.height), "\(size), angle \(angle)")
+            }
+        }
+    }
+
+    func test_autoCropIdentityDoesNotDirtyContentAndKeepsOneUndoStep() async {
+        let recipe = EditRecipe()
+        let empty = await recipe.checkpoint()
+        await recipe.append(.rotateAutoCrop(degrees: 360))
+        let changedByIdentity = await recipe.hasContentChanges(since: empty)
+        XCTAssertFalse(changedByIdentity)
+        await recipe.replaceLast(.rotateAutoCrop(degrees: 12.5))
+        let changedByRotation = await recipe.hasContentChanges(since: empty)
+        XCTAssertTrue(changedByRotation)
+        let undone = await recipe.undo()
+        XCTAssertEqual(undone, .rotateAutoCrop(degrees: 12.5))
+        let operations = await recipe.snapshot()
+        XCTAssertTrue(operations.isEmpty)
+        let redone = await recipe.redo()
+        XCTAssertEqual(redone, undone)
+    }
+
+    func test_outputPixelSize_matchesRenderedNormalizedQuarterTurns() async {
+        let renderer = EditRenderer()
+        for size in [CGSize(width: 5, height: 5), CGSize(width: 13, height: 7)] {
+            let source = EditFixture.solidRGB(width: Int(size.width), height: Int(size.height),
+                                             red: 0.6, green: 0.3, blue: 0.1)
+            for quarters in [0, 1, 2, 3, -1, -2, 5, Int.min, Int.max] {
+                let operations: [EditOperation] = [.rotate90(quarters: quarters)]
+                let image = await renderer.renderFinal(recipe: EditRecipe(operations: operations), from: source)
+                XCTAssertEqual(EditRenderer.outputPixelSize(from: size, operations: operations),
+                               CGSize(width: image.width, height: image.height), "\(size), quarters \(quarters)")
+            }
+        }
+    }
+
+    func test_outputPixelSize_matchesRenderedCropRotateCropAndSequentialRounding() async {
+        let source = EditFixture.solidRGB(width: 37, height: 23, red: 0.1, green: 0.5, blue: 0.3)
+        let size = CGSize(width: source.width, height: source.height)
+        let cases: [[EditOperation]] = [
+            [.crop(CropRect(originX: 0.13, originY: 0.21, width: 0.71, height: 0.63)),
+             .rotate(degrees: 30),
+             .crop(CropRect(originX: 0.81, originY: 0.3, width: 0.19, height: 0.5))],
+            [.rotate(degrees: -17), .rotate90(quarters: -1), .rotate(degrees: 23),
+             .crop(CropRect(originX: 0.2, originY: 0.1, width: 0.7, height: 0.8))],
+            [.crop(CropRect(originX: 0.9, originY: 0.9, width: 0.1, height: 0.1)),
+             .rotate(degrees: -30), .resize(ResizeSpec(width: 3, height: 2, interpolation: .lanczos,
+                                                     preventUpscale: false))],
+            [.colorAdjust(ColorAdjustParams(brightness: 0.2)), .rotate90(quarters: 1),
+             .colorAdjust(.identity), .levels(.identity),
+             .resize(ResizeSpec(width: 100, height: 11, interpolation: .nearest, preventUpscale: true))],
+        ]
+        let renderer = EditRenderer()
+        for operations in cases {
+            let image = await renderer.renderFinal(recipe: EditRecipe(operations: operations), from: source)
+            XCTAssertEqual(EditRenderer.outputPixelSize(from: size, operations: operations),
+                           CGSize(width: image.width, height: image.height), "\(operations)")
+        }
+    }
+
+    func test_outputPixelSize_matchesResizeClampingAndInvalidToolNoOps() async {
+        let source = EditFixture.solidRGB(width: 13, height: 7, red: 0.2, green: 0.3, blue: 0.4)
+        let size = CGSize(width: source.width, height: source.height)
+        var cases: [[EditOperation]] = [
+            [.crop(.full)],
+            [.crop(CropRect(originX: 0, originY: 0, width: 0, height: 1))],
+            [.crop(CropRect(originX: 0.8, originY: 0, width: 0.3, height: 1))],
+            [.crop(CropRect(originX: .nan, originY: 0, width: 0.5, height: 1))],
+            [.resize(ResizeSpec(width: 0, height: 5, interpolation: .lanczos, preventUpscale: false))],
+            [.resize(ResizeSpec(width: 5, height: -1, interpolation: .nearest, preventUpscale: true))],
+        ]
+        for interpolation in [Interpolation.lanczos, .bicubic, .bilinear, .nearest] {
+            cases.append([.resize(ResizeSpec(width: 99, height: 5, interpolation: interpolation,
+                                             preventUpscale: true))])
+            cases.append([.resize(ResizeSpec(width: 5, height: 3, interpolation: interpolation,
+                                             preventUpscale: false))])
+        }
+        let renderer = EditRenderer()
+        for operations in cases {
+            let image = await renderer.renderFinal(recipe: EditRecipe(operations: operations), from: source)
+            XCTAssertEqual(EditRenderer.outputPixelSize(from: size, operations: operations),
+                           CGSize(width: image.width, height: image.height), "\(operations)")
+        }
+    }
+
+    func test_outputPixelSize_rejectsInvalidAndUnrepresentableDimensionsWithoutRendering() {
+        for size in [CGSize.zero, CGSize(width: -1, height: 7), CGSize(width: 1.5, height: 7),
+                     CGSize(width: CGFloat.infinity, height: 7), CGSize(width: CGFloat.nan, height: 7),
+                     CGSize(width: CGFloat(Int.max), height: 7)] {
+            XCTAssertNil(EditRenderer.outputPixelSize(from: size, operations: []))
+        }
+        for angle in [Double.nan, .infinity, -.infinity] {
+            XCTAssertNil(EditRenderer.outputPixelSize(from: CGSize(width: 13, height: 7),
+                                                       operations: [.rotate(degrees: angle)]))
+        }
+        XCTAssertNil(EditRenderer.outputPixelSize(
+            from: CGSize(width: CGFloat(Int.max).nextDown, height: 7),
+            operations: [.crop(CropRect(originX: 0, originY: 0, width: 1 + 0.5e-9, height: 0.5))]))
+        XCTAssertNil(EditRenderer.outputPixelSize(from: CGSize(width: 13, height: 7), operations: [
+            .resize(ResizeSpec(width: Int.max, height: 7, interpolation: .nearest, preventUpscale: false)),
+        ]))
     }
 }

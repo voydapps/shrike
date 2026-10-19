@@ -37,6 +37,8 @@ struct ThumbnailsTab: View {
 
     @State private var currentDiskBytes: Int64 = 0
     @State private var showClearConfirmation = false
+    @State private var clearing = false
+    @State private var clearError: String?
 
     var body: some View {
         Form {
@@ -69,12 +71,16 @@ struct ThumbnailsTab: View {
                                 ? PreferencesByteFormat.string(fromBytes: currentDiskBytes)
                                 : "—")
 
+                if let clearError {
+                    Text(clearError).foregroundStyle(.red).textSelection(.enabled)
+                    Button("Retry Clear Cache") { Task { await clearCache() } }.disabled(clearing)
+                }
                 HStack {
                     Spacer()
-                    Button("Clear Cache…", role: .destructive) {
+                    Button(clearing ? "Clearing…" : "Clear Cache…", role: .destructive) {
                         showClearConfirmation = true
                     }
-                    .disabled(thumbnailCache == nil)
+                    .disabled(thumbnailCache == nil || clearing)
                 }
             } header: {
                 Text("Cache").font(.headline)
@@ -101,13 +107,7 @@ struct ThumbnailsTab: View {
         } message: {
             Text(verbatim: "This will delete \(PreferencesByteFormat.string(fromBytes: currentDiskBytes)) of cached thumbnails and regenerate them as folders are reopened.")
         }
-        .safeAreaInset(edge: .bottom) {
-            PreferencesResetFooter(
-                label: "Reset Thumbnails to Defaults",
-                tab: .thumbnails
-            )
-            .environmentObject(store)
-        }
+        .preferencesResetFooter("Reset Thumbnails to Defaults", tab: .thumbnails)
     }
 
     // MARK: - Actions
@@ -128,7 +128,11 @@ struct ThumbnailsTab: View {
 
     private func clearCache() async {
         guard let cache = thumbnailCache else { return }
-        await cache.clearAll()
+        guard !clearing else { return }
+        clearing = true; clearError = nil
+        let result = await cache.clearAll()
+        if !result.success { clearError = result.errorDescription ?? "The thumbnail cache could not be cleared." }
         await refreshDiskUsage()
+        clearing = false
     }
 }

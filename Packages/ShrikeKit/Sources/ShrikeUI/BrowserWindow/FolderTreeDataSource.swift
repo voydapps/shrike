@@ -25,12 +25,14 @@ import Foundation
 /// not shown.
 public enum FolderTreeSection: Sendable, Hashable, CaseIterable {
     case favorites
+    case currentFolder
     case locations
     case folders
 
     public var title: String {
         switch self {
         case .favorites: return "Favorites"
+        case .currentFolder: return "Current Folder"
         case .locations: return "Locations"
         case .folders: return "Folders"
         }
@@ -72,6 +74,7 @@ public final class FolderTreeNode: NSObject {
     public var kind: Kind = .folder
     /// A favorite whose folder is gone (disk disconnected): 50 % row.
     public var isMissing = false
+    public var isPackage = false
     /// Volume rows that can be ejected show the eject button.
     public var volume: SidebarVolume?
     /// Row symbol.
@@ -101,6 +104,21 @@ public final class FolderTreeNode: NSObject {
 public final class FolderTreeDataSource {
 
     public var roots: [FolderTreeNode] = []
+    public private(set) var currentFolder: URL?
+    private var baseFolderNodes: [FolderTreeNode] = []
+
+    /// Establishes a known root without walking any parent directory.
+    public func setCurrentFolder(_ url: URL) {
+        currentFolder = url.standardizedFileURL
+        roots.removeAll { $0.section == .currentFolder }
+        let path = url.standardizedFileURL.path
+        roots.first { $0.section == .folders }?.children = baseFolderNodes.filter { $0.url?.standardizedFileURL.path != path }
+        if favoritesSection?.children.contains(where: { $0.url?.standardizedFileURL.path == path }) == true { return }
+        let section = Self.section(.currentFolder)
+        let node = FolderTreeNode(url: url, title: url.lastPathComponent)
+        node.parent = section; section.children = [node]
+        roots.insert(section, at: roots.first?.section == .favorites ? 1 : 0)
+    }
 
     /// If true, hidden files (leading `.`) are included when enumerating.
     /// Defaults to false; the browser toolbar toggle mutates this.
@@ -166,17 +184,19 @@ public final class FolderTreeDataSource {
         // A place already in Favorites is not repeated
         // here. Home stays: it is the tree the other folders open under.
         let favoritePaths = Set(favorites.map { $0.url.standardizedFileURL.path })
-        for (index, (maybe, title)) in sources.enumerated() {
+        for (maybe, title) in sources {
             guard let url = maybe else { continue }
-            if index > 0, favoritePaths.contains(url.standardizedFileURL.path) { continue }
+            if favoritePaths.contains(url.standardizedFileURL.path) || currentFolder?.standardizedFileURL == url.standardizedFileURL { continue }
             let node = FolderTreeNode(url: url, title: title)
             node.symbolName = FolderTreeNode.symbolName(for: url)
             node.parent = folders
             folders.children.append(node)
         }
+        baseFolderNodes = folders.children
         roots.append(folders)
 
         self.roots = roots
+        if let currentFolder { setCurrentFolder(currentFolder) }
     }
 
     private static func section(_ section: FolderTreeSection) -> FolderTreeNode {
@@ -230,7 +250,7 @@ public final class FolderTreeDataSource {
     @discardableResult
     public func loadChildren(_ node: FolderTreeNode) async -> [FolderTreeNode] {
         if node.isSection || node.childrenLoaded { return node.children }
-        guard let url = node.url, node.isFolder, node.kind != .favorite else {
+        guard let url = node.url, node.isFolder, !node.isPackage, node.kind != .favorite else {
             node.childrenLoaded = true
             return []
         }
@@ -241,12 +261,15 @@ public final class FolderTreeDataSource {
         let hidden = showHiddenFiles
         let generation = node.loadGeneration
         let task = Task { @MainActor [weak node] () -> [FolderTreeNode] in
-            let urls = await Task.detached(priority: .userInitiated) { lister(url, hidden) }.value
+            let entries = await Task.detached(priority: .userInitiated) {
+                lister(url, hidden).map { ($0, (try? $0.resourceValues(forKeys: [.isPackageKey]).isPackage) == true) }
+            }.value
             guard let node else { return [] }
             // Invalidated while reading: the next load reads again.
             guard node.loadGeneration == generation else { return node.children }
-            node.children = urls.map { childURL in
+            node.children = entries.map { childURL, package in
                 let child = FolderTreeNode(url: childURL, title: childURL.lastPathComponent)
+                child.isPackage = package
                 child.parent = node
                 return child
             }
@@ -282,6 +305,7 @@ public final class FolderTreeDataSource {
         // lookup walk from the disk root, so neither is a lookup root. A
         // favorite still matches exactly (a folder on no other root).
         let all = roots.flatMap { $0.isSection ? $0.children : [$0] }
+        if let favorite = all.first(where: { $0.kind == .favorite && $0.url?.standardizedFileURL == url.standardizedFileURL }) { return favorite }
         let rootFolders = all.filter { $0.kind != .favorite && $0.url?.standardizedFileURL.path != "/" }
 
         var best: FolderTreeNode?
@@ -319,7 +343,7 @@ public final class FolderTreeDataSource {
     /// `isItemExpandable` even for leaves; this returns false for them.
     public func isExpandable(_ node: FolderTreeNode) -> Bool {
         if node.isSection { return !node.children.isEmpty }
-        guard node.isFolder, node.kind != .favorite else { return false }
+        guard node.isFolder, !node.isPackage, node.kind != .favorite else { return false }
         // If we haven't loaded yet, assume expandable so the disclosure
         // triangle shows. Expanding starts the read (off main); the row
         // opens when the children arrive.
@@ -340,6 +364,20 @@ public final class FolderTreeDataSource {
         }
         guard roots.indices.contains(index) else { return nil }
         return roots[index]
+    }
+
+    /// Folder objects already held in memory, including base folders temporarily
+    /// excluded from roots by Current Folder. No filesystem discovery is performed.
+    func instantiatedFolderNodes() -> [FolderTreeNode] {
+        var queue = roots + baseFolderNodes
+        var seen: Set<ObjectIdentifier> = []
+        var folders: [FolderTreeNode] = []
+        while let node = queue.popLast() {
+            guard seen.insert(ObjectIdentifier(node)).inserted else { continue }
+            queue.append(contentsOf: node.children)
+            if !node.isSection, node.isFolder, node.kind != .favorite { folders.append(node) }
+        }
+        return folders
     }
 
     /// Invalidate cached children for `node` (so a fresh disk read happens

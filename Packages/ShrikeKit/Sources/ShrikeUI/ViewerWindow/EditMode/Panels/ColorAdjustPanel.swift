@@ -85,6 +85,7 @@ final class ColorAdjustPanel: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func build() {
+        for control in [resetAllButton] { ChromeTypography.initializeNativeFont(control) }
         for slider in [brightnessSlider, contrastSlider, saturationSlider, hueSlider] {
             // "±" sliders: the fill runs from 0 (the centre) to the knob.
             // Set before the range: a new cell
@@ -111,7 +112,7 @@ final class ColorAdjustPanel: NSView {
         for label in [brightnessValueLabel, contrastValueLabel, saturationValueLabel, hueValueLabel] {
             label.translatesAutoresizingMaskIntoConstraints = false
             label.alignment = .center
-            label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            label.font = .monospacedDigitSystemFont(ofSize: ChromeTypography.size(11), weight: .regular)
             label.textColor = .secondaryLabelColor
         }
 
@@ -173,7 +174,7 @@ final class ColorAdjustPanel: NSView {
                            slider: NSSlider,
                            label: NSTextField) -> NSStackView {
         let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.font = ChromeTypography.font(12, weight: .semibold)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let group = NSStackView(views: [titleLabel, slider, label])
@@ -313,12 +314,18 @@ final class ColorAdjustPanel: NSView {
             try? await Task.sleep(nanoseconds: ns)
             if Task.isCancelled { return }
             await MainActor.run {
-                guard let self else { return }
+                guard !Task.isCancelled, let self else { return }
                 if self.params == latest {
                     self.onParamsCommitted?(latest)
                 }
             }
         }
+    }
+
+    /// A removed/reset panel must not commit its old slider state later.
+    func cancelPendingCommit() {
+        idleCommitTask?.cancel()
+        idleCommitTask = nil
     }
 
     // MARK: - Public setters
@@ -338,6 +345,8 @@ final class ColorAdjustPanel: NSView {
     }
 
     // MARK: - Test seams
+
+    var pendingCommitForTesting: Task<Void, Never>? { idleCommitTask }
 
     internal var _brightnessSlider: NSSlider { brightnessSlider }
     internal var _contrastSlider:   NSSlider { contrastSlider }

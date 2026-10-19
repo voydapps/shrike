@@ -27,6 +27,7 @@ final class EditExitGuardTests: XCTestCase {
     private var asked: [EditExitModal.Content] = []
 
     override func setUp() async throws {
+        EditToolTransitionModal.responderForTesting = { _ in .keep }
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("shrike-editguard-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -34,6 +35,7 @@ final class EditExitGuardTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        EditToolTransitionModal.responderForTesting = nil
         EditExitModal.responderForTesting = nil
         try? FileManager.default.removeItem(at: dir)
     }
@@ -79,7 +81,7 @@ final class EditExitGuardTests: XCTestCase {
         viewer.setContentSize(NSSize(width: 800, height: 600))
         let content = viewer.contentRootForTesting
         try await waitUntil("first photo") {
-            viewer.displayedItem?.listIndex == 0
+            viewer.canPerform(.editImage) && viewer.displayedItem?.listIndex == 0
                 && content.imageView.image != nil && !content.imageView.isCurrentImagePlaceholder
         }
         viewer.enterEditMode(landOn: .crop)
@@ -91,6 +93,58 @@ final class EditExitGuardTests: XCTestCase {
             XCTAssertTrue(content.editModeController.hasPendingEdits)
         }
         return viewer
+    }
+
+    func testCleanEditCloseReleasesSessionAndPreEditImageWithoutRestoring() async throws {
+        let viewer = try await editingViewer(dirty: false)
+        let content = viewer.contentRootForTesting
+        XCTAssertTrue(content.hasPreEditImageForTesting)
+        viewer.close()
+        XCTAssertNil(content.editModeController.originalImage)
+        XCTAssertNil(content.editModeController.recipe)
+        XCTAssertFalse(content.editModeController.isActive)
+        XCTAssertFalse(content.isEditModeActive)
+        XCTAssertFalse(content.hasPreEditImageForTesting)
+        XCTAssertNil(content.imageView.image)
+    }
+
+    func testCloseWhileFullEditSourceLoadsCannotReenterEditMode() async throws {
+        let viewer = try await editingViewer(dirty: false)
+        let content = viewer.contentRootForTesting
+        content.editModeController.finalizeExit()
+        var continuation: CheckedContinuation<CGImage?, Never>?
+        viewer.editSourceLoaderForTesting = { _ in
+            await withCheckedContinuation { continuation = $0 }
+        }
+        viewer.enterEditMode(landOn: .crop)
+        try await waitUntil("controlled edit source load") { continuation != nil }
+        let pending = viewer.editLoadTask
+        viewer.close()
+        continuation?.resume(returning: SaveFlowTests.image(width: 100, height: 80))
+        await pending?.value
+        XCTAssertFalse(content.editModeController.isActive)
+        XCTAssertFalse(content.isEditModeActive)
+        XCTAssertNil(content.editModeController.originalImage)
+        XCTAssertNil(content.imageView.image)
+        XCTAssertNil(viewer.editLoadTask)
+    }
+
+    func testPendingCropAfterSwitchParticipatesInDirtyClosePrompt() async throws {
+        let viewer = try await editingViewer(dirty: false)
+        defer { viewer.close() }
+        let editor = viewer.contentRootForTesting.editModeController
+        editor.cropOverlay.imageFrame = CGRect(x: 0, y: 0, width: 320, height: 200)
+        editor.cropOverlay.setRectFromImageSpace(CGRect(x: 0, y: 0, width: 160, height: 100))
+        editor.selectTool(.color)
+        await editor.settleForTesting()
+        answer(.cancel)
+        XCTAssertFalse(viewer.delegate?.windowShouldClose?(viewer) ?? true)
+        await viewer.waitForEditExit()
+        XCTAssertEqual(asked.count, 1)
+        XCTAssertTrue(editor.isActive)
+        XCTAssertFalse(viewer.didTearDown)
+        let operations = await editor.recipe!.snapshot()
+        XCTAssertEqual(operations.count, 1)
     }
 
     // MARK: Close

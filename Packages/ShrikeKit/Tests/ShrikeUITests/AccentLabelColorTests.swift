@@ -2,10 +2,8 @@
 //  AccentLabelColorTests.swift
 //  ShrikeUITests
 //
-//  The label of an accent-filled default button (glass, macOS 26) is white
-//  on a dark accent and black on a light one (Yellow). The system accent
-//  is a pick of the user's, so it can't be changed here: the colour rule is
-//  tested on the system colours the accent choices are made of.
+//  The app-owned accent label chooses the stronger black/white contrast
+//  in each resolved appearance; the native accent fill remains unchanged.
 //
 
 import AppKit
@@ -27,26 +25,26 @@ final class AccentLabelColorTests: XCTestCase {
         NSColor.accentLabelColor(for: resolved(color, name))
     }
 
-    func testDarkAccentsGetAWhiteLabelAndYellowABlackOne() {
+    func testResolvedAccentLabelsMeetNormalTextContrast() {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            XCTAssertEqual(label(.systemBlue, appearance), .white, "blue, \(appearance.rawValue)")
-            XCTAssertEqual(label(.systemPurple, appearance), .white, "purple")
-            XCTAssertEqual(label(.systemPink, appearance), .white, "pink")
-            XCTAssertEqual(label(.systemRed, appearance), .white, "red")
-            XCTAssertEqual(label(.systemOrange, appearance), .white, "orange")
-            XCTAssertEqual(label(.systemGreen, appearance), .white, "green")
-            XCTAssertEqual(label(.systemYellow, appearance), .black, "yellow, \(appearance.rawValue)")
+            let context = NSAppearance(named: appearance)!
+            for accent: NSColor in [.systemBlue, .systemPurple, .systemPink, .systemRed,
+                                    .systemOrange, .systemGreen, .systemYellow] {
+                let background = resolved(accent, appearance)
+                let foreground = label(accent, appearance)
+                XCTAssertGreaterThanOrEqual(Contrast.ratio(foreground, on: background, in: context), 4.5)
+            }
         }
     }
 
     func testLuminanceNumbers() {
-        // Recorded so a changed threshold is a visible decision.
+        // Independent luminance sanity checks, not a foreground cutoff.
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let l = { (c: NSColor) in NSColor.relativeLuminance(of: self.resolved(c, appearance)) }
-            XCTAssertGreaterThan(l(.systemYellow), NSColor.lightAccentLuminance, "yellow is light")
+            XCTAssertGreaterThan(l(.systemYellow), 0.5, "yellow is light")
             XCTAssertLessThan(l(.systemBlue), 0.3)
-            XCTAssertLessThan(l(.systemGreen), NSColor.lightAccentLuminance, "green \(l(.systemGreen))")
-            XCTAssertLessThan(l(.systemOrange), NSColor.lightAccentLuminance, "orange \(l(.systemOrange))")
+            XCTAssertLessThan(l(.systemGreen), 0.5, "green \(l(.systemGreen))")
+            XCTAssertLessThan(l(.systemOrange), 0.5, "orange \(l(.systemOrange))")
         }
         XCTAssertEqual(NSColor.relativeLuminance(of: .white), 1, accuracy: 0.001)
         XCTAssertEqual(NSColor.relativeLuminance(of: .black), 0, accuracy: 0.001)
