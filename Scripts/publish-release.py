@@ -20,12 +20,10 @@ spec.loader.exec_module(gate)
 
 
 def require_no_existing_release(repository, tag, run):
-    """Read every release page using an authenticated principal with push access.
+    """Read every release page using an explicit GitHub token.
 
-    GitHub lists drafts only to principals with push access (in CI: the job's
-    `contents: write`). A public unauthenticated listing cannot establish absence
-    of drafts, so an explicit token is required, and a user token's reported
-    `permissions.push` must be true when the repository response carries it.
+    In CI the job's `contents: write` lets the list include drafts. A public
+    unauthenticated listing cannot establish absence of drafts, so a token is required.
     Every lookup, permission, JSON or schema error propagates as a hard failure.
     """
     if not (os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')):
@@ -42,15 +40,10 @@ def require_no_existing_release(repository, tag, run):
     if (not isinstance(info, dict)
             or str(info.get('full_name', '')).lower() != repository.lower()):
         raise RuntimeError('repository lookup did not return the publication repository')
-    # A user token gets a `permissions` object, so check it when present (an explicit
-    # null or push=false still blocks). A GitHub Actions GITHUB_TOKEN is an app
-    # installation token: the repository response has no `permissions` key at all.
-    # There its draft visibility comes from the job's declared `contents: write`.
-    if 'permissions' in info and (not isinstance(info['permissions'], dict)
-                                  or info['permissions'].get('push') is not True):
-        seen = info['permissions']
-        seen = {k: seen.get(k) for k in ('push', 'admin', 'maintain')} if isinstance(seen, dict) else type(seen).__name__
-        raise RuntimeError(f'cannot establish authenticated push access needed to see drafts (permissions seen: {seen})')
+    # The repo `permissions` field is deliberately NOT consulted. The Actions
+    # GITHUB_TOKEN reports push=false there even when the job has `contents: write`
+    # (evidence: run 39809462359). Draft visibility comes from the job's declared
+    # permission, and `gh release create` fails closed without write access.
     page = 1
     while True:
         releases = read(f'repos/{repository}/releases?per_page=100&page={page}')

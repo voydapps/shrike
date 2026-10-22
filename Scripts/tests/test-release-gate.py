@@ -45,7 +45,6 @@ class ReleaseGateTests(unittest.TestCase):
         self.lookup_failure = None
         self.raw_lookup = None
         self.push_access = True
-        self.permissions_omitted = False
         self.auth_patch = patch.dict(os.environ, {'GH_TOKEN': 'offline-harness-token',
                                                  'GITHUB_REPOSITORY': 'voydapps/shrike'})
         self.auth_patch.start()
@@ -60,8 +59,6 @@ class ReleaseGateTests(unittest.TestCase):
                 return self.raw_lookup
             endpoint = args[4]
             if endpoint == 'repos/voydapps/shrike':
-                if self.permissions_omitted:
-                    return json.dumps({'full_name': 'voydapps/shrike'})
                 return json.dumps({'full_name': 'voydapps/shrike',
                                    'permissions': {'push': self.push_access}})
             self.assertTrue(endpoint.startswith('repos/voydapps/shrike/releases?per_page=100&page='))
@@ -328,7 +325,7 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_invalid_json_or_schema_blocks_create(self):
         self.receipt_fixture()
-        for raw in ('{', 'null', '[]', '{"full_name":"voydapps/shrike","permissions":null}'):
+        for raw in ('{', 'null', '[]'):
             with self.subTest(raw=raw):
                 self.calls.clear()
                 self.raw_lookup = raw
@@ -336,28 +333,25 @@ class ReleaseGateTests(unittest.TestCase):
                     publisher.publish(self.root, 'v1.2.3', self.runner)
                 self.assert_no_release_mutation()
 
-    def test_insufficient_draft_visibility_blocks_create(self):
+    def test_actions_token_push_false_reaches_one_create(self):
+        # Run 39809462359: the Actions token reports push=false; it must not matter.
         self.receipt_fixture()
         self.push_access = False
-        with self.assertRaisesRegex(RuntimeError, 'authenticated push access'):
-            publisher.publish(self.root, 'v1.2.3', self.runner)
-        self.assert_no_release_mutation()
-
-    def test_installation_token_without_permissions_key_reaches_create(self):
-        # GITHUB_TOKEN (app installation token): no `permissions` key in the repo response.
-        self.receipt_fixture()
-        self.permissions_omitted = True
         publisher.publish(self.root, 'v1.2.3', self.runner)
         creates = [a for a in self.calls if a[:3] == ['gh', 'release', 'create']]
         self.assertEqual(len(creates), 1)
+        self.assertNotIn('--clobber', creates[0])
 
-    def test_installation_token_still_blocked_by_existing_draft(self):
+    def test_actions_token_push_false_still_blocked_by_existing_release(self):
         self.receipt_fixture()
-        self.permissions_omitted = True
-        self.release_pages = [[{'tag_name': 'v1.2.3', 'draft': True}]]
-        with self.assertRaisesRegex(RuntimeError, 'existing draft/partial release'):
-            publisher.publish(self.root, 'v1.2.3', self.runner)
-        self.assert_no_release_mutation()
+        self.push_access = False
+        for draft, kind in ((True, 'draft/partial'), (False, 'published')):
+            with self.subTest(draft=draft):
+                self.calls.clear()
+                self.release_pages = [[{'tag_name': 'v1.2.3', 'draft': draft}]]
+                with self.assertRaisesRegex(RuntimeError, f'existing {kind} release'):
+                    publisher.publish(self.root, 'v1.2.3', self.runner)
+                self.assert_no_release_mutation()
 
     def test_missing_explicit_token_blocks_create(self):
         self.receipt_fixture()
