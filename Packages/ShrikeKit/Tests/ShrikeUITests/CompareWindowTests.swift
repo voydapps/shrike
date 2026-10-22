@@ -275,9 +275,15 @@ final class CompareWindowTests: XCTestCase {
         let browser = try await browser(["a.jpg", "b.jpg"])
         defer { browser.close() }
         let browserWindow = try XCTUnwrap(browser.window)
-        browserWindow.setFrame(NSRect(x: 100, y: 200, width: 1000, height: 600), display: false)
+        // The Browser starts fully inside the visible screen (hosted runners
+        // have a 1024 x 768 display with a 674 pt tall visible area).
+        let screenVisible = try XCTUnwrap(browserWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
+        browserWindow.setFrame(NSRect(x: screenVisible.minX + 100, y: screenVisible.minY + 100,
+                                      width: min(1000, screenVisible.width - 100),
+                                      height: min(600, screenVisible.height - 100)), display: false)
         let browserFrame = browserWindow.frame
         let visible = try XCTUnwrap(browserWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
+        XCTAssertTrue(visible.contains(browserFrame), "fixture: the Browser fits the visible screen \(visible)")
         browser.contentController.selectAll()
         browser.perform(.compare)
         let window = try XCTUnwrap(CompareWindow.current)

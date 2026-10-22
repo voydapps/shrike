@@ -124,44 +124,62 @@ final class ThumbnailCacheTests: XCTestCase {
         let cache = try ThumbnailCache(
             diskURL: tmp.url,
             diskCeilingBytes: 10 * 1024 * 1024,
-            maxConcurrentDecodes: cap
+            maxConcurrentDecodes: cap,
+            // Its own memory budget, so only the cache's decode cap limits
+            // the burst. The shared budget admits (cores - 1) thumbnail
+            // jobs at once: 2 on a 3-core hosted runner, below the cap.
+            resources: isolatedThumbnailBudget()
         )
         let source = FileImageSource(url: try TestFixture.url("small.jpg"))
+        // Every decode that got a slot waits at a gate the test opens, so
+        // the cap is really reached on any machine (no timing guess).
+        let gate = ThrottleGate()
+        await cache.setHooksForTesting(.init(beforeDiskRead: { _ in await gate.wait() }))
 
         let requestCount = 12
         // Fire all requests concurrently. Each gets its own pixel size
         // so the cache key differs and they don't coalesce.
-        async let _: Void = withTaskGroup(of: Void.self) { group in
-            for i in 0..<requestCount {
-                let size = 32 + i * 4
-                group.addTask {
-                    _ = try? await cache.thumbnail(for: source, maxPixelSize: size)
+        let burst = Task {
+            await withTaskGroup(of: Void.self) { group in
+                for i in 0..<requestCount {
+                    let size = 32 + i * 4
+                    group.addTask {
+                        _ = try? await cache.thumbnail(for: source, maxPixelSize: size)
+                    }
                 }
+                await group.waitForAll()
             }
-            await group.waitForAll()
+            await gate.markDone()
         }
 
-        // Poll the active-slot counter while the burst is in flight.
-        // Sample frequently for ~250 ms — long enough to cover the
-        // decode burst even on the slowest CI box.
-        var observedMax = 0
-        for _ in 0..<250 {
+        // The slots fill up to the cap and the other requests wait.
+        var saturated = false
+        let deadline = Date().addingTimeInterval(10)
+        while !saturated, Date() < deadline {
             let active = await cache.activeDecodeSlotsForTesting()
-            observedMax = max(observedMax, active)
-            XCTAssertLessThanOrEqual(
-                active, cap,
-                "active decode slots (\(active)) must never exceed cap (\(cap))"
-            )
-            try? await Task.sleep(nanoseconds: 1_000_000) // 1 ms
+            XCTAssertLessThanOrEqual(active, cap, "active decode slots (\(active)) must never exceed cap (\(cap))")
+            let parked = await gate.waiting
+            saturated = active == cap && parked == cap
+            if !saturated { try? await Task.sleep(nanoseconds: 1_000_000) }
         }
+        XCTAssertTrue(saturated, "the burst fills every decode slot")
+        for _ in 0..<20 {
+            let active = await cache.activeDecodeSlotsForTesting()
+            XCTAssertLessThanOrEqual(active, cap, "active decode slots (\(active)) must never exceed cap (\(cap))")
+            await Task.yield()
+        }
+        let parkedWhileHeld = await gate.waiting
+        XCTAssertEqual(parkedWhileHeld, cap, "no decode passes the cap while the slots are held")
 
-        // We expect at least one sample to have caught the cap saturated
-        // — otherwise the test isn't actually exercising the throttle
-        // and any pass is meaningless.
-        XCTAssertGreaterThanOrEqual(
-            observedMax, 1,
-            "test never observed any active decode — burst completed before sampling started"
-        )
+        // Release: the waiters take the freed slots, still within the cap.
+        await gate.open()
+        while !(await gate.done) {
+            let active = await cache.activeDecodeSlotsForTesting()
+            XCTAssertLessThanOrEqual(active, cap, "active decode slots (\(active)) must never exceed cap (\(cap))")
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        await burst.value
+        await cache.setHooksForTesting(.init())
 
         // After everything drains, slots should be empty.
         // Wait a generous moment for tail decodes to settle.
@@ -545,3 +563,21 @@ private final class GatedSource: ImageSource, @unchecked Sendable {
         return ctx.makeImage()!
     }
 }
+
+/// Holds thumbnail decodes (after they took a slot) until the test opens it.
+private actor ThrottleGate {
+    private var isOpen = false
+    private var parked: [CheckedContinuation<Void, Never>] = []
+    private(set) var done = false
+    var waiting: Int { parked.count }
+    func markDone() { done = true }
+    func wait() async {
+        if !isOpen { await withCheckedContinuation { parked.append($0) } }
+    }
+    func open() {
+        isOpen = true
+        parked.forEach { $0.resume() }
+        parked.removeAll()
+    }
+}
+

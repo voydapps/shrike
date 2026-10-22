@@ -207,6 +207,10 @@ final class BrowserAccessibilityLazy028Tests: XCTestCase {
             autoreleasepool { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
             try await Task.sleep(for: .milliseconds(20))
         }
+        if closedContent != nil || closedTable != nil {
+            let held: [(String, AnyObject?)] = [("BrowserContentViewController", closedContent), ("BrowserTableView", closedTable)]
+            LifetimeDiagnostics.dump(name, alive: held.compactMap { label, object in object.map { (label, $0) } })
+        }
         XCTAssertNil(closedBrowser); XCTAssertNil(closedContent); XCTAssertNil(closedTable)
         await drainThumbnailWork()
         await services.thumbnailCache.evictMemory()

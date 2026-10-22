@@ -2707,8 +2707,9 @@ public final class ViewerContentView: NSView {
         if !restSatisfied && zoneRestMs > 0 && !waiting.isEmpty {
             zoneHits.subtract(waiting)
             for panel in waiting where zoneRestWorkItems[panel] == nil {
+                // Runs on the main queue: no second hop through a Task.
                 let item = DispatchWorkItem { [weak self] in
-                    Task { @MainActor [weak self] in self?.zoneRestElapsed(panel) }
+                    MainActor.assumeIsolated { self?.zoneRestElapsed(panel) }
                 }
                 zoneRestWorkItems[panel] = item
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(zoneRestMs), execute: item)

@@ -44,6 +44,16 @@ final class FullScreenChromeTests: XCTestCase {
         return content
     }
 
+    /// Waits for the 120 ms rest itself to elapse (its work item ran), not
+    /// for a fixed time: on a busy machine the main queue can run it late.
+    private func waitForZoneRest(_ content: ViewerContentView) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while content.zoneRestPendingForTesting(.filmstrip) || content.zoneRestPendingForTesting(.toolbar) {
+            if Date() > deadline { XCTFail("the zone rest never elapsed"); return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     private func visiblePins(in root: NSView) -> [PinCornerOverlay] {
         var found: [PinCornerOverlay] = []
         func walk(_ v: NSView) {
@@ -126,7 +136,7 @@ final class FullScreenChromeTests: XCTestCase {
         XCTAssertTrue(content.zoneRestPendingForTesting(.filmstrip))
         XCTAssertTrue(content.zoneRestPendingForTesting(.toolbar))
 
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForZoneRest(content)
         XCTAssertTrue(content.isHoveredForTesting(.filmstrip))
         XCTAssertTrue(content.isHoveredForTesting(.toolbar), "together")
         XCTAssertFalse(content.filmstripForTesting.isHidden)
@@ -167,7 +177,7 @@ final class FullScreenChromeTests: XCTestCase {
 
         // Shown by a first move, then faded by the idle clock.
         try move(to: bottom)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForZoneRest(content)
         XCTAssertEqual(content.alphaForTesting(.toolbar), 1)
         XCTAssertEqual(content.alphaForTesting(.filmstrip), 1)
         content.forceIdleFireForTesting()
@@ -176,7 +186,7 @@ final class FullScreenChromeTests: XCTestCase {
 
         // One small move in the same zone brings both back after the rest.
         try move(to: NSPoint(x: 724, y: 52))
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitForZoneRest(content)
         XCTAssertTrue(content.isHoveredForTesting(.toolbar))
         XCTAssertTrue(content.isHoveredForTesting(.filmstrip))
         XCTAssertEqual(content.alphaForTesting(.toolbar), 1, "the capsule is back")

@@ -445,6 +445,12 @@ final class FileOpsTests: XCTestCase {
         let stream = ops.copy(groups, to: dest, conflicts: .ask { _ in
             // The user presses Esc while the conflict sheet is up.
             consumer.withLock { $0?.cancel() }
+            // The answer comes back after the cancel reached the transfer
+            // (this closure runs in the transfer's task). The stream passes
+            // the consumer's cancel on when the consumer next asks for an
+            // element, which a busy machine can run after this returns.
+            let deadline = Date().addingTimeInterval(5)
+            while !Task.isCancelled, Date() < deadline { try? await Task.sleep(for: .milliseconds(1)) }
             return .keepBoth
         })
         let task = Task {

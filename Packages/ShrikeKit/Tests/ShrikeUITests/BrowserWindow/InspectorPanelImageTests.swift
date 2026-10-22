@@ -68,19 +68,29 @@ final class InspectorPanelImageTests: XCTestCase {
     func testAnUncachedStepKeepsThePreviousSharpPictureUntilTheSharpOneLands() async {
         let view = InspectorPreviewImageView()
         view.standInDelay = .seconds(30) // never within this test
+        // B's sharp read is held by the test (not timed), so "still A" is
+        // checked while the read is really in flight on any machine.
+        let gate = PanelReadGate()
         let lookups = InspectorPreviewImageView.Lookups(
             quick: { _ in panelTestCG(120) },
             cachedSharp: { $0 == panelTestURL(1) ? panelTestCG(720) : nil },
             loadSharp: { _ in
-                try? await Task.sleep(for: .milliseconds(80))
+                await gate.wait()
                 return panelTestCG(721)
             })
         view.show(panelTestURL(1), lookups: lookups)
         view.show(panelTestURL(2), lookups: lookups)
         XCTAssertEqual(shownWidth(view), 720, "A stays while B's sharp picture is read")
         XCTAssertFalse(view.isShowingSharp, "B is not shown yet")
-        try? await Task.sleep(for: .milliseconds(30))
+        var started = false
+        let deadline = Date().addingTimeInterval(5)
+        while !started, Date() < deadline {
+            started = await gate.entered
+            if !started { try? await Task.sleep(for: .milliseconds(5)) }
+        }
+        XCTAssertTrue(started, "B's sharp read started")
         XCTAssertEqual(shownWidth(view), 720, "still A")
+        await gate.open()
         await view.waitForLoad()
         XCTAssertEqual(shownWidth(view), 721, "then B, sharp")
         XCTAssertTrue(view.isShowingSharp)
@@ -269,5 +279,21 @@ final class InspectorPanelImageTests: XCTestCase {
         for (i, h) in heights.enumerated() {
             XCTAssertEqual(h, heights[0], accuracy: 0.5, "case \(i): same height as the short name without Also")
         }
+    }
+}
+
+/// Holds a sharp-picture read until the test opens it.
+private actor PanelReadGate {
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private(set) var entered = false
+    func wait() async {
+        entered = true
+        if !isOpen { await withCheckedContinuation { waiting.append($0) } }
+    }
+    func open() {
+        isOpen = true
+        waiting.forEach { $0.resume() }
+        waiting.removeAll()
     }
 }

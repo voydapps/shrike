@@ -49,6 +49,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 Scripts/publish-release.py "$TAG"
+      - name: Collect crash reports
+        if: always()
+        run: |
+          mkdir -p build/release-gate/crashes
+          shopt -s nullglob
+          for f in "$HOME"/Library/Logs/DiagnosticReports/*.ips; do /bin/cp -f "$f" build/release-gate/crashes/; done
+          true
       - name: Keep gate evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -57,4 +64,5 @@ jobs:
           path: |
             build/release-gate/*.log
             build/release-gate/gate.json
+            build/release-gate/crashes/*.ips
           if-no-files-found: ignore

@@ -970,6 +970,7 @@ final class EditTransitionTests: XCTestCase {
             let deadline = Date().addingTimeInterval(3)
             while (!finished || closedWindow != nil), Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
             XCTAssertTrue(finished, "The original request completes even before its old renderer returns")
+            if let closedWindow { LifetimeDiagnostics.dump(name, alive: [("ViewerWindow", closedWindow)]) }
             XCTAssertNil(closedWindow, "A suspended original exit must not retain a closed viewer")
             release?.resume(); release = nil
             await observer.value

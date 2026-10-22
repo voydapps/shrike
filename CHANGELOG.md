@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.25 - 2026-10-22
+## 0.2.26 - 2026-10-22
 
 ### New
 - Batch tells you before it changes your original photos in place. If a run stops part way, you can review and retry only the steps that did not finish.

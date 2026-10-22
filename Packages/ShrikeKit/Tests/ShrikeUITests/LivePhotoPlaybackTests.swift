@@ -112,6 +112,9 @@ final class LivePhotoPlaybackTests: XCTestCase {
         viewers.append(viewer)
         viewer.setContentSize(contentSize)
         let content = viewer.contentRootForTesting
+        // Hover playback is off under the system's Reduce Motion (on in some
+        // hosted runner images); the test that needs it sets it on.
+        content.reduceMotionOverrideForTesting = false
         try await waitUntil("first photo") {
             viewer.displayedItem?.listIndex == 0
                 && content.imageView.image != nil && !content.imageView.isCurrentImagePlaceholder

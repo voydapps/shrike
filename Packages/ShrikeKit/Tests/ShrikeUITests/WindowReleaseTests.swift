@@ -127,6 +127,12 @@ final class WindowReleaseTests: XCTestCase {
         let layer: Weak<CALayer>
         let queue: Weak<DecodeQueue>
 
+        var objects: [(String, AnyObject)] {
+            let all: [(String, AnyObject?)] = [("ViewerWindow", window.value), ("ViewerContentView", content.value),
+                                               ("MetalImageView", metal.value), ("DecodeQueue", queue.value)]
+            return all.compactMap { name, object in object.map { (name, $0) } }
+        }
+
         var alive: [String] {
             var names: [String] = []
             if window.value != nil { names.append("ViewerWindow") }
@@ -203,6 +209,7 @@ final class WindowReleaseTests: XCTestCase {
                              file: StaticString = #filePath, line: UInt = #line) async {
         XCTAssertTrue(coordinator.viewers.isEmpty, "the coordinator dropped the viewer", file: file, line: line)
         let left = await settle { refs.alive }
+        if !left.isEmpty { LifetimeDiagnostics.dump(name, alive: refs.objects) }
         XCTAssertEqual(left, [], "a closed viewer must be freed; still alive: \(left)", file: file, line: line)
     }
 
@@ -423,6 +430,7 @@ final class WindowReleaseTests: XCTestCase {
         let rr = try XCTUnwrap(r)
         XCTAssertEqual(coordinator.viewers.count, 1)
         let left = await settle { rr.alive }
+        if !left.isEmpty { LifetimeDiagnostics.dump(name, alive: rr.objects) }
         XCTAssertEqual(left, [], "a closed viewer must be freed; still alive: \(left)")
         coordinator.viewers.last?.close()
     }

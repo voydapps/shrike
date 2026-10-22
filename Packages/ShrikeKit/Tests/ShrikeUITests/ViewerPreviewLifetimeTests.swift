@@ -77,6 +77,10 @@ final class ViewerPreviewLifetimeTests: XCTestCase {
                 weakViewer.value == nil && weakContent.value == nil
                     && weakNavigation.value == nil && weakQueue.value == nil
             }
+            if !released {
+                let held: [(String, AnyObject?)] = [("ViewerWindow", weakViewer.value), ("ViewerContentView", weakContent.value)]
+                LifetimeDiagnostics.dump(name, alive: held.compactMap { label, object in object.map { (label, $0) } })
+            }
             XCTAssertTrue(released, "Held optional work retained window=\(weakViewer.value != nil), content=\(weakContent.value != nil), navigation=\(weakNavigation.value != nil), queue=\(weakQueue.value != nil)")
             let stillHeld = path == .embedded ? await embeddedGate.isHeld : await thumbnailGate.isHeld
             XCTAssertTrue(stillHeld, "The assertion must happen before the cancellation-resistant work is released")

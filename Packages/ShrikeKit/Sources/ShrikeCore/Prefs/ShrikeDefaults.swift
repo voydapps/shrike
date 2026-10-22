@@ -22,6 +22,13 @@
 //  Late `cfprefsd` writes land in that temp folder, which the next test run
 //  deletes with the rest of a finished process's root.
 //
+//  The test suites keep their values in memory (`InMemoryTestDefaults`) and
+//  never go through `cfprefsd`. On a busy hosted runner a path suite once
+//  read back a stale value right after a write (wrote v46, read v45, a
+//  value already removed), so every settings test after it tested noise.
+//  The path name is kept only so anything not overridden stays in the
+//  temp folder.
+//
 //  - The store: `<testRoot>/Preferences/app.shrike.tests`.
 //    Removed at exit (`atexit`).
 //  - Scratch suites (one test's own empty store): `makeScratchSuite`, removed
@@ -70,7 +77,7 @@ public enum ShrikeDefaults {
         _ = staleSuitesRemoved
         // `init(suiteName:)` only fails for the app's own bundle id or
         // NSGlobalDomain; our name is neither.
-        guard let suite = UserDefaults(suiteName: name) else {
+        guard let suite = InMemoryTestDefaults(suiteName: name) else {
             preconditionFailure("ShrikeDefaults: cannot open test suite \(name)")
         }
         atexit { ShrikeDefaults.removeOwnTestSuite() }
@@ -110,7 +117,7 @@ public enum ShrikeDefaults {
         precondition(!label.isEmpty && !label.contains("/"), "ShrikeDefaults: bad scratch suite label")
         _ = staleSuitesRemoved
         let name = folder.appendingPathComponent("\(label).\(UUID().uuidString)").path
-        guard let suite = UserDefaults(suiteName: name) else {
+        guard let suite = InMemoryTestDefaults(suiteName: name) else {
             preconditionFailure("ShrikeDefaults: cannot open scratch suite \(name)")
         }
         return (suite, name)
@@ -146,4 +153,156 @@ public enum ShrikeDefaults {
             try? FileManager.default.removeItem(at: preferencesFolder.appendingPathComponent(file))
         }
     }
+}
+
+// MARK: - The test store
+
+/// A settings store for tests that keeps its values in memory, so a write
+/// always reads back at once (no `cfprefsd` round trip). It follows
+/// `UserDefaults`' rules for the calls Shrike uses: registered defaults as
+/// fallback, plist-type values, the typed getters' conversions, file URLs
+/// stored as paths, and `didChangeNotification` after every change.
+final class InMemoryTestDefaults: UserDefaults {
+    private let lock = NSLock()
+    private var values: [String: Any] = [:]
+    private var registered: [String: Any] = [:]
+    private let name: String
+
+    override init?(suiteName suitename: String?) {
+        guard let suitename else { return nil }
+        name = suitename
+        super.init(suiteName: suitename)
+    }
+
+    private func read(_ key: String) -> Any? {
+        lock.lock(); defer { lock.unlock() }
+        return values[key] ?? registered[key]
+    }
+
+    private func change(_ body: (inout [String: Any]) -> Void) {
+        lock.lock()
+        body(&values)
+        lock.unlock()
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: self)
+    }
+
+    // MARK: Values
+
+    override func object(forKey defaultName: String) -> Any? { read(defaultName) }
+
+    override func set(_ value: Any?, forKey defaultName: String) {
+        guard let value else { removeObject(forKey: defaultName); return }
+        // As Foundation stores them: Bool / Int / Double become NSNumber.
+        let stored = value as AnyObject
+        change { $0[defaultName] = stored }
+    }
+
+    override func removeObject(forKey defaultName: String) {
+        change { $0.removeValue(forKey: defaultName) }
+    }
+
+    override func set(_ value: Int, forKey defaultName: String) { set(NSNumber(value: value), forKey: defaultName) }
+    override func set(_ value: Float, forKey defaultName: String) { set(NSNumber(value: value), forKey: defaultName) }
+    override func set(_ value: Double, forKey defaultName: String) { set(NSNumber(value: value), forKey: defaultName) }
+    override func set(_ value: Bool, forKey defaultName: String) { set(NSNumber(value: value), forKey: defaultName) }
+
+    override func set(_ url: URL?, forKey defaultName: String) {
+        guard let url else { removeObject(forKey: defaultName); return }
+        if url.isFileURL {
+            set((url.path as NSString).abbreviatingWithTildeInPath, forKey: defaultName)
+        } else if let data = try? NSKeyedArchiver.archivedData(withRootObject: url as NSURL,
+                                                               requiringSecureCoding: true) {
+            set(data, forKey: defaultName)
+        }
+    }
+
+    // MARK: Typed getters (Foundation's conversions)
+
+    override func string(forKey defaultName: String) -> String? {
+        switch read(defaultName) {
+        case let string as String: return string
+        case let number as NSNumber: return number.stringValue
+        default: return nil
+        }
+    }
+
+    override func array(forKey defaultName: String) -> [Any]? { read(defaultName) as? [Any] }
+    override func dictionary(forKey defaultName: String) -> [String: Any]? { read(defaultName) as? [String: Any] }
+    override func data(forKey defaultName: String) -> Data? { read(defaultName) as? Data }
+
+    override func stringArray(forKey defaultName: String) -> [String]? {
+        guard let array = read(defaultName) as? [Any] else { return nil }
+        let strings = array.compactMap { $0 as? String }
+        return strings.count == array.count ? strings : nil
+    }
+
+    override func integer(forKey defaultName: String) -> Int {
+        switch read(defaultName) {
+        case let number as NSNumber: return number.intValue
+        case let string as String: return Int(string) ?? Int(Double(string) ?? 0)
+        default: return 0
+        }
+    }
+
+    override func float(forKey defaultName: String) -> Float { Float(double(forKey: defaultName)) }
+
+    override func double(forKey defaultName: String) -> Double {
+        switch read(defaultName) {
+        case let number as NSNumber: return number.doubleValue
+        case let string as String: return Double(string) ?? 0
+        default: return 0
+        }
+    }
+
+    override func bool(forKey defaultName: String) -> Bool {
+        switch read(defaultName) {
+        case let number as NSNumber: return number.boolValue
+        case let string as String:
+            let lowered = string.lowercased()
+            if lowered == "yes" || lowered == "true" { return true }
+            return (Int(string) ?? 0) != 0
+        default: return false
+        }
+    }
+
+    override func url(forKey defaultName: String) -> URL? {
+        switch read(defaultName) {
+        case let url as URL: return url
+        case let path as String: return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        case let data as Data:
+            return try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSURL.self, from: data) as URL?
+        default: return nil
+        }
+    }
+
+    // MARK: Domains
+
+    override func register(defaults registrationDictionary: [String: Any]) {
+        lock.lock()
+        registered.merge(registrationDictionary.mapValues { $0 as AnyObject }) { _, new in new }
+        lock.unlock()
+    }
+
+    override func dictionaryRepresentation() -> [String: Any] {
+        lock.lock(); defer { lock.unlock() }
+        return registered.merging(values) { _, own in own }
+    }
+
+    override func persistentDomain(forName domainName: String) -> [String: Any]? {
+        guard domainName == name else { return super.persistentDomain(forName: domainName) }
+        lock.lock(); defer { lock.unlock() }
+        return values
+    }
+
+    override func setPersistentDomain(_ domain: [String: Any], forName domainName: String) {
+        guard domainName == name else { return super.setPersistentDomain(domain, forName: domainName) }
+        change { $0 = domain.mapValues { $0 as AnyObject } }
+    }
+
+    override func removePersistentDomain(forName domainName: String) {
+        guard domainName == name else { return super.removePersistentDomain(forName: domainName) }
+        change { $0.removeAll() }
+    }
+
+    override func synchronize() -> Bool { true }
 }
