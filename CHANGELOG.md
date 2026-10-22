@@ -1,8 +1,129 @@
 # Changelog
 
-## 0.2.21 to 0.2.22 - 2026-10-19
+## 0.2.25 - 2026-10-22
+
+### New
+- Batch tells you before it changes your original photos in place. If a run stops part way, you can review and retry only the steps that did not finish.
+- Contact Sheet shows a small preview of the first page and tells you how many pages it will have.
+- Compare can keep one photo as a reference while you look at others. This works with or without synced zoom and pan.
+- Browser filters and searches can be removed one at a time.
+- Settings groups viewing and performance options, and offers larger text for tasks.
+
+### Changed
+- Editing is clearer. The buttons say Save Changes and Save Copy. Shrike says when it must convert a photo and whether a backup of the original exists.
+- When you leave an edited photo, Shrike offers to save changes or save a copy first. Cancel keeps you where you were.
+- Apply in Crop or Resize keeps your crop or size in the edit. The photo stays unsaved until you save it.
+- The Browser, Compare and Batch windows open at a good size and stay inside your screen.
+- Copy and Move show their progress and result in a band above the photos. The band never covers photos or moves the sidebar, and the result has an Undo button.
+- In Batch, Return starts the batch, and the stop button now says Stop Batch.
+- The Compare submenu in the View menu is now called Compare Window.
+- The info panel has a Tags heading. It uses the same words in the Browser and the viewer (Rating & Flag, Flagged).
+- The Reset buttons in Settings stay at the bottom while the options scroll.
+- Shrike uses less memory when you close viewers or run big Batch jobs.
+
 ### Fixed
-- Release validation no longer leaves generated Python bytecode in the source checkout.
+- Browser filters no longer cover the search field. Its hint now says Search and fits small windows.
+- Grid thumbnails no longer stay blank when a folder opens for the first time.
+- A photo saved with Save Copy shows up in the Browser at once.
+- Changes made in one Shrike window (save, rotate, rename, move, delete, tags and ratings) now update the other open windows of the same folder.
+- The title, photo number and size at the top of the viewer are easy to read in light and dark mode.
+- Crop and Resize numbers update when you press Tab or click another control, and the fields line up.
+- Saving… only shows once the save really starts.
+- Photos you never edited no longer say the original backup is unavailable.
+- Batch no longer shows an empty Review Remaining after every step worked.
+- Settings text is clearer: the trackpad help is not repeated, and the External Editors note only mentions controls you can see.
+- When a photo is removed, the message says it was moved or deleted.
+- Fine rotation shows the right angle, and Undo works for each turn. Reset Crop brings back the full photo.
+- Right-clicking a photo in the Grid or Filmstrip acts on that photo.
+- Switching from a preview to the full photo no longer makes the picture jump.
+- Show Hidden Files refreshes the Browser and sidebar without closing your open folders.
+- Ratings, flags and tags stay correct after Undo and Redo. A tag added twice appears once.
+- If you rotate a photo and then open Edit Image, the editor now starts from the rotated photo, and its own rotate buttons turn the preview as they should.
+- The Batch progress bar now matches the "n of N" counter at once instead of trailing behind it.
+- Screen readers can read every row in the Browser list.
+- Batch retries keep your file names and numbers.
+- Resetting Settings updates open windows at once.
+- Rotated photos keep the right size when a file changes on disk.
+- When you press Esc during a Copy or Move, the message, the files on disk and Undo now agree. The file being copied at that moment is counted and can be undone.
+- After Save Copy, the info panel in the viewer shows the new photo count at once, the same as the title.
+- The Browser's info panel shows the new picture when its photo is rotated or changed in another window.
+- The Copy and Move progress bar, in the Browser and in the viewer, matches its counter at once.
+- Setting ratings, flags or tags no longer makes other windows reload thumbnails. Only real picture changes do.
+- The Batch progress bar stays in one place when the time left appears or changes.
+- The viewer's info panel keeps its rows while a rotated photo is read again.
+- In Batch, the file name under the bar is the next photo to do, not one that already finished.
+
+## 0.2.23 to 0.2.24 - 2026-10-19
+### Fixed
+- Rotated photo dimensions stay accurate when a file refresh overlaps another redraw.
+
+
+## 0.2.23 - 2026-10-19
+
+### Fixed
+- Browser and Compare windows keep their intended size and cascade within the available display area.
+- Switching from a preview to the full-resolution image preserves the displayed photo bounds without a visible jump.
+- Thumbnail scheduling keeps queued work responsive when other image work is waiting, and memory is released predictably when viewers close.
+- Browser selection and filmstrip interactions remain reliable when photos are outside the visible scroll area.
+
+
+## 0.2.20 - 2026-10-18
+
+### Changed
+- Settings keeps reset controls in a separate footer below scrolling content.
+- Batch image-processing caches are released after concurrent work finishes.
+- Apply in Crop or Resize keeps that geometry in the edit. Switching tools asks only about a new pending draft; Discard keeps applied changes and earlier edits. The photo remains unsaved until Save.
+- Leaving an edited photo offers Save Changes or Save Copy before navigating. Cancel keeps the current tool and its pending crop or resize intact.
+- Editing names Save Changes and Save Copy explicitly, explains output conversion, and shows actual original-backup availability.
+- Active search and filter conditions can be removed individually; unreadable files and session-only ratings storage offer recovery.
+- Optional review controls can advance after a confirmed changed rating. Compare can keep a reference photo independently of synchronized zoom and pan.
+- Batch explains in-place changes, reports partial and stopped work, and reviews only outstanding steps for retry.
+- Contact sheets show a thumbnail-backed first-page preview and page count. Settings group viewing and performance controls and offer larger task text.
+- Shared image-resource accounting follows retained CPU images and GPU storage and admits expensive image work before allocating it.
+
+### Fixed
+- Browser filter conditions and Clear All stay below the toolbar, keeping the search field clear in every view and text size.
+- The viewer title, photo position and dimensions have a solid backdrop that follows the native toolbar in light and dark appearances.
+- Resize separates the scale value from its percent label and keeps native text selection, scrolling, Undo and Redo when changing text size.
+- Crop and Resize finish an edited numeric field once; a refused field edit keeps the current tool and prevents Save or Reset from continuing.
+- The viewer’s return hint anchors to its toolbar button, and edit panels remeasure their controls when text size changes.
+- Keyboard Shortcuts scrolls its reference rows without reentrant table updates and updates row typography while preserving search editing.
+- Closing the last viewed photo clears the retained display, and memory relief follows completed decode-cache purges.
+- Crop and Resize numeric fields update their pending geometry when you press Tab or click another control, without applying or saving the edit.
+- Copy and Move use a bright, compact progress card with a contained full-width track and busy feedback while an item is in flight.
+- Fine rotation keeps the shown angle accurate while adjusting it, with Undo for each gesture. Auto-crop corners follows the checkbox in previews and saved photos.
+- Reset Crop restores the full dimensions of the current photo.
+- Returning from Batch or Contact Sheet keeps selection within the current Browser filters.
+- Accessibility tools can read every row in the Browser’s List, including rows outside the visible area, without loading every row at once.
+- Return in a Levels field commits its value before a separate Return saves. Save Changes or Save Copy follows pending Levels values, and very large numbers stay within the field’s limits.
+- Copy and Move progress clears after completion or Skip without dismissing a newer message.
+- Batch recovery shows a single Output row and keeps the folder destination editable.
+- Compare’s Sync Zoom and Pan control exposes its On or Off state to accessibility tools.
+- Slideshow scope labels use “photo” for a single photo.
+- Adding the same tag again keeps a single token in the Tags popover, including when the spelling differs only in case.
+- Right-clicking a photo in the Browser’s Grid or Filmstrip applies the menu to that photo; clicking within a multi-selection keeps the whole selection.
+- Batch retries keep the original filenames and counter positions while preserving completed work and its Undo recovery.
+- Resetting settings refreshes thumbnail size, toolbar auto-hide, hidden files and photo grouping in open windows.
+- Reset Rotation shows Done when no other edits remain, while keeping Undo and Redo available.
+- Changing Show Hidden Files refreshes open Browser listings and expanded sidebar folders while preserving the current folder and selection.
+- Collapsed sidebar folders stay closed when accessibility tools inspect them.
+- Open sidebar folders and their scroll position stay in place when the Browser refreshes after changing Show Hidden Files.
+- Save and recovery buttons use contrasting text that follows label and text-size changes.
+- The viewer’s Back to folder label follows Browser navigation. Copy-only editing no longer leaves an empty toolbar button.
+- Browser rating, flag, and tag filters update after confirmed changes and Undo or Redo; hidden photos no longer remain selected.
+- Error messages fit larger text without clipping.
+- Browser filmstrip photos and names stay clear of scroll bars, and empty filter controls collapse cleanly.
+- Review controls, storage warnings, and edit save-policy text have opaque backdrops. Review controls wrap in narrow windows and stay above fullscreen controls.
+- Clicking or right-clicking a filmstrip photo while browsing keeps the viewer in browsing mode, so Move to Trash stays available.
+- Typed crop dimensions update the crop frame. Choosing Keep Changes preserves a pending crop or resize when switching tools; Save and Done include the pending geometry.
+- Edit starts only after the requested photo has finished loading; saving checks the session’s file before writing so a previous photo cannot be overwritten.
+- Memory relief preserves required image loading, viewport updates, and full-resolution detail in use. Waiting optional previews no longer keep closed viewers alive.
+- Undo keeps Resize fields in sync, and Reset clears pending crop and resize changes, so finishing an edit does not reapply them.
+- Folder navigation ignores superseded listings and metadata reads; unreadable folders offer recovery.
+- Ratings and flags report persistence failures, and immediate Undo and Redo follow the order of your actions.
+- Closing a viewer releases edit-session images and cancels pending image work. Completed full-resolution loads release the queue’s ownership of their result.
+- Closing a viewer releases its canvas before the window is hidden, while preserving normal unsaved-edit confirmation.
+- Permanently closed viewers and removed Compare panes detach their graphics backing even when another component still holds the view. Late image work cannot reactivate a closed canvas; Undo in a live empty viewer remains available.
 
 ## 0.2.10 to 0.2.11 - 2026-10-13
 ### Changed

@@ -180,8 +180,9 @@ final class FileTransferCoordinator {
     /// Every conflict asked this session (tests).
     private(set) var conflictsAsked = 0
 
-    /// The running transfer (Esc cancels it while its progress shows).
-    var runningTask: Task<Void, Never>?
+    /// Esc sets this: the file in flight finishes and is counted (cancelling
+    /// the reading task would drop it from the receipt).
+    private var runningStop: TransferStop?
     private(set) var isShowingProgress = false
 
     // HUD
@@ -341,9 +342,12 @@ final class FileTransferCoordinator {
         let policy = ConflictPolicy.ask { [weak self] conflict in
             await self?.askConflict(conflict) ?? .skip
         }
+        let stop = TransferStop()
+        runningStop = stop
+        defer { runningStop = nil }
         let stream = verb == .copy
-            ? ops.copy(groups, to: folder, conflicts: policy)
-            : ops.move(groups, to: folder, conflicts: policy)
+            ? ops.copy(groups, to: folder, conflicts: policy, stop: stop)
+            : ops.move(groups, to: folder, conflicts: policy, stop: stop)
         let box = ProgressBox()
         let progressTimer = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.progressDelay)
@@ -388,8 +392,8 @@ final class FileTransferCoordinator {
 
     /// Esc while the progress toast shows: stop the rest.
     func cancelRunning() -> Bool {
-        guard isShowingProgress, let task = runningTask else { return false }
-        task.cancel()
+        guard isShowingProgress, let stop = runningStop else { return false }
+        stop.stop()
         return true
     }
 

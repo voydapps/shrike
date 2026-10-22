@@ -39,7 +39,9 @@ final class ZoomToFitViewer028Tests: XCTestCase {
         MetalImageView.reduceMotionOverrideForTesting = nil
     }
 
-    private func writeJPEG(_ name: String, width: Int = 4000, height: Int = 3000) throws -> URL {
+    // Fit remains comfortably above the 25% zoom floor in the compact hosted
+    // viewer window, so the six scroll events can actually move below Fit.
+    private func writeJPEG(_ name: String, width: Int = 1200, height: Int = 900) throws -> URL {
         let cs = CGColorSpace(name: CGColorSpace.sRGB)!
         let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                             space: cs, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
@@ -106,12 +108,19 @@ final class ZoomToFitViewer028Tests: XCTestCase {
         XCTAssertFalse(view.isZoomAnimating, message, file: file, line: line)
     }
 
+    private func assertBelowFit(_ view: MetalImageView,
+                                file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(view.isAtFit, "precondition: zoomed out", file: file, line: line)
+        XCTAssertLessThan(view.pixelScale, view.fitPixelScale * 0.9,
+                          "precondition: command scroll moved below Fit", file: file, line: line)
+    }
+
     func testZoomToFitMenuItemAfterCommandScrollZoomOut() async throws {
         let viewer = try await makeViewer()
         defer { viewer.close() }
         let view = viewer.imageViewForTesting
         try commandScrollZoomOut(view)
-        XCTAssertFalse(view.isAtFit, "precondition: zoomed out (scale \(view.pixelScale), fit \(view.fitPixelScale))")
+        assertBelowFit(view)
         try runMenuItem(.zoomToFit, on: viewer)
         assertAtFit(view, "View > Zoom to Fit")
     }
@@ -121,7 +130,7 @@ final class ZoomToFitViewer028Tests: XCTestCase {
         defer { viewer.close() }
         let view = viewer.imageViewForTesting
         try commandScrollZoomOut(view)
-        XCTAssertFalse(view.isAtFit, "precondition: zoomed out")
+        assertBelowFit(view)
         try runMenuItem(.zoomBestFit, on: viewer)
         assertAtFit(view, "zoomBestFit command")
     }
@@ -131,6 +140,7 @@ final class ZoomToFitViewer028Tests: XCTestCase {
         defer { viewer.close() }
         let view = viewer.imageViewForTesting
         try commandScrollZoomOut(view)
+        assertBelowFit(view)
         try runMenuItem(.zoomToFit, on: viewer)
         assertAtFit(view, "after zoom-out")
         try runMenuItem(.actualSize, on: viewer)

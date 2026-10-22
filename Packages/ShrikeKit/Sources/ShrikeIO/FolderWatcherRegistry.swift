@@ -2,12 +2,10 @@
 //  FolderWatcherRegistry.swift
 //  ShrikeIO
 //
-//  Lets `FileOps` tell every open `FolderWatcher` to ignore Shrike's own
-//  writes (events caused by Shrike's own file operations are
-//  ignored). Each browser and each viewer owns its own watcher, so FileOps
-//  can't hold a single one; instead every `FolderWatcher` registers itself
-//  here (weakly) when it starts, and `ignore(paths:for:)` fans out. A
-//  watcher skips URLs outside its own folder, so broadcasting is safe.
+//  Weak set of every live `FolderWatcher`; `ignore(paths:for:)` fans out to
+//  ALL of them. Windows do not use it for their own writes: that would hide
+//  the change from every other window too. They use `WindowWatcherScope`.
+//  A watcher skips URLs outside its own folder, so broadcasting is safe.
 //
 
 import Foundation

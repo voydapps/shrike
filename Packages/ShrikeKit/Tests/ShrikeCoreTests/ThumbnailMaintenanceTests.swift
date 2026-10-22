@@ -123,11 +123,18 @@ final class ThumbnailMaintenanceTests: XCTestCase {
     }
     func testWarmReadsUseSameBoundedSlots() async throws {
         let tmp = TempDir("thumbnail-warm-slots"); defer { tmp.cleanup() }
+        // This test measures ThumbnailCache's decode slots. A test-local
+        // process-like budget preserves admission while avoiding retained
+        // thumbnails from unrelated suites reducing concurrency here.
+        let resources = ImageResourceBudget(configuration: .init(
+            normalBudget: 512 << 20,
+            maximumDiscretionaryWorkCount: 8
+        ))
         let source = FileImageSource(url: try TestFixture.url("small.jpg"))
-        let warm = try ThumbnailCache(diskURL: tmp.url)
+        let warm = try ThumbnailCache(diskURL: tmp.url, resources: resources)
         for size in [64, 96, 128, 160] { _ = try await warm.thumbnail(for: source, maxPixelSize: size) }
         await warm.waitForPendingDiskWrites()
-        let cache = try ThumbnailCache(diskURL: tmp.url, maxConcurrentDecodes: 2), gate = ThumbnailTestGate()
+        let cache = try ThumbnailCache(diskURL: tmp.url, maxConcurrentDecodes: 2, resources: resources), gate = ThumbnailTestGate()
         await cache.setHooksForTesting(.init(beforeDiskRead: { _ in await gate.wait() }))
         let tasks = [64, 96, 128, 160].map { size in Task { try await cache.thumbnail(for: source, maxPixelSize: size) } }
         try await until { await gate.entered == 2 }

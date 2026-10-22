@@ -108,7 +108,9 @@ public final class BrowserWindowController: NSWindowController {
 
     /// The viewer this Browser opens into. Weak: the
     /// `WindowCoordinator` owns windows.
-    public weak var pairedViewer: ViewerWindow?
+    public weak var pairedViewer: ViewerWindow? {
+        didSet { watcherScope.setPartner(pairedViewer?.watcherScope) }
+    }
     /// Selected once the folder listing lands (return from the viewer, follow).
     var pendingSelection: URL?
     /// The whole selection to put back after a re-list of the same folder
@@ -123,6 +125,14 @@ public final class BrowserWindowController: NSWindowController {
     var browserDidClose = false
     private let folderEnumerator: @Sendable (URL, Bool) async throws -> ([BrowserItem], [FolderScanIssue])
     private let listingNotice = InlineNotice()
+    /// Copy / Move results. A notice, not a toast: it takes its own band above
+    /// the photos (the notice reservation), so it never covers file names.
+    let transferNotice = InlineNotice(fixedHeight: InlineNotice.fixedBandHeight)
+    /// Left and right margin of the notices: the same 16 pt as the photo grid.
+    static let noticeInset: CGFloat = 16
+    private var transferNoticeDismiss: DispatchWorkItem?
+    static let transferNoticeSeconds: TimeInterval = 6
+    private var transferProgressGeneration = 0
     var hydrationGateForTesting: (@MainActor () async -> Void)?
     /// Images dropped on the content area, selected when
     /// their folder is shown (the first scrolled into view).
@@ -148,14 +158,26 @@ public final class BrowserWindowController: NSWindowController {
     static let inspectorMinimumWidth: CGFloat = 240
     /// The window's minimum width: both side panes at their minimum
     /// beside the narrowest content pane (plus the dividers and the
-    /// floating sidebar's inset), rounded up.
+    /// floating sidebar's inset).
     static var minimumWindowWidth: CGFloat {
         let panes = sidebarMinimumWidth + contentMinimumWidth + inspectorMinimumWidth + 8
-        return (panes / 10).rounded(.up) * 10
+        return panes
+    }
+    static func minimumLayout(forVisibleWidth width: CGFloat)
+        -> (collapseSidebar: Bool, collapseInspector: Bool, minimumWidth: CGFloat) {
+        let withInspector = contentMinimumWidth + inspectorMinimumWidth + 8
+        let collapseSidebar = width < minimumWindowWidth
+        let collapseInspector = width < withInspector
+        let minimum = collapseInspector ? contentMinimumWidth
+            : (collapseSidebar ? withInspector : minimumWindowWidth)
+        return (collapseSidebar, collapseInspector, min(minimum, width))
     }
     /// Shared toast host.
     let toastHost = ToastHostView(placement: .browser)
-    lazy var fileOps = FileOps(metadata: services.metadataStore, backups: services.backupStore)
+    /// Its own writes are ignored by this window's (and its partner's) watcher only;
+    /// a second window on the folder hears about trash / move / rename.
+    lazy var fileOps = FileOps(metadata: services.metadataStore, backups: services.backupStore,
+                               watchers: watcherScope)
     /// Trashes run one after another.
     var trashChain: Task<Void, Never>?
     /// Rotate / flip presses waiting 500 ms for their write.
@@ -177,7 +199,13 @@ public final class BrowserWindowController: NSWindowController {
     /// Tests get the Tags session here instead of a popover.
     var tagPopoverPresenterForTesting: ((TagEditSession) -> Void)?
     /// The listed folder's watcher.
-    var folderWatcher: FolderWatcher?
+    var folderWatcher: FolderWatcher? {
+        didSet { watcherScope.setWatcher(folderWatcher) }
+    }
+    /// Who ignores this window's own file writes: its watcher and its
+    /// paired viewer's (both are updated explicitly). Other windows'
+    /// watchers still report the change. See `WindowWatcherScope`.
+    let watcherScope = WindowWatcherScope()
     var folderWatchTask: Task<Void, Never>?
     /// File ▸ Export Contact Sheet… while its PDF is made.
     var contactSheetExport: Task<Void, Never>?
@@ -271,6 +299,19 @@ public final class BrowserWindowController: NSWindowController {
         photoInfoCache.invalidate(urls)
         contentController.forgetFileSizes(for: urls)
         reloadCurrentFolder()
+        refreshInspectorPreview(urls)
+    }
+
+    /// The side panel's picture of a changed file is read again, after the
+    /// cached pictures of it are dropped (a viewer rotating in place calls
+    /// this before its own eviction has finished).
+    func refreshInspectorPreview(_ urls: [URL]) {
+        guard inspectorController.previewNeedsReload(urls) else { return }
+        let cache = services.thumbnailCache
+        Task { @MainActor [weak self] in
+            for url in urls { await cache.evict(url: url) }
+            self?.inspectorController.reloadPreview(for: urls)
+        }
     }
 
     /// `urls` plus every file of each listed group one of them belongs to
@@ -344,7 +385,34 @@ public final class BrowserWindowController: NSWindowController {
             window.setContentSize(Self.defaultContentSize)
             window.center()
         }
-        // A frame saved before the minimum grew.
+        // A saved frame may have come from a larger monitor. Keep the
+        // complete Browser reachable when it opens on a smaller display.
+        if let visible = (window.screen ?? NSScreen.main)?.visibleFrame {
+            // Preserve as much Browser chrome as the display can support.
+            // At 1024 pt the three-pane minimum is 1022 pt; smaller
+            // displays progressively collapse optional side panes so the
+            // content remains reachable without forcing the window offscreen.
+            let items = splitController.splitViewItems
+            let layout = Self.minimumLayout(forVisibleWidth: visible.width)
+            if items.count == 3 {
+                if layout.collapseSidebar { items[0].isCollapsed = true }
+                if layout.collapseInspector { items[2].isCollapsed = true }
+                // Below the toolbar's usual minimum, let the content pane
+                // shrink with the display. Toolbar items can move into the
+                // overflow menu, while the photo grid stays reachable.
+                items[1].minimumThickness = min(Self.contentMinimumWidth, visible.width)
+            }
+            window.minSize = NSSize(width: layout.minimumWidth,
+                                    height: min(560, visible.height))
+            var frame = window.frame
+            frame.size.width = min(frame.width, visible.width)
+            frame.size.height = min(frame.height, visible.height)
+            frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+            frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+            window.setFrame(frame, display: false)
+        }
+        // A frame saved before the minimum grew. The dynamic minimum above
+        // ensures this cannot expand past the visible frame on a small display.
         if window.frame.width < window.minSize.width || window.frame.height < window.minSize.height {
             var frame = window.frame
             let height = max(frame.height, window.minSize.height)
@@ -375,11 +443,12 @@ public final class BrowserWindowController: NSWindowController {
         var frame = NSRect(x: other.minX + step, y: other.maxY - step - size.height,
                            width: size.width, height: size.height)
         guard let visible else { return frame }
-        // Off the right or bottom edge: start again at the screen's
-        // top-left corner area rather than off screen.
-        if frame.maxX > visible.maxX { frame.origin.x = max(visible.minX, visible.maxX - frame.width) }
-        if frame.minY < visible.minY { frame.origin.y = min(visible.maxY - frame.height, visible.minY) }
-        if frame.maxY > visible.maxY { frame.origin.y = visible.maxY - frame.height }
+        // A saved frame may exceed the current monitor. Reduce it before
+        // positioning so the next Browser remains fully reachable.
+        frame.size.width = min(frame.width, visible.width)
+        frame.size.height = min(frame.height, visible.height)
+        frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+        frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
         return frame
     }
 
@@ -454,7 +523,10 @@ public final class BrowserWindowController: NSWindowController {
         thumbSizeSlider.setAccessibilityLabel("Thumbnail size")
 
         // Search field (the Search toolbar item's view).
-        searchField.placeholderString = "Find File Names"
+        // Short on purpose: at the minimum window the field is 110 pt and the
+        // hint has about 47 pt (see BrowserToolbarTests). The scope is in the
+        // tooltip and the accessibility label.
+        searchField.placeholderString = "Search"
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
         // Esc: clear, and hand the keys back to the grid / list.
@@ -553,27 +625,29 @@ public final class BrowserWindowController: NSWindowController {
         banner.onRecovered = { [weak self] in self?.reloadCurrentFolder() }
         banner.onVisibilityChanged = { [weak self] _ in self?.layoutNoticeStack() }
         listingNotice.onVisibilityChanged = { [weak self] _ in self?.layoutNoticeStack() }
-        let top = NSStackView(views: [banner, listingNotice]); top.orientation = .vertical
+        transferNotice.onVisibilityChanged = { [weak self] _ in self?.layoutNoticeStack() }
+        let top = NSStackView(views: [banner, transferNotice, listingNotice]); top.orientation = .vertical
         // A stack containing only hidden notices must not absorb the
         // Browser's vertical slack. Visible notices retain their fitted height.
         top.setHuggingPriority(.required, for: .vertical)
-        for notice in [banner, listingNotice] as [NSStackView] {
-            notice.setHuggingPriority(.required, for: .vertical)
+        for notice in [banner, listingNotice, transferNotice] as [NSStackView] {
+            notice.edgeInsets = NSEdgeInsets(top: 4, left: Self.noticeInset, bottom: 4, right: Self.noticeInset)
+            // A required hug makes the stack pin its views to both edges (it stretches a one-line
+            // label, which then draws its text above the centre). The transfer band has a
+            // fixed height instead, so it hugs just below required.
+            notice.setHuggingPriority(notice === transferNotice ? NSLayoutConstraint.Priority(999) : .required, for: .vertical)
             notice.translatesAutoresizingMaskIntoConstraints = false
             notice.leadingAnchor.constraint(equalTo: top.leadingAnchor).isActive = true
             notice.trailingAnchor.constraint(equalTo: top.trailingAnchor).isActive = true
         }
-        top.translatesAutoresizingMaskIntoConstraints = false
         noticeStack = top
-        wrap.addSubview(top)
+        contentController.installNoticeBand(top)
         wrap.addSubview(split)
         wrap.addSubview(bottomBar)
         NSLayoutConstraint.activate([
             // This window uses fullSizeContentView, so the wrapper extends
-            // behind the unified toolbar. Keep notices in the visible area.
-            top.topAnchor.constraint(equalTo: wrap.safeAreaLayoutGuide.topAnchor),
-            top.leadingAnchor.constraint(equalTo: wrap.leadingAnchor), top.trailingAnchor.constraint(equalTo: wrap.trailingAnchor),
-            split.topAnchor.constraint(equalTo: top.bottomAnchor),
+            // behind the unified toolbar. Keep the panes in the visible area.
+            split.topAnchor.constraint(equalTo: wrap.safeAreaLayoutGuide.topAnchor),
             split.leadingAnchor.constraint(equalTo: wrap.leadingAnchor),
             split.trailingAnchor.constraint(equalTo: wrap.trailingAnchor),
             split.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
@@ -592,20 +666,11 @@ public final class BrowserWindowController: NSWindowController {
         window.contentViewController = host
     }
 
-    /// The window safe area tracks the toolbar in global coordinates. When a
-    /// sibling notice takes space above the split, AppKit reduces the center
-    /// view's safe-area inset by the same amount. Reserve that height inside
-    /// Browser content so the filter and photo viewport move with the notice.
+    /// The notices sit in a band at the top of the photo area; the filter
+    /// strip and the photos are constrained below it, so only a relayout is
+    /// needed when one appears or goes.
     private func layoutNoticeStack() {
-        guard let window, let noticeStack else { return }
-        window.contentView?.layoutSubtreeIfNeeded()
-        noticeStack.layoutSubtreeIfNeeded()
-        let visibleNotices = noticeStack.arrangedSubviews.filter { !$0.isHidden }
-        let contentHeight = visibleNotices.reduce(CGFloat.zero) { $0 + $1.fittingSize.height }
-        let gaps = CGFloat(max(0, visibleNotices.count - 1)) * noticeStack.spacing
-        // Preserve the visible notice height in Browser's own safe area so
-        // its filter strip and photo viewport move with the notice.
-        contentController.view.additionalSafeAreaInsets.top = contentHeight + gaps
+        window?.contentView?.layoutSubtreeIfNeeded()
     }
 
     private func setupFirstResponder() {
@@ -1073,8 +1138,7 @@ public final class BrowserWindowController: NSWindowController {
             .rating, urls: urls, store: services.metadataStore, undoManager: window?.undoManager,
             compute: { Culling.ratingValues(rating, urls: urls, previous: $0) },
             onChange: { [weak self] values in self?.cullingDidChange(values) },
-            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.rating, error: error), kind: .error)) }
-        )
+            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.rating, error: error), kind: .error)) }, suppressing: watcherScope)
     }
 
     private func applyFlag(_ flag: Bool, to items: [BrowserItem]) {
@@ -1092,8 +1156,7 @@ public final class BrowserWindowController: NSWindowController {
                 return out
             },
             onChange: { [weak self] values in self?.cullingDidChange(values) },
-            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.flag, error: error), kind: .error)) }
-        )
+            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.flag, error: error), kind: .error)) }, suppressing: watcherScope)
     }
 
     /// Q / \ : if any selected item is unflagged, flag all; else unflag all.
@@ -1105,7 +1168,7 @@ public final class BrowserWindowController: NSWindowController {
         CullingUndo.perform(.flag, urls: urls, store: services.metadataStore, undoManager: window?.undoManager,
             compute: { Culling.toggledFlagValues(urls: urls, leaders: leaders, previous: $0) },
             onChange: { [weak self] in self?.cullingDidChange($0) },
-            onFailure: { [weak self] in self?.toast(ToastContent(CullingUndo.failureMessage(.flag, error: $0), kind: .error)) })
+            onFailure: { [weak self] in self?.toast(ToastContent(CullingUndo.failureMessage(.flag, error: $0), kind: .error)) }, suppressing: watcherScope)
     }
 
     /// Saved values landed (also after undo / redo). Keeps a paired
@@ -1425,6 +1488,57 @@ public final class BrowserWindowController: NSWindowController {
         var content = ToastContent(message, kind: kind, actionTitle: actionTitle)
         content.progress = progress
         toastHost.show(content, action: action)
+    }
+
+    /// Shows a Copy / Move result in its own band above the photos for a few
+    /// seconds. `undo` adds an Undo button. A newer result replaces the older.
+    func showTransferNotice(_ text: String, undo: (@MainActor () -> Void)? = nil) {
+        transferNoticeDismiss?.cancel()
+        var buttons: [(String, () -> Void)] = []
+        if let undo {
+            buttons.append(("Undo", { [weak self] in
+                self?.hideTransferNotice()
+                undo()
+            }))
+        }
+        transferNotice.show(text, buttons: buttons)
+        NSAccessibility.post(element: window ?? NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.hideTransferNotice() }
+        }
+        transferNoticeDismiss = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.transferNoticeSeconds, execute: work)
+    }
+
+    func showTransferProgress(_ content: ToastContent) -> TransferProgressTicket {
+        transferNoticeDismiss?.cancel()
+        transferNoticeDismiss = nil
+        transferProgressGeneration &+= 1
+        transferNotice.showProgress(content.message, fraction: content.progressIsIndeterminate ? nil : content.progress)
+        return TransferProgressTicket(owner: self, generation: transferProgressGeneration)
+    }
+
+    func updateTransferProgress(_ content: ToastContent, matching ticket: TransferProgressTicket) -> TransferProgressTicket? {
+        guard ownsTransferProgress(ticket) else { return nil }
+        transferProgressGeneration &+= 1
+        transferNotice.showProgress(content.message, fraction: content.progressIsIndeterminate ? nil : content.progress)
+        return TransferProgressTicket(owner: self, generation: transferProgressGeneration)
+    }
+
+    func dismissTransferProgress(matching ticket: TransferProgressTicket) {
+        guard ownsTransferProgress(ticket) else { return }
+        transferNotice.show(nil)
+    }
+
+    private func ownsTransferProgress(_ ticket: TransferProgressTicket) -> Bool {
+        ticket.owner === self && ticket.generation == transferProgressGeneration && transferNotice.isShowingProgress
+    }
+
+    func hideTransferNotice() {
+        transferNoticeDismiss?.cancel()
+        transferNoticeDismiss = nil
+        transferNotice.show(nil)
     }
 
     /// Shows a ready-made toast content.

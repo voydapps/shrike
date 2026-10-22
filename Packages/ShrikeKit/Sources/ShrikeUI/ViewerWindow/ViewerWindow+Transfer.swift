@@ -81,7 +81,6 @@ extension ViewerWindow {
             self?.finishTransfer(verb, outcome, folder: folder, removed: removed, fallback: current)
         }
         trashChain = task
-        coordinator.runningTask = task
     }
 
     private func finishTransfer(

@@ -18,16 +18,16 @@ final class PillGlassGeometryTests: XCTestCase {
 
     private var window: NSWindow!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         Prefs.resetAll()
         HUDGlass.forceFallbackForTesting = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         window?.close()
         Prefs.resetAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeFullScreenContent() -> ViewerContentView {

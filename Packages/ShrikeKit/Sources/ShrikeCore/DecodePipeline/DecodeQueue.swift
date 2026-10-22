@@ -178,6 +178,10 @@ public actor DecodeQueue {
     }
     /// In-flight decode per file id. Duplicate requests share the task.
     private var inFlight: [String: Pending] = [:]
+    /// Size and content date of each file when its decode started, so a
+    /// "modified" report for a rating / flag / tag write (extended
+    /// attribute only) does not drop a picture that is still right.
+    private var decodeStamps: [String: FileContentStamp] = [:]
     private var nextToken: UInt64 = 0
 
     /// Monotonic counter incremented by every user-visible navigation
@@ -443,6 +447,28 @@ public actor DecodeQueue {
         schedule(around: index)
     }
 
+    /// `evict(url:)`, but only when the file's content is not what was
+    /// decoded (size or content date differs). A file never decoded has no
+    /// stamp and is evicted, to be safe. A stamp outlives the cached image
+    /// (idle trim), so a trimmed file is not "changed" either.
+    /// Returns whether it evicted.
+    @discardableResult
+    public func evictIfContentChanged(url: URL) -> Bool {
+        let target = url.standardizedFileURL
+        var ids: Set<String> = [url.absoluteString]
+        for src in list {
+            if let file = src as? FileImageSource, file.url.standardizedFileURL == target {
+                ids.insert(file.id)
+            }
+        }
+        let stamps = ids.compactMap { decodeStamps[$0] }
+        if !stamps.isEmpty, !stamps.contains(where: { $0.differs(from: url) }) {
+            return false
+        }
+        evict(url: url)
+        return true
+    }
+
     /// Drop everything cached or decoding for `url` (file changed on disk:
     /// save, revert, rotate, rename, external edit).
     public func evict(url: URL) {
@@ -458,6 +484,7 @@ public actor DecodeQueue {
             inFlight.removeValue(forKey: id)?.task.cancel()
             dimensionCache.removeValue(forKey: id)
             dimensionLRU.removeAll { $0 == id }
+            decodeStamps.removeValue(forKey: id)
         }
         publishReadyCurrent()
         if !list.isEmpty { schedule(around: currentIndex) }
@@ -477,6 +504,7 @@ public actor DecodeQueue {
         for pending in inFlight.values { pending.task.cancel() }
         inFlight.removeAll()
         cache.removeAll()
+        decodeStamps.removeAll()
         wanted.removeAll()
         list = []
         currentIndex = 0
@@ -812,6 +840,7 @@ public actor DecodeQueue {
             return made.resourceLease == nil ? made.retaining(in: resources, owner: owner, category: .displayCache) : made
         }
         inFlight[id] = Pending(token: token, task: task)
+        if let file = source as? FileImageSource { decodeStamps[id] = FileContentStamp.read(file.url) }
 
         Task { [weak self] in
             let entry = try? await task.value

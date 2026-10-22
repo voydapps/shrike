@@ -94,7 +94,8 @@ final class BrowserAccessibilityLazy028Tests: XCTestCase {
             "accessibilityChildren": "AXChildren", "accessibilityValue": "AXValue",
             "accessibilityTitle": "AXTitle", "accessibilityLabel": "AXDescription"]
         guard let attribute = attributes[key], object.responds(to: NSSelectorFromString("accessibilityAttributeValue:")) else { return nil }
-        return object.accessibilityAttributeValue(NSAccessibility.Attribute(rawValue: attribute))
+        // The legacy getter, reached by selector (the typed call is deprecated).
+        return object.perform(NSSelectorFromString("accessibilityAttributeValue:"), with: attribute as NSString)?.takeUnretainedValue()
     }
     private func texts(_ element: Any, depth: Int = 0) -> [String] {
         guard depth < 5 else { return [] }
@@ -189,9 +190,9 @@ final class BrowserAccessibilityLazy028Tests: XCTestCase {
 
     func testNativeListAccessibilityReferencesReleaseAfterClose() async throws {
         var browser: BrowserWindowController? = try await open(.list)
-        weak var closedBrowser = browser
-        weak var closedContent = browser?.contentController
-        weak var closedTable = browser?.contentController.tableViewForTesting
+        weak let closedBrowser = browser
+        weak let closedContent = browser?.contentController
+        weak let closedTable = browser?.contentController.tableViewForTesting
         try autoreleasepool {
             let table = try XCTUnwrap(browser?.contentController.tableViewForTesting as? BrowserTableView)
             table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)

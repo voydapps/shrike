@@ -8,6 +8,17 @@ import XCTest
 
 final class ThumbnailCacheTests: XCTestCase {
 
+    /// Tests of the cache's decode-slot queue must not depend on unrelated
+    /// caches retaining pixels in the process-wide production budget. Keep
+    /// the real admission path enabled, but give each test a private budget
+    /// with enough room to reach the slot queue deterministically.
+    private func isolatedThumbnailBudget() -> ImageResourceBudget {
+        ImageResourceBudget(configuration: .init(
+            normalBudget: 512 << 20,
+            maximumDiscretionaryWorkCount: 8
+        ))
+    }
+
     func testGenerate_memoryAndDiskHits() async throws {
         let tmp = TempDir("thumb")
         defer { tmp.cleanup() }
@@ -185,12 +196,88 @@ final class ThumbnailCacheTests: XCTestCase {
 
     /// Fills the only slot with a gated source, then queues more.
     private func blockedCache(_ tmp: TempDir) throws -> (ThumbnailCache, GatedSource) {
-        let cache = try ThumbnailCache(diskURL: tmp.url, maxConcurrentDecodes: 1)
+        let cache = try ThumbnailCache(diskURL: tmp.url, maxConcurrentDecodes: 1,
+                                       resources: isolatedThumbnailBudget())
         return (cache, GatedSource(id: "blocker"))
     }
 
-    private func waitUntil(_ cond: @Sendable () async -> Bool) async {
-        for _ in 0..<400 where !(await cond()) { try? await Task.sleep(nanoseconds: 2_000_000) }
+    /// Polls up to 5 s; a condition that never comes true fails the test
+    /// at once, instead of letting the next assertion fail with a
+    /// misleading number (CI 0.2.22: "0 vs 1").
+    private func waitUntil(_ cond: @Sendable () async -> Bool,
+                           file: StaticString = #filePath, line: UInt = #line) async {
+        for _ in 0..<2500 {
+            if await cond() { return }
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        XCTFail("condition not reached within 5 s", file: file, line: line)
+    }
+
+    // MARK: - A caller that arrives while a doomed decode runs
+
+    /// A cell scrolls away while its decode runs (nobody waits any more, so
+    /// the running job is marked "discard"), and comes back before it ends.
+    /// The new request must get its own thumbnail, not the old job's
+    /// CancellationError (grid cells stayed blank on first open).
+    func testRequestAfterCallerCancelledMidDecode_getsAnImage() async throws {
+        let tmp = TempDir("thumb-redo-cancel")
+        defer { tmp.cleanup() }
+        let cache = try ThumbnailCache(diskURL: tmp.url, maxConcurrentDecodes: 2,
+                                       resources: isolatedThumbnailBudget())
+        let x = GatedSource(id: "x")
+        let first = Task { try await cache.thumbnail(for: x, maxPixelSize: 64) }
+        await waitUntil { x.decodeCount == 1 }
+        first.cancel()
+        await waitUntil { await cache.doomedJobCountForTesting() == 1 }
+
+        let again = Task { try await cache.thumbnail(for: x, maxPixelSize: 64) }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        x.open()
+        let image = try await again.value
+        XCTAssertEqual(image.width, 64)
+        _ = try? await first.value
+        let cached = cache.cachedThumbnail(for: x, maxPixelSize: 64)
+        XCTAssertNotNil(cached, "the second request's result is cached")
+        let jobs = await cache.jobCountForTesting()
+        XCTAssertEqual(jobs, 0)
+    }
+
+    /// Same, through the prefetch window: a started prefetch is withdrawn
+    /// (row left the window) and the row appears again before it ends.
+    func testRequestAfterCancelPrefetchMidDecode_getsAnImage() async throws {
+        let tmp = TempDir("thumb-redo-prefetch")
+        defer { tmp.cleanup() }
+        let cache = try ThumbnailCache(diskURL: tmp.url, maxConcurrentDecodes: 2,
+                                       resources: isolatedThumbnailBudget())
+        let x = GatedSource(id: "x")
+        await cache.prefetch([x], maxPixelSize: 64)
+        await waitUntil { x.decodeCount == 1 }
+        await cache.cancelPrefetch([x], maxPixelSize: 64)
+        let doomed = await cache.doomedJobCountForTesting()
+        XCTAssertEqual(doomed, 1)
+
+        let shown = Task { try await cache.thumbnail(for: x, maxPixelSize: 64) }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        x.open()
+        let image = try await shown.value
+        XCTAssertEqual(image.width, 64)
+    }
+
+    /// A prefetch that arrives after the same thumbnail was doomed must
+    /// also start fresh work (it would otherwise be cancelled with it).
+    func testPrefetchAfterDoomedJob_startsFreshWork() async throws {
+        let tmp = TempDir("thumb-redo-prefetch2")
+        defer { tmp.cleanup() }
+        let cache = try ThumbnailCache(diskURL: tmp.url, maxConcurrentDecodes: 2,
+                                       resources: isolatedThumbnailBudget())
+        let x = GatedSource(id: "x")
+        let first = Task { try await cache.thumbnail(for: x, maxPixelSize: 64) }
+        await waitUntil { x.decodeCount == 1 }
+        first.cancel()
+        await waitUntil { await cache.doomedJobCountForTesting() == 1 }
+        await cache.prefetch([x], maxPixelSize: 64)
+        x.open()
+        await waitUntil { cache.cachedThumbnail(for: x, maxPixelSize: 64) != nil }
     }
 
     func testCancelledCallerDropsQueuedDecode() async throws {
@@ -251,7 +338,7 @@ final class ThumbnailCacheTests: XCTestCase {
         await waitUntil { await cache.decodeWaiterCountForTesting() == 3 }
         // A cell for c comes on screen and waits for it.
         let waiting = Task { try await cache.thumbnail(for: c, maxPixelSize: 64, priority: .visible) }
-        try await Task.sleep(nanoseconds: 20_000_000)
+        await waitUntil { await cache.interestForTesting(for: c, maxPixelSize: 64) == 1 }
 
         // AppKit: the prefetch window moved away from a, b and c.
         await cache.cancelPrefetch([a, b, c], maxPixelSize: 64)

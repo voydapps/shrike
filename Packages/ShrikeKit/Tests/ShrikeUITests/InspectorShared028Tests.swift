@@ -43,6 +43,16 @@ final class InspectorShared028Tests: XCTestCase {
         }
     }
 
+    func testBothInspectorsLabelRatingAndFlagTheSame() throws {
+        for file in ["BrowserWindow/InspectorPaneView.swift", "ViewerWindow/Panels/InspectorPanel.swift"] {
+            let text = try source(file)
+            XCTAssertTrue(text.contains("\"Rating & Flag\""), "\(file): heading is Rating & Flag")
+            XCTAssertTrue(text.contains("\"Flagged\""), "\(file): flag control is Flagged")
+            XCTAssertFalse(text.contains("\"Culling\""), "\(file): no Culling heading")
+            XCTAssertFalse(text.contains("Toggle(\"Flag\""), "\(file): no bare Flag toggle")
+        }
+    }
+
     func testBrowserInspectorHasNoTextSmallerThan12() throws {
         let text = try source("BrowserWindow/InspectorPaneView.swift")
         XCTAssertFalse(text.contains("size: 11"))

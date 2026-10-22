@@ -20,16 +20,14 @@ extension BrowserWindowController {
             if let responder = self.alertResponderForTesting { return responder(title) }
             return await ShrikeAlert.run(message: title, information: info, buttons: buttons, on: self.window)
         }
-        coordinator.showProgressToast = { [weak self] content in
-            guard let self else { return nil }
-            if self.toastHost.superview == nil { self.toastHost.install(in: self.contentController.view) }
-            return self.toastHost.showProgress(content)
-        }
+        // Progress shares the result's band above the photos, so it never
+        // covers a file name.
+        coordinator.showProgressToast = { [weak self] content in self?.showTransferProgress(content) }
         coordinator.updateProgressToast = { [weak self] content, ticket in
-            self?.toastHost.updateProgress(content, matching: ticket)
+            self?.updateTransferProgress(content, matching: ticket)
         }
         coordinator.dismissProgressToast = { [weak self] ticket in
-            self?.toastHost.dismissProgress(matching: ticket)
+            self?.dismissTransferProgress(matching: ticket)
         }
         coordinator.onHUDPick = { [weak self] verb, choice in
             self?.clearChord()
@@ -79,7 +77,6 @@ extension BrowserWindowController {
             self?.finishTransfer(verb, outcome, folder: folder, next: next, fallback: work[0])
         }
         trashChain = task
-        coordinator.runningTask = task
     }
 
     private func finishTransfer(
@@ -110,7 +107,7 @@ extension BrowserWindowController {
             let text = outcome.cancelled
                 ? FileTransferCopy.cancelled(verb, done: receipt.items.count, total: outcome.total)
                 : FileTransferCopy.done(verb, receipt.items.map(\.source), folder: folder)
-            toast(text, actionTitle: "Undo") { [weak self] in
+            showTransferNotice(text) { [weak self] in
                 self?.window?.undoManager?.undo()
             }
         }

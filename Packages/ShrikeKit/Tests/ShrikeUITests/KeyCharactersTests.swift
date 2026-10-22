@@ -31,15 +31,15 @@ final class KeyCharactersTests: XCTestCase {
 
     private var layout = FixedASCIILayout()
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         layout = FixedASCIILayout()
         KeyCharacters.asciiLayout = layout
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         KeyCharacters.asciiLayout = SystemASCIIKeyLayout.shared
-        super.tearDown()
+        try await super.tearDown()
     }
 
     static func key(_ chars: String, keyCode: UInt16, _ flags: NSEvent.ModifierFlags = [],

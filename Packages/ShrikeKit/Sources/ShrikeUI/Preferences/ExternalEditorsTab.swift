@@ -147,7 +147,13 @@ struct ExternalEditorsTab: View {
     static let iconSize: CGFloat = 20
     static let addTitle = "Add Editor…"
     static let addDisabledHelp = "Up to 9 editors."
-    static let footer = "Keys open the displayed photo in that editor. Send RAW files opens the RAW instead of the JPEG for a pair."
+    /// With editors listed, the switch on each row is on screen. With none, the
+    /// text only says it will appear: it must not point at a control that is not there.
+    static func footer(editorCount count: Int) -> String {
+        count == 0
+            ? "Keys open the displayed photo in an editor you add. Each added editor gets a switch to send the RAW instead of the JPEG for a pair."
+            : "Keys open the displayed photo in that editor. The switch on a row sends the RAW instead of the JPEG for a pair."
+    }
 
     /// "No editors yet. Add an app to open photos in it with ⌥⌘1." The key is slot 1's live key.
     static func emptyStateText(firstKey: String) -> String {
@@ -186,7 +192,7 @@ struct ExternalEditorsTab: View {
                 Text("External editors").font(.headline)
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(Self.footer)
+                    Text(Self.footer(editorCount: model.editors.count))
                     Text("Shrike doesn't keep originals for changes made in other apps.")
                 }
                 .font(.system(size: ChromeTypography.size(12)))

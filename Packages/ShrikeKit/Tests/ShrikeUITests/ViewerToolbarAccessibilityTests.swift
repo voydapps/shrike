@@ -156,7 +156,9 @@ final class ViewerToolbarAccessibilityTests: XCTestCase {
             return nil
         }
         let modern = el.accessibilityValue() as? String
-        let legacy = el.accessibilityAttributeValue(.value) as? String
+        // The legacy getter, reached by selector (the typed call is deprecated).
+        let legacy = el.perform(NSSelectorFromString("accessibilityAttributeValue:"),
+                                with: NSAccessibility.Attribute.value.rawValue as NSString)?.takeUnretainedValue() as? String
         XCTAssertEqual(modern, legacy, "\(label): the value VoiceOver reads differs", file: file, line: line)
         return legacy
     }

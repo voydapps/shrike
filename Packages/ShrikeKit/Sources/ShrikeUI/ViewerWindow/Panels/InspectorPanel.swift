@@ -193,7 +193,8 @@ final class InspectorPanel: HUDSurfaceView {
     var indexSummaryForTesting: String { viewModel.indexSummary }
 
     func updateIndexSummary(index: Int, total: Int) {
-        viewModel.indexSummary = "\(index + 1) of \(total)"
+        let text = "\(index + 1) of \(total)"
+        if viewModel.indexSummary != text { viewModel.indexSummary = text }
     }
 
     /// The displayed file changed: File rows at once, then the header
@@ -208,10 +209,11 @@ final class InspectorPanel: HUDSurfaceView {
     /// rows (size, dimensions) are read again.
     func reloadFileFacts() {
         guard let url = viewModel.url ?? pendingURL else { return }
-        viewModel.url = nil
         pendingURL = url
-        guard headerReadsEnabled else { return }
-        applyURL(url)
+        guard headerReadsEnabled else { viewModel.url = nil; return }
+        // The old rows stay until the new ones are read: no blank frame.
+        infoTask?.cancel()
+        readInfo(url)
     }
 
     private func applyURL(_ url: URL?) {
@@ -223,9 +225,17 @@ final class InspectorPanel: HUDSurfaceView {
             viewModel.facts = InspectorFacts()
             return
         }
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
-        viewModel.facts = InspectorRows.facts(url: url, fileSize: size, info: nil)
+        viewModel.facts = InspectorRows.facts(url: url, fileSize: Self.fileSize(url), info: nil)
+        readInfo(url)
+    }
+
+    private static func fileSize(_ url: URL) -> Int64? {
+        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
+    }
+
+    private func readInfo(_ url: URL) {
         infoTask = Task { [weak self] in
+            let size = Self.fileSize(url)
             let info = try? await PhotoInfo.read(url)
             guard !Task.isCancelled, let self, self.viewModel.url == url else { return }
             self.viewModel.facts = InspectorRows.facts(url: url, fileSize: size, info: info)
@@ -256,9 +266,15 @@ final class InspectorPanel: HUDSurfaceView {
 
     /// When the displayed file has a Shrike edit: the date of the kept
     /// original ("Original kept since 25 Sep 2026"); nil hides the row.
-    func updateOriginalDate(_ date: Date?) {
+    /// `backupExpected`: an edit was saved before, so a missing original is
+    /// worth saying. A never-edited photo shows no Edits row at all.
+    func updateOriginalDate(_ date: Date?, backupExpected: Bool = true) {
         viewModel.originalAvailable = date != nil
-        viewModel.originalKeptSince = date.map { "Original backup available · " + InspectorRows.originalKept(since: $0) } ?? "Original backup unavailable"
+        if let date {
+            viewModel.originalKeptSince = "Original backup available · " + InspectorRows.originalKept(since: date)
+        } else {
+            viewModel.originalKeptSince = backupExpected ? "Original backup unavailable" : nil
+        }
     }
 
     private var infoTask: Task<Void, Never>?
@@ -429,7 +445,7 @@ struct InspectorContent: View {
 
     private var cullingSection: some View {
         VStack(alignment: .leading, spacing: 7) {
-            header("Culling")
+            header("Rating & Flag")
             HStack(spacing: 0) {
                 ForEach(1...5, id: \.self) { i in
                     let filled = model.marks.rating >= i
@@ -448,10 +464,11 @@ struct InspectorContent: View {
                         .padding(.leading, 6)
                 }
             }
-            Toggle("Flag", isOn: Binding(get: { model.marks.flagged },
+            Toggle("Flagged", isOn: Binding(get: { model.marks.flagged },
                                          set: { _ in model.actions.toggleFlag() }))
                 .toggleStyle(.checkbox)
                 .font(.system(size: InspectorStyle.smallFontSize))
+            header("Tags").padding(.top, 5)
             HStack(spacing: 4) {
                 ForEach(model.marks.tags, id: \.name) { tag in
                     HStack(spacing: 3) {

@@ -452,7 +452,12 @@ final class AuditRemediationTests: XCTestCase {
         let visible = noticeStack.arrangedSubviews.filter { !$0.isHidden }
         let storageNoticeHeight = visible.reduce(CGFloat.zero) { $0 + $1.fittingSize.height }
             + CGFloat(max(0, visible.count - 1)) * noticeStack.spacing
-        XCTAssertEqual(degraded.contentController.view.additionalSafeAreaInsets.top, storageNoticeHeight, accuracy: 1)
+        XCTAssertEqual(degraded.contentController.view.additionalSafeAreaInsets.top, 0, "no phantom reservation: the band is a real view")
+        XCTAssertTrue(noticeStack.isDescendant(of: degraded.contentController.view), "the band lives in the photo area")
+        XCTAssertEqual(noticeStack.fittingSize.height, storageNoticeHeight, accuracy: 1)
+        XCTAssertEqual(degraded.contentController.filterStrip.convert(degraded.contentController.filterStrip.bounds, to: nil).maxY,
+                       noticeStack.convert(noticeStack.bounds, to: nil).minY, accuracy: 1,
+                       "the filter strip starts where the band ends")
 
         await responses.setPartial(true); degraded.reloadCurrentFolder(); await degraded.listingTask?.value
         degraded.window?.contentView?.layoutSubtreeIfNeeded()

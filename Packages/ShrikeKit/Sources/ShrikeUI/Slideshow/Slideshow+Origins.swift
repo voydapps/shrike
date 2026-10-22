@@ -8,10 +8,12 @@
 
 import AppKit
 import ShrikeCore
+import ShrikeIO
 
 extension ViewerWindow: SlideshowOrigin {
 
     var slideshowUndoManager: UndoManager? { windowUndoManager }
+    var slideshowWatcherScope: (any FolderChangeSuppressing)? { watcherScope }
 
     func slideshowDidChangeCulling(_ values: [URL: FileRecord]) {
         cullingDidChange(values)
@@ -45,6 +47,7 @@ extension ViewerWindow: SlideshowOrigin {
 extension BrowserWindowController: SlideshowOrigin {
 
     var slideshowUndoManager: UndoManager? { window?.undoManager }
+    var slideshowWatcherScope: (any FolderChangeSuppressing)? { watcherScope }
 
     func slideshowDidChangeCulling(_ values: [URL: FileRecord]) {
         cullingDidChange(values)

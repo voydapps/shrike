@@ -484,13 +484,34 @@ public final class WindowCoordinator {
         }
         var frame = browser.offsetBy(dx: step, dy: -step)
         guard let visible else { return frame }
+        let minimumWidth = min(CompareWindow.minimumWindowSize.width, visible.width)
+        let minimumHeight = min(CompareWindow.minimumWindowSize.height, visible.height)
+
+        // Keep the 24 pt cascade when possible. If it would run past the
+        // right edge, use the width that actually remains; the previous max()
+        // could select a larger width and push Compare offscreen.
+        frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX)
+        let availableWidth = max(0, visible.maxX - frame.minX)
+        frame.size.width = min(browser.width, max(minimumWidth, min(availableWidth, browser.width)))
         if frame.maxX > visible.maxX {
-            frame.size.width = max(browser.width - step, visible.maxX - frame.minX)
+            frame.origin.x = max(visible.minX, visible.maxX - frame.width)
         }
+
+        // Preserve the cascaded top edge. If moving down by 24 pt would
+        // cross the bottom edge, give up those 24 pt of height, as the
+        // established paired-window behavior does.
         if frame.minY < visible.minY {
             let top = frame.maxY
             frame.origin.y = max(visible.minY, top - (browser.height - step))
-            frame.size.height = top - frame.origin.y
+            frame.size.height = top - frame.minY
+        }
+        // A source window that was already beyond the visible screen still
+        // needs a final full containment clamp.
+        frame.size.height = min(frame.height, visible.height)
+        frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+        if frame.height < minimumHeight {
+            frame.size.height = minimumHeight
+            frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
         }
         return frame
     }

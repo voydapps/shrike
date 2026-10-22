@@ -60,7 +60,7 @@ extension BrowserWindowController {
         let allFlips = pending.ops.allSatisfy { if case .rotate = $0 { return false }; return true }
         orientationWriteChain = Task { @MainActor [weak self] in
             await previous?.value
-            FolderWatcherRegistry.shared.ignore(paths: pending.urls, for: .seconds(2))
+            self?.watcherScope.ignore(paths: pending.urls, for: .seconds(2))
             var steps: [(URL, FileVersionStep)] = []
             var failed: [URL] = []
             for url in pending.urls {
@@ -125,7 +125,7 @@ extension BrowserWindowController {
         let urls = steps.map(\.0)
         let task = Task { @MainActor [weak self] in
             await previous?.value
-            FolderWatcherRegistry.shared.ignore(paths: urls, for: .seconds(2))
+            self?.watcherScope.ignore(paths: urls, for: .seconds(2))
             var failedName: String?
             for ((url, step), (_, out)) in zip(steps, inverse) {
                 await step.task?.value

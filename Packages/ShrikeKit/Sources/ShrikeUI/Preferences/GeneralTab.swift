@@ -13,7 +13,7 @@ import ShrikeCore
 struct GeneralTab: View {
 
     /// Spec 27 T1: true for both wheel settings and both fit states.
-    static let wheelHelp = "Hold ⌘ for the other action. On a trackpad, a short two-finger scroll moves to the next photo when the photo fits the window and the wheel is set to Changes image. A swipe changes images and a pinch zooms."
+    static let wheelHelp = "On a trackpad, a short two-finger scroll moves to the next photo when the photo fits the window and the wheel is set to Changes image."
 
 
     @EnvironmentObject private var store: PreferencesStore

@@ -19,9 +19,11 @@
 //    `BackupStore.rekey` for trash, restore, move and rename (so Revert to
 //    Original keeps working); `transfer(… mode: .copy)` for copy. Finder
 //    tags and the rating xattrs are on the file, so they travel with it.
-//  * Shrike's own writes are reported to every `FolderWatcher` (through
-//    `FolderChangeSuppressing`) just before each file operation, so they
-//    don't come back as "removed outside Shrike".
+//  * Shrike's own writes are reported through `FolderChangeSuppressing`
+//    just before each file operation, so they don't come back as "removed
+//    outside Shrike". A window passes its `WindowWatcherScope` (its own and
+//    its paired window's watcher); other windows' watchers still report the
+//    change. The default (every watcher) is only for callers with no window.
 //  * After each operation a `FileOpsChange` is published on `changes()` and
 //    as `FileOps.didChangeNotification`, so every window can update its
 //    list at once.
@@ -29,14 +31,29 @@
 //    Every element carries the receipt so far. Cancelling the consuming
 //    task stops after the current group; finished groups stay, and the last
 //    element the consumer received is the receipt for Undo (a cancelled
-//    consumer does not see a final `wasCancelled` element). The stream
-//    throws only when nothing can start (destination missing, read-only,
-//    not writable).
+//    consumer does not see a final `wasCancelled` element, and the group
+//    that was running when the cancel landed can be missing from it).
+//    A caller that needs the exact receipt passes a `TransferStop` and
+//    calls `stop()` instead of cancelling: the group in flight finishes,
+//    and the final element (`wasCancelled`) lists everything on disk. The
+//    stream throws only when nothing can start (destination missing,
+//    read-only, not writable).
 //
 
 import Foundation
 import os
 import ShrikeCore
+
+// MARK: - Stop
+
+/// Asks a running copy / move to stop after the group in flight, while the
+/// consumer keeps reading (a cancelled consumer would lose the last element).
+public final class TransferStop: Sendable {
+    private let flag = OSAllocatedUnfairLock(initialState: false)
+    public init() {}
+    public func stop() { flag.withLock { $0 = true } }
+    public var isStopped: Bool { flag.withLock { $0 } }
+}
 
 // MARK: - Errors
 
@@ -405,17 +422,17 @@ public actor FileOps {
 
     /// Copies each group (all its files) into `folder`.
     public nonisolated func copy(
-        _ groups: [ImageGroup], to folder: URL, conflicts: ConflictPolicy
+        _ groups: [ImageGroup], to folder: URL, conflicts: ConflictPolicy, stop: TransferStop? = nil
     ) -> AsyncThrowingStream<FileOpProgress, any Error> {
-        stream(.copy, groups, folder, conflicts)
+        stream(.copy, groups, folder, conflicts, stop)
     }
 
     /// Moves each group (all its files) into `folder`. Same-volume moves
     /// are renames; cross-volume moves copy then delete (FileManager).
     public nonisolated func move(
-        _ groups: [ImageGroup], to folder: URL, conflicts: ConflictPolicy
+        _ groups: [ImageGroup], to folder: URL, conflicts: ConflictPolicy, stop: TransferStop? = nil
     ) -> AsyncThrowingStream<FileOpProgress, any Error> {
-        stream(.move, groups, folder, conflicts)
+        stream(.move, groups, folder, conflicts, stop)
     }
 
     /// Reverts a copy (the copies go to the Trash) or a move (the files go
@@ -566,12 +583,13 @@ public actor FileOps {
     // MARK: - Copy / move internals
 
     private nonisolated func stream(
-        _ kind: FileOpReceipt.Kind, _ groups: [ImageGroup], _ folder: URL, _ policy: ConflictPolicy
+        _ kind: FileOpReceipt.Kind, _ groups: [ImageGroup], _ folder: URL, _ policy: ConflictPolicy,
+        _ stop: TransferStop?
     ) -> AsyncThrowingStream<FileOpProgress, any Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await self.transfer(kind, groups, folder, policy) { continuation.yield($0) }
+                    try await self.transfer(kind, groups, folder, policy, stop) { continuation.yield($0) }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -586,6 +604,7 @@ public actor FileOps {
         _ groups: [ImageGroup],
         _ folderIn: URL,
         _ policy: ConflictPolicy,
+        _ stop: TransferStop?,
         yield: @Sendable (FileOpProgress) -> Void
     ) async throws {
         let folder = folderIn.standardizedFileURL
@@ -612,6 +631,7 @@ public actor FileOps {
         var sticky: ConflictAnswer.Action?
         var removedByReplace: [URL] = []
         var cancelled = false
+        func stopRequested() -> Bool { Task.isCancelled || stop?.isStopped == true }
 
         func progress(_ completed: Int, current: String?, finished: Bool) -> FileOpProgress {
             FileOpProgress(
@@ -625,7 +645,7 @@ public actor FileOps {
         yield(progress(0, current: groups.first?.primary.lastPathComponent, finished: false))
 
         for (index, group) in groups.enumerated() {
-            if Task.isCancelled { cancelled = true; break }
+            if stopRequested() { cancelled = true; break }
             defer { bytesDone += sizes[index] }
 
             if Self.canonicalPath(group.primary.deletingLastPathComponent()) == destPath {
@@ -655,7 +675,7 @@ public actor FileOps {
                         if answer.applyToRemaining { sticky = answer.action }
                     }
                 }
-                if Task.isCancelled { cancelled = true; break }
+                if stopRequested() { cancelled = true; break }
 
                 switch action {
                 case .skip:
@@ -698,9 +718,9 @@ public actor FileOps {
             }
             yield(progress(index + 1, current: group.primary.lastPathComponent, finished: false))
         }
-        if Task.isCancelled { cancelled = true }
-
         let doneCount = items.count + skipped.count + failures.count
+        // A stop that lands after the last group changed nothing: not "cancelled".
+        if stopRequested(), doneCount < groups.count { cancelled = true }
         yield(progress(doneCount, current: nil, finished: true))
 
         let pairs = items.flatMap { item in zip(item.source.allURLs, item.result.allURLs).map { FileMove(from: $0, to: $1) } }

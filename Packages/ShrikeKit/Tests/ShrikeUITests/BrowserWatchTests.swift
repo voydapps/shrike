@@ -89,3 +89,55 @@ final class BrowserWatchTests: XCTestCase {
                        ["a.jpg", "b.jpg"])
     }
 }
+
+// A rating / flag / tag write is reported as "modified" but changes neither
+// size nor content date: such a file keeps its thumbnail.
+@MainActor
+final class BrowserContentChangeTests: XCTestCase {
+    func testOnlyAChangedContentCountsAsModified() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shrike-contentchange-ui-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("a.jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: url)
+        let item = try BrowserItem.make(from: url)
+
+        FileAttributes.setRating(3, at: url)
+        XCTAssertEqual(BrowserWindowController.contentChanged([url], items: [item]), [],
+                       "an attribute write keeps the thumbnail")
+
+        try Data([0xFF, 0xD8, 0xFF, 0x00, 0x01]).write(to: url)
+        XCTAssertEqual(BrowserWindowController.contentChanged([url], items: [item]), [url],
+                       "a rewrite is a content change")
+
+        let unlisted = dir.appendingPathComponent("new.jpg")
+        XCTAssertEqual(BrowserWindowController.contentChanged([unlisted], items: [item]), [unlisted],
+                       "an unlisted file counts as changed")
+    }
+}
+
+// The same through the real listing: its dates must compare equal to a fresh read.
+@MainActor
+final class BrowserListedContentChangeTests: XCTestCase {
+    func testListedItemKeepsItsStampThroughARatingWrite() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shrike-contentchange-list-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("a.jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: url)
+        let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
+        defer { browser.close() }
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline, browser.contentController.allItems.count != 1 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(browser.contentController.allItems.count, 1)
+
+        FileAttributes.setRating(5, at: url)
+        XCTAssertEqual(BrowserWindowController.contentChanged([url], items: browser.contentController.allItems), [])
+        try Data([0xFF, 0xD8, 0xFF, 0x00, 0x01]).write(to: url)
+        XCTAssertEqual(BrowserWindowController.contentChanged([url], items: browser.contentController.allItems), [url])
+    }
+}

@@ -425,9 +425,9 @@ final class EditToolsTopBarTests: XCTestCase {
             seg.frame = NSRect(x: 0, y: 0, width: 32, height: 28)
             let rep = try XCTUnwrap(seg.bitmapImageRepForCachingDisplay(in: seg.bounds))
             seg.cacheDisplay(in: seg.bounds, to: rep)
-            // Left edge of the platter is inside the 2 pt inset; sample a
-            // point on the platter above the glyph (the bitmap may be 2x).
-            return try XCTUnwrap(rep.colorAt(x: rep.pixelsWide / 2, y: 8)).alphaComponent
+            // Sample the clear left side of the platter, away from both
+            // the centered glyph and the capsule's antialiased edge.
+            return try XCTUnwrap(rep.colorAt(x: rep.pixelsWide / 6, y: rep.pixelsHigh / 2)).alphaComponent
         }
         let segs = picker.segmentViewsForTesting
         XCTAssertEqual(try alpha(segs[0]), 0, accuracy: 0.01, "unchosen: nothing")
@@ -447,7 +447,8 @@ final class EditToolsTopBarTests: XCTestCase {
         func alpha() throws -> CGFloat {
             let rep = try XCTUnwrap(seg.bitmapImageRepForCachingDisplay(in: seg.bounds))
             seg.cacheDisplay(in: seg.bounds, to: rep)
-            return try XCTUnwrap(rep.colorAt(x: rep.pixelsWide / 2, y: 8)).alphaComponent
+            // Keep clear of the glyph, which is centered over the platter.
+            return try XCTUnwrap(rep.colorAt(x: rep.pixelsWide / 6, y: rep.pixelsHigh / 2)).alphaComponent
         }
         XCTAssertEqual(try alpha(), 0, accuracy: 0.01)
         seg.isHoveredForTesting = true

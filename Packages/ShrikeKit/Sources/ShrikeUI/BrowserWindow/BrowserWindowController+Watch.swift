@@ -5,9 +5,10 @@
 //  File watching in the Browser: the listed folder is
 //  watched with `FolderWatcher` (batched, 200 ms debounce). Added,
 //  removed and renamed files list the folder again with the selection
-//  kept; modified files drop their cached thumbnail first. Shrike's own
-//  trash / move / rename / save are ignored: `FileOps` tells
-//  `FolderWatcherRegistry` about its own paths for 1 s. The folder itself
+//  kept; modified files drop their cached thumbnail first. This window's
+//  own trash / move / rename / rotate / revert are ignored in its own and
+//  its paired viewer's watcher only (`watcherScope`); other windows on the
+//  folder hear them and refresh. The folder itself
 //  going away shows "“Italy 2026” is no longer available."
 //
 
@@ -55,16 +56,40 @@ extension BrowserWindowController {
             return
         }
         guard !change.isEmpty else { return }
-        // A header read of a changed file is stale.
-        photoInfoCache.invalidate(change.modified + change.removed + change.renamed.flatMap { [$0.from, $0.to] })
-        let cache = services.thumbnailCache
-        let modified = change.modified
+        // "Modified" is also reported for a rating / flag / tag write (an
+        // extended attribute): size and content date stay. Only a file whose
+        // content changed loses its thumbnail, header read and sizes. The
+        // thumbnail key holds the date and size, so the re-list below finds
+        // the same thumbnail for the others.
+        let modified = Self.contentChanged(change.modified, items: contentController.allItems)
         let changed = modified + change.removed + change.renamed.flatMap { [$0.from, $0.to] }
+        guard !changed.isEmpty else {
+            reloadCurrentFolder()
+            return
+        }
+        photoInfoCache.invalidate(changed)
+        let cache = services.thumbnailCache
         let generation = folderRequestGeneration
         Task { @MainActor [weak self] in
             for url in modified { await cache.evict(url: url) }
             guard self?.acceptsFolderRequest(generation, folder: folder) == true else { return }
             self?.fileContentsChanged(changed)
+        }
+    }
+
+    /// The `modified` files whose size or content date differs from the
+    /// listing (or that are not listed): the others only had an attribute
+    /// written.
+    static func contentChanged(_ modified: [URL], items: [BrowserItem]) -> [URL] {
+        guard !modified.isEmpty else { return [] }
+        var listed: [String: FileContentStamp] = [:]
+        for item in items {
+            listed[GroupList.canonical(item.group.primary)] =
+                FileContentStamp(size: item.fileSize, modified: item.modificationDate)
+        }
+        return modified.filter { url in
+            guard let known = listed[GroupList.canonical(url)] else { return true }
+            return known.differs(from: url)
         }
     }
 

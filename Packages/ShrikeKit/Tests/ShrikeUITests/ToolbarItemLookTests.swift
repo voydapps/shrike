@@ -90,12 +90,12 @@ final class ToolbarItemLookTests: XCTestCase {
     private var window: NSWindow?
     private var delegate: LookDelegate?
 
-    override func tearDown() {
+    override func tearDown() async throws {
         window?.toolbar = nil
         window?.close()
         window = nil
         delegate = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Reference and real items in pairs, spaces between the pairs.

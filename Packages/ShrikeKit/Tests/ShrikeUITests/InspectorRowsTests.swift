@@ -131,6 +131,28 @@ final class InspectorRowsTests: XCTestCase {
         XCTAssertTrue(model.marks.flagged)
     }
 
+    /// A file change (rotate) keeps the old rows until the new ones are read.
+    func testFileChangeKeepsTheRowsUntilTheNewInfoArrives() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shrike-insp-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let jpg = dir.appendingPathComponent("P1.JPG")
+        try SaveFlowTests.writeImage(jpg, type: .jpeg)
+        let panel = InspectorPanel()
+        panel.headerReadsEnabled = true
+        panel.updateForURL(jpg)
+        await panel.waitForInfo()
+        let model = panel.modelForTesting
+        let before = model.facts.file.map(\.label)
+        XCTAssertTrue(before.contains("Dimensions"))
+        panel.reloadFileFacts()
+        XCTAssertEqual(model.facts.file.map(\.label), before, "no blank frame before the new info")
+        XCTAssertEqual(model.url, jpg)
+        await panel.waitForInfo()
+        XCTAssertEqual(model.facts.file.map(\.label), before)
+    }
+
     private func waitUntil(_ timeout: TimeInterval = 3, _ condition: () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -138,5 +160,19 @@ final class InspectorRowsTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return condition()
+    }
+
+    /// A never-edited photo says nothing about backups; a missing backup
+    /// after a saved edit still says so.
+    func testBackupLineOnlyWhereABackupWasExpected() {
+        let panel = InspectorPanel()
+        let model = panel.modelForTesting
+        panel.updateOriginalDate(nil, backupExpected: false)
+        XCTAssertNil(model.originalKeptSince, "never edited: no Edits row")
+        panel.updateOriginalDate(nil, backupExpected: true)
+        XCTAssertEqual(model.originalKeptSince, "Original backup unavailable")
+        panel.updateOriginalDate(Date(timeIntervalSince1970: 1_700_000_000), backupExpected: true)
+        XCTAssertTrue(model.originalKeptSince?.hasPrefix("Original backup available") ?? false)
+        XCTAssertTrue(model.originalAvailable)
     }
 }

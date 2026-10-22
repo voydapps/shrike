@@ -82,6 +82,16 @@ final class SettingsPolish028Tests: XCTestCase {
 
     func testWheelTextIsExact() {
         XCTAssertEqual(GeneralTab.wheelHelp,
-                       "Hold ⌘ for the other action. On a trackpad, a short two-finger scroll moves to the next photo when the photo fits the window and the wheel is set to Changes image. A swipe changes images and a pinch zooms.")
+                       "On a trackpad, a short two-finger scroll moves to the next photo when the photo fits the window and the wheel is set to Changes image.")
+    }
+
+    func testExternalEditorsFooterOnlyPointsAtVisibleControls() {
+        XCTAssertFalse(ExternalEditorsTab.footer(editorCount: 0).contains("Send RAW files"))
+        XCTAssertTrue(ExternalEditorsTab.footer(editorCount: 0).contains("Each added editor gets a switch"))
+        XCTAssertTrue(ExternalEditorsTab.footer(editorCount: 2).contains("The switch on a row"))
+    }
+
+    func testMoreTrackpadControlsDoesNotRepeatTheLineAbove() {
+        XCTAssertFalse(GeneralTab.wheelHelp.contains("Hold ⌘"))
     }
 }

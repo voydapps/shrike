@@ -286,6 +286,10 @@ public final class EditModeController {
         }
         setSaving(false)
     }
+    /// True while the Save panel waits for the user (title stays "Save Copy…").
+    func setAwaitingDestination(_ waiting: Bool) {
+        publishChrome { $0.isAwaitingDestination = waiting }
+    }
     private var disabledForSave: [(NSControl, Bool)] = []
     func setSaving(_ saving: Bool) {
         guard chromeState.isSaving != saving else { return }

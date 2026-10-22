@@ -313,12 +313,46 @@ struct BatchFormView: View {
             Spacer(minLength: 12)
             Button("Cancel", action: actions.cancel)
                 .keyboardShortcut(.cancelAction)
-            Button(model.reviewingRemaining ? "Retry \(model.queue.count) Remaining \(model.queue.count == 1 ? "Photo" : "Photos")" : BatchModel.Copy.runButton(model.queue.count)) { model.run() }
-                .keyboardShortcut(.return, modifiers: .command)
+            Button(model.reviewingRemaining ? "Retry \(model.queue.count) Remaining \(model.queue.count == 1 ? "Photo" : "Photos")" : BatchModel.Copy.runButton(model.queue.count)) {
+                let event = BatchReturnPolicy.currentEvent
+                let window = BatchReturnPolicy.currentWindow
+                if BatchReturnPolicy.returnShouldOnlyCommitField(event: event, firstResponder: window?.firstResponder) {
+                    window?.makeFirstResponder(nil)   // Return commits the value; the next Return runs
+                } else {
+                    model.run()
+                }
+            }
+                .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(!model.canRun)
-                .help("Run the batch (⌘Return)")
+                .help("Run the batch (Return or ⌘Return)")
+                // Return is the real default button; ⌘Return keeps working
+                // (a button holds one shortcut, so a hidden twin carries it).
+                .background(
+                    Button("") { if model.canRun { model.run() } }
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+                )
         }
+    }
+}
+
+/// Return in a text field commits the typed value first (a size, a template);
+/// it must not also start a batch that rewrites files. Mouse clicks and Return
+/// with no field being edited run as usual.
+enum BatchReturnPolicy {
+    /// Tests: stands in for `NSApp.currentEvent`, which a direct
+    /// `performKeyEquivalent` call does not set.
+    nonisolated(unsafe) static var currentEventForTesting: NSEvent?
+    /// Tests: the window an unshown test window cannot report through the event.
+    nonisolated(unsafe) static weak var windowForTesting: NSWindow?
+    @MainActor static var currentWindow: NSWindow? { windowForTesting ?? currentEvent?.window ?? NSApp.keyWindow }
+    @MainActor static var currentEvent: NSEvent? { currentEventForTesting ?? NSApp.currentEvent }
+    @MainActor static func returnShouldOnlyCommitField(event: NSEvent?, firstResponder: NSResponder?) -> Bool {
+        guard let event, event.type == .keyDown, event.keyCode == 36 || event.keyCode == 76,
+              !event.modifierFlags.contains(.command),
+              let text = firstResponder as? NSText, text.isFieldEditor else { return false }
+        return true
     }
 }
 
@@ -573,6 +607,23 @@ struct BatchTemplateField: NSViewRepresentable {
 
 // MARK: - Running
 
+/// A plain bar. The system bar glides to a new value over a second or so, so it
+/// trailed the "n of N" counter; this one shows the same value at once.
+struct BatchProgressBar: View {
+    let fraction: Double
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.12))
+                Capsule().fill(Color.accentColor)
+                    .frame(width: max(0, min(1, fraction)) * proxy.size.width)
+            }
+        }
+        .transaction { $0.animation = nil }
+    }
+}
+
 struct BatchRunningView: View {
     @ObservedObject var model: BatchModel
 
@@ -583,8 +634,10 @@ struct BatchRunningView: View {
                 Text(model.runningTitle)
                     .font(.system(size: 15, weight: .semibold))
                 HStack(spacing: 12) {
-                    ProgressView(value: Double(model.completed), total: Double(max(model.total, 1)))
-                        .frame(width: 480)
+                    BatchProgressBar(fraction: model.progressFraction)
+                        .frame(width: 480, height: 6)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityAddTraits(.updatesFrequently)
                         .accessibilityLabel("Batch progress")
                         .accessibilityValue(BatchModel.Copy.progress(model.completed, model.total))
                     Text(model.progressLine)
@@ -598,15 +651,16 @@ struct BatchRunningView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 40)
             Spacer()
             Divider()
             HStack {
                 Spacer()
-                Button(model.isStopping ? "Stopping…" : "Stop After Safe Changes") { model.stop() }
+                Button(model.isStopping ? "Stopping…" : "Stop Batch") { model.stop() }
                     .keyboardShortcut(".", modifiers: .command)
                     .disabled(model.isStopping)
-                    .help("Stops remaining work. Completed changes are kept. (⌘.)")
+                    .help("No new photos start. Photos already finished are kept. (⌘.)")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -639,7 +693,9 @@ struct BatchDoneView: View {
                     Button("Run Another Batch") { model.runAnother() }
                 }
                 Spacer()
-                Button("Review Remaining…") { model.reviewRemaining() }.disabled(!model.canReviewRemaining)
+                if model.canReviewRemaining {
+                    Button("Review Remaining…") { model.reviewRemaining() }
+                }
                 Button("Done", action: actions.done)
                     .keyboardShortcut(.defaultAction)
             }

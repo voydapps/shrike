@@ -41,7 +41,7 @@ extension BrowserWindowController {
                 )
             }
             guard choice == 1 else { return }
-            FolderWatcherRegistry.shared.ignore(paths: [url], for: .seconds(2))
+            watcherScope.ignore(paths: [url], for: .seconds(2))
             do {
                 let preRevert = try await store.revertToOriginal(url)
                 self.fileVersionsLanded(urls: [url])

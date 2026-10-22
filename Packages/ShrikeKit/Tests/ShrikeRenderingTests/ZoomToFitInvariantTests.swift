@@ -21,7 +21,9 @@ final class ZoomToFitInvariantTests: XCTestCase {
         window.isReleasedWhenClosed = false
         view = MetalImageView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800))
         window.contentView = view
-        view.image = Self.solidImage(width: 5184, height: 3456)
+        // Keep Fit above the ladder's 25% floor on smaller hosted runners.
+        // The tested invariant requires a legal zoom-out step below Fit.
+        view.image = Self.solidImage(width: 3000, height: 1800)
         try XCTSkipUnless(view.hasTextureForTesting, "no Metal device")
     }
 
@@ -74,6 +76,8 @@ final class ZoomToFitInvariantTests: XCTestCase {
             view.scrollWheel(with: event)
         }
         XCTAssertFalse(view.isAtFit, "precondition: zoomed out (pixelScale \(view.pixelScale), fit \(view.fitPixelScale))")
+        XCTAssertLessThan(view.pixelScale, view.fitPixelScale * 0.9,
+                          "precondition: command scroll moved below Fit")
         view.zoomToFit()
         assertAtFit("after command scroll zoom-out")
     }

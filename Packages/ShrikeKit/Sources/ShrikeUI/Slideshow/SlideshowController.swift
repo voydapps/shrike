@@ -11,17 +11,25 @@
 
 import AppKit
 import ShrikeCore
+import ShrikeIO
 import ShrikeRendering
 
 /// Whoever started the slideshow (a viewer or a Browser).
 @MainActor
 protocol SlideshowOrigin: AnyObject {
     var slideshowUndoManager: UndoManager? { get }
+    /// The watchers that ignore the show's rating / flag writes (the
+    /// origin window's own and its partner's). nil ignores nothing.
+    var slideshowWatcherScope: (any FolderChangeSuppressing)? { get }
     /// A rating or flag changed during the show.
     func slideshowDidChangeCulling(_ values: [URL: FileRecord])
     /// The show ended; move to `lastShown`. `finished`: it ran out
     /// (loop off) — the origin shows "Slideshow finished."
     func slideshowDidEnd(lastShown: ImageGroup?, finished: Bool)
+}
+
+extension SlideshowOrigin {
+    var slideshowWatcherScope: (any FolderChangeSuppressing)? { nil }
 }
 
 @MainActor
@@ -210,8 +218,7 @@ final class SlideshowController: NSObject, NSWindowDelegate {
             onChange: { [weak self] values in
                 self?.origin?.slideshowDidChangeCulling(values)
                 if let record = values[urls[0]] { self?.toast(Culling.ratingAnnouncement(record.rating)) }
-            }, onFailure: { [weak self] error in self?.toast(CullingUndo.failureMessage(.rating, error: error)) }
-        )
+            }, onFailure: { [weak self] error in self?.toast(CullingUndo.failureMessage(.rating, error: error)) }, suppressing: origin?.slideshowWatcherScope)
     }
 
     private func toggleFlagShown() {
@@ -227,7 +234,7 @@ final class SlideshowController: NSObject, NSWindowDelegate {
             onChange: { [weak self] values in
                 self?.origin?.slideshowDidChangeCulling(values)
                 if let record = values[group.primary] { self?.toast(Culling.flagAnnouncement(record.flagged)) }
-            }, onFailure: { [weak self] error in self?.toast(CullingUndo.failureMessage(.flag, error: error)) })
+            }, onFailure: { [weak self] error in self?.toast(CullingUndo.failureMessage(.flag, error: error)) }, suppressing: origin?.slideshowWatcherScope)
 
     }
 

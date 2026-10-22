@@ -276,14 +276,68 @@ final class CompareWindowTests: XCTestCase {
         defer { browser.close() }
         let browserWindow = try XCTUnwrap(browser.window)
         browserWindow.setFrame(NSRect(x: 100, y: 200, width: 1000, height: 600), display: false)
-        let expected = WindowCoordinator.pairedViewerFrame(over: browserWindow.frame,
-                                                          visible: browserWindow.screen?.visibleFrame)
-        XCTAssertEqual(expected, NSRect(x: 124, y: 176, width: 1000, height: 600))
+        let browserFrame = browserWindow.frame
+        let visible = try XCTUnwrap(browserWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
         browser.contentController.selectAll()
         browser.perform(.compare)
         let window = try XCTUnwrap(CompareWindow.current)
-        XCTAssertEqual(window.frame, expected)
-        XCTAssertNotEqual(window.frame, browserWindow.frame)
+        let frame = window.frame
+        let desiredX = browserFrame.minX + 24
+        let desiredMinY = browserFrame.minY - 24
+        let desiredMaxY = browserFrame.maxY - 24
+
+        // Check the cascade against the Browser and visible screen geometry,
+        // independently of the production frame helper used to create it.
+        if desiredX + browserFrame.width <= visible.maxX {
+            XCTAssertEqual(frame.minX, desiredX, accuracy: 0.5, "keep the 24 pt right cascade when it fits")
+            XCTAssertEqual(frame.width, browserFrame.width, accuracy: 0.5,
+                           "keep the Browser width when the screen has room")
+        } else {
+            let expectedWidth = min(browserFrame.width, visible.maxX - desiredX)
+            XCTAssertEqual(frame.minX, desiredX, accuracy: 0.5, "horizontal clamping keeps the cascade origin")
+            XCTAssertEqual(frame.width, expectedWidth, accuracy: 0.5,
+                           "shrink the paired window only enough to fit the visible screen")
+            XCTAssertLessThan(frame.width, browserFrame.width)
+            XCTAssertGreaterThanOrEqual(frame.width, min(CompareWindow.minimumWindowSize.width, visible.width),
+                                        "retain Compare's minimum usable width when the display allows it")
+            XCTAssertLessThanOrEqual(frame.maxX, visible.maxX + 0.5)
+        }
+
+        if desiredMinY >= visible.minY {
+            XCTAssertEqual(frame.minY, desiredMinY, accuracy: 0.5, "keep the 24 pt downward cascade when it fits")
+            XCTAssertEqual(frame.height, browserFrame.height, accuracy: 0.5,
+                           "keep the Browser height when the screen has room")
+        } else {
+            let expectedMinY = max(visible.minY, browserFrame.minY)
+            XCTAssertEqual(frame.maxY, desiredMaxY, accuracy: 0.5,
+                           "vertical clamping preserves the cascaded top edge")
+            XCTAssertEqual(frame.minY, expectedMinY, accuracy: 0.5,
+                           "vertical clamping raises the lower edge to the screen or Browser origin")
+            XCTAssertEqual(frame.height, desiredMaxY - expectedMinY, accuracy: 0.5,
+                           "vertical clamp computes the visible paired-window height")
+            XCTAssertLessThan(frame.height, browserFrame.height)
+        }
+        XCTAssertTrue(visible.contains(frame), "Compare frame remains within the visible screen: \(frame)")
+        XCTAssertNotEqual(frame, browserFrame, "Compare must remain visibly cascaded or screen-clamped")
+    }
+
+    func testCompareCascadeFits1024PointAndMinimumDisplays() {
+        let visible = NSRect(x: 0, y: 0, width: 1024, height: 768)
+        let browser = NSRect(x: 100, y: 100, width: 1024, height: 600)
+        let frame = WindowCoordinator.pairedViewerFrame(over: browser, visible: visible)
+        XCTAssertEqual(frame.minX, 124, accuracy: 0.5, "keep the 24 pt cascade when it fits")
+        XCTAssertEqual(frame.width, 900, accuracy: 0.5,
+                       "use the 900 pt remaining to the right edge instead of growing past 1024")
+        XCTAssertTrue(visible.contains(frame), "the 1024 pt display contains the full Compare window")
+        XCTAssertGreaterThanOrEqual(frame.width, CompareWindow.minimumWindowSize.width)
+
+        let minimumDisplay = NSRect(x: 0, y: 0, width: 400, height: 250)
+        let minimumFrame = WindowCoordinator.pairedViewerFrame(
+            over: NSRect(x: 50, y: 30, width: 800, height: 500), visible: minimumDisplay)
+        XCTAssertTrue(minimumDisplay.contains(minimumFrame),
+                      "when the display is below Compare's normal minimum, the window fits the available display")
+        XCTAssertEqual(minimumFrame.size, minimumDisplay.size)
+        XCTAssertEqual(min(CompareWindow.minimumWindowSize.width, minimumDisplay.width), minimumFrame.width)
     }
 
     func testOverFourSelectedShowsTheFirstFourWithAToast() async throws {

@@ -95,7 +95,7 @@ final class ViewerSwipeHostTests: XCTestCase {
         // title is observed (it raced the neighbour's prefetch).
         _ = await waitUntil { window.displayedItem?.listIndex == 0 }
         try await Task.sleep(for: .milliseconds(100))
-        let queue = await nav.decodeQueue
+        let queue = nav.decodeQueue
         let spawnedBefore = await queue.spawnedIndicesForTesting().filter { $0 == 1 }.count
 
         var titleChanges = 0

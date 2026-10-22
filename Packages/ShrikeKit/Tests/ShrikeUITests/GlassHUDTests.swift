@@ -22,18 +22,18 @@ final class GlassHUDTests: XCTestCase {
         "shrike.viewer.histogramVisible",
     ]
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         for key in pinKeys { ShrikeDefaults.store.removeObject(forKey: key) }
         HUDGlass.forceFallbackForTesting = false
         ShrikeTokens.increaseContrastOverride = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         HUDGlass.forceFallbackForTesting = false
         ShrikeTokens.increaseContrastOverride = nil
         for key in pinKeys { ShrikeDefaults.store.removeObject(forKey: key) }
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeContent(_ mode: ViewerContentView.WindowMode = .fullscreen) -> ViewerContentView {
@@ -359,12 +359,8 @@ final class GlassHUDTests: XCTestCase {
         // Done is the default action: the system accent fill, from the same
         // call as Apply (`useAccentFill`), so it follows the user's accent.
         XCTAssertEqual((done?.view as? NSButton)?.keyEquivalent, "\r")
-        if #available(macOS 26, *) {
-            XCTAssertNotEqual(done?.style, .prominent)
-            XCTAssertEqual((done?.view as? NSButton)?.tintProminence, .primary)
-        } else {
-            XCTAssertEqual((done?.view as? NSButton)?.bezelColor, .controlAccentColor)
-        }
+        XCTAssertNotEqual(done?.style, .prominent)
+        XCTAssertEqual((done?.view as? NSButton)?.tintProminence, .primary)
         let cancel = edit.toolbar(edit.toolbar, itemForItemIdentifier: EditToolbarController.ItemID.cancel,
                                   willBeInsertedIntoToolbar: true)
         XCTAssertEqual(cancel?.style, .plain)

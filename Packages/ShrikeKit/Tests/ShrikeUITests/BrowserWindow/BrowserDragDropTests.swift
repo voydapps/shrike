@@ -359,8 +359,10 @@ final class BrowserDragDropTests: XCTestCase {
         XCTAssertEqual(names(dir), ["Q.jpg"])
         let left = await waitUntil { browser.contentController.visibleItems.map(\.displayName) == ["Q.jpg"] }
         XCTAssertTrue(left, "the moved item leaves the list")
-        XCTAssertEqual(browser.toastHost.content?.message, "Moved “P1.JPG” to “Selects”.")
-        XCTAssertEqual(browser.toastHost.content?.actionTitle, "Undo")
+        XCTAssertEqual(browser.transferNotice.message, "Moved “P1.JPG” to “Selects”.")
+        XCTAssertEqual(browser.transferNotice.buttonTitles, ["Undo"])
+        XCTAssertNil(browser.toastHost.content, "the result takes its own band, not a toast over the photos")
+        XCTAssertTrue(browser.noticeStackForTesting?.arrangedSubviews.contains(browser.transferNotice) ?? false)
 
         browser.window?.undoManager?.undo()
         await browser.waitForPendingFileWork()
@@ -384,6 +386,6 @@ final class BrowserDragDropTests: XCTestCase {
         let copied = await waitUntil { self.names(self.selects) == ["a.jpg"] }
         XCTAssertTrue(copied)
         XCTAssertEqual(names(dir), ["a.jpg"], "a copy leaves the original")
-        XCTAssertEqual(browser.toastHost.content?.message, "Copied “a.jpg” to “Selects”.")
+        XCTAssertEqual(browser.transferNotice.message, "Copied “a.jpg” to “Selects”.")
     }
 }

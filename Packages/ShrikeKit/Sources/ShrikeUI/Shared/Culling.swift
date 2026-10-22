@@ -138,10 +138,12 @@ public final class CullingUndo {
         compute: @escaping @Sendable ([URL: FileRecord]) -> [URL: FileRecord],
         onChange: @escaping @MainActor @Sendable ([URL: FileRecord]) -> Void,
         onFailure: @escaping @MainActor @Sendable (any Error) -> Void = { Culling.announce($0.localizedDescription) },
-        onCommit: @escaping @MainActor @Sendable (MetadataWriteResult, CullingCommitKind) -> Void = { _, _ in }
+        onCommit: @escaping @MainActor @Sendable (MetadataWriteResult, CullingCommitKind) -> Void = { _, _ in },
+        suppressing: (any FolderChangeSuppressing)? = nil
     ) {
         schedule(field, urls: urls, store: store, undoManager: undoManager,
-                 restoreFrom: nil, compute: compute, onChange: onChange, onFailure: onFailure, onCommit: onCommit, kind: .forward)
+                 restoreFrom: nil, compute: compute, onChange: onChange, onFailure: onFailure, onCommit: onCommit,
+                 suppressing: suppressing, kind: .forward)
     }
 
     private static func schedule(
@@ -151,6 +153,7 @@ public final class CullingUndo {
         onChange: @escaping @MainActor @Sendable ([URL: FileRecord]) -> Void,
         onFailure: @escaping @MainActor @Sendable (any Error) -> Void,
         onCommit: @escaping @MainActor @Sendable (MetadataWriteResult, CullingCommitKind) -> Void,
+        suppressing: (any FolderChangeSuppressing)?,
         kind: CullingCommitKind
     ) {
         guard !urls.isEmpty else { return }
@@ -166,7 +169,7 @@ public final class CullingUndo {
             }
             do {
                 try await beforeWriteForTesting?()
-                FolderWatcherRegistry.shared.ignore(paths: urls, for: .seconds(2))
+                suppressing?.ignore(paths: urls, for: .seconds(2))
                 let result = try await CullingWriter(store: store).apply(field, urls: urls) { current in
                     restore ?? compute(current)
                 }
@@ -190,7 +193,7 @@ public final class CullingUndo {
             MainActor.assumeIsolated {
                 schedule(field, urls: urls, store: store, undoManager: step.manager,
                          restoreFrom: step, compute: compute, onChange: onChange, onFailure: onFailure,
-                         onCommit: onCommit, kind: kind == .undo ? .redo : .undo)
+                         onCommit: onCommit, suppressing: suppressing, kind: kind == .undo ? .redo : .undo)
             }
         }
         undoManager?.setActionName(Culling.actionName(field))

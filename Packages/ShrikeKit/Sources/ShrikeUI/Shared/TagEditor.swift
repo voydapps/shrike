@@ -46,13 +46,19 @@ final class TagEditSession {
     let onChange: @MainActor ([URL]) -> Void
     /// A "Couldn't …" toast line.
     let onError: @MainActor (String) -> Void
+    /// The watchers that ignore this session's writes (the window's own and
+    /// its partner's). Other windows' watchers report the xattr change, so
+    /// their tag badges follow. nil ignores nothing.
+    let suppressing: (any FolderChangeSuppressing)?
 
     /// Names used this launch, offered by the token field.
     static var recentTags: [String] = []
 
     init(groups: [ImageGroup], colorTags: [FinderTag]? = nil, undoManager: UndoManager?,
          onChange: @escaping @MainActor ([URL]) -> Void,
-         onError: @escaping @MainActor (String) -> Void) {
+         onError: @escaping @MainActor (String) -> Void,
+         suppressing: (any FolderChangeSuppressing)? = nil) {
+        self.suppressing = suppressing
         self.groups = groups
         self.colorTags = colorTags ?? FinderTags.knownTags()
         self.undoManager = undoManager
@@ -68,12 +74,13 @@ final class TagEditSession {
     /// main). Failures come back as the usual toast, on main.
     /// `landed` runs on main once the writes are on disk (the pill and
     /// the grid re-read the tags then).
-    static func enqueue(_ edits: [FinderTagEdit], onError: @escaping @MainActor (String) -> Void,
+    static func enqueue(_ edits: [FinderTagEdit], suppressing: (any FolderChangeSuppressing)? = nil,
+                        onError: @escaping @MainActor (String) -> Void,
                         landed: @escaping @MainActor () -> Void) {
         guard !edits.isEmpty else { return }
         // Finder tags are extended attributes; the
         // cells update through `landed`, not through the folder watcher.
-        FolderWatcherRegistry.shared.ignore(paths: edits.map(\.url), for: .seconds(2))
+        suppressing?.ignore(paths: edits.map(\.url), for: .seconds(2))
         FinderTagWriter.shared.enqueue(edits) { result in
             let failed = result.failedURLs
             Task { @MainActor in
@@ -140,7 +147,7 @@ final class TagEditSession {
         }
         guard !changedPrimaries.isEmpty else { return }
         let onChange = onChange
-        Self.enqueue(edits, onError: onError) { onChange(changedPrimaries) }
+        Self.enqueue(edits, suppressing: suppressing, onError: onError) { onChange(changedPrimaries) }
         registerUndoIfNeeded()
     }
 
@@ -148,14 +155,16 @@ final class TagEditSession {
         guard !didRegisterUndo, let undoManager else { return }
         didRegisterUndo = true
         Self.registerRestore(before, primaries: groups.map(\.primary), ledger: ledger,
-                             manager: undoManager, onChange: onChange, onError: onError)
+                             manager: undoManager, onChange: onChange, onError: onError,
+                             suppressing: suppressing)
     }
 
     /// Undo / redo: write `snapshot` back and register the opposite step.
     private static func registerRestore(
         _ snapshot: [URL: [String]], primaries: [URL], ledger: TagLedger, manager: UndoManager,
         onChange: @escaping @MainActor ([URL]) -> Void,
-        onError: @escaping @MainActor (String) -> Void
+        onError: @escaping @MainActor (String) -> Void,
+        suppressing: (any FolderChangeSuppressing)?
     ) {
         let box = UndoBox()
         // NSUndoManager does not retain its target: the handler holds it.
@@ -169,10 +178,10 @@ final class TagEditSession {
                     ledger.tags[url] = tags
                     edits.append(FinderTagEdit(url: url, change: .set(tags)))
                 }
-                enqueue(edits, onError: onError) { onChange(primaries) }
+                enqueue(edits, suppressing: suppressing, onError: onError) { onChange(primaries) }
                 if let manager {
                     registerRestore(now, primaries: primaries, ledger: ledger, manager: manager,
-                                    onChange: onChange, onError: onError)
+                                    onChange: onChange, onError: onError, suppressing: suppressing)
                 }
             }
         }

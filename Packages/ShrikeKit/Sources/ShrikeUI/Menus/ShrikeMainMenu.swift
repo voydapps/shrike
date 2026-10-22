@@ -422,7 +422,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         ("Open Recent", "clock"),               // File
         ("Find", "magnifyingglass"),            // Edit
         ("Sort By", "arrow.up.arrow.down"),     // View
-        ("Compare", "rectangle.split.2x1"),
+        ("Compare Window", "rectangle.split.2x1"),
     ]
 
     /// Selector-only actions keep their icons when their displayed title changes.
@@ -638,11 +638,11 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         m.addItem(.separator())
         add(.slideshow, to: m)
         add(.compare, to: m)
-        let compare = NSMenu(title: "Compare")
+        let compare = NSMenu(title: "Compare Window")
         compare.addItem(withTitle: "Keep Focused Photo", action: #selector(CompareWindow.keepFocusedPhoto(_:)), keyEquivalent: "")
         compare.addItem(withTitle: "Sync Zoom and Pan", action: #selector(CompareWindow.toggleLockFromToolbar(_:)), keyEquivalent: "")
         compare.addItem(withTitle: "Fit", action: #selector(CompareWindow.fitAllFromToolbar(_:)), keyEquivalent: "")
-        let compareRow = NSMenuItem(title: "Compare", action: nil, keyEquivalent: ""); compareRow.submenu = compare; m.addItem(compareRow)
+        let compareRow = NSMenuItem(title: "Compare Window", action: nil, keyEquivalent: ""); compareRow.submenu = compare; m.addItem(compareRow)
         add(.toggleFullScreen, to: m, .viewer, action: #selector(NSWindow.toggleFullScreen(_:)))
         return m
     }

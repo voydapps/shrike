@@ -21,18 +21,18 @@ final class FullScreenChromeTests: XCTestCase {
         "shrike.viewer.histogramVisible",
     ]
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         for key in pinKeys { ShrikeDefaults.store.removeObject(forKey: key) }
         // The macOS 14 / 15 geometry, also used on
         // macOS 26. GlassHUDTests covers the glass geometry.
         HUDGlass.forceFallbackForTesting = true
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         HUDGlass.forceFallbackForTesting = false
         for key in pinKeys { ShrikeDefaults.store.removeObject(forKey: key) }
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeContent(_ size: CGSize = CGSize(width: 1440, height: 900)) -> ViewerContentView {

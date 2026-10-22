@@ -64,8 +64,12 @@ final class LivePhotoPlayback {
 
     /// The movie could not be loaded or played: the canvas hides the badge
     /// for this photo.
-    var onLoadFailed: ((URL) -> Void)?
+    var onLoadFailed: ((URL, String) -> Void)?
     var onStateChange: ((State) -> Void)?
+    /// The most recent asset-load or playback failure, if one occurred.
+    /// Kept after releasing the failed player so a caller can report the
+    /// actual reason instead of reducing every failure to a timeout.
+    private(set) var loadFailure: String?
 
     /// The canvas the movie view goes in, and the view it sits above.
     private weak var host: NSView?
@@ -96,6 +100,7 @@ final class LivePhotoPlayback {
 
     /// Plays `url` once from the start. Muted unless `withSound`.
     func play(_ url: URL, withSound: Bool) {
+        loadFailure = nil
         if isPlaying, movieURL == url { player?.isMuted = !withSound; return }
         if let player, movieURL == url {
             // Same photo again: the player is ready, start over.
@@ -117,23 +122,32 @@ final class LivePhotoPlayback {
         movieURL = url
         state = .loading
         loadTask = Task { [weak self] in
-            let playable = await Self.canPlay(url)
+            let failure = await Self.loadFailure(for: url)
             guard let self, self.generation == gen, !Task.isCancelled else { return }
             self.loadTask = nil
-            guard playable else { self.fail(url); return }
-            self.makePlayer(url, muted: !withSound)
-            self.startPlaying()
+            guard let failure else {
+                self.makePlayer(url, muted: !withSound)
+                self.startPlaying()
+                return
+            }
+            self.fail(url, reason: failure)
         }
     }
 
-    /// True when `url` loads and has a video track (off the main actor).
-    nonisolated private static func canPlay(_ url: URL) async -> Bool {
+    /// Returns nil when `url` loads and has a video track; otherwise retains
+    /// the AVFoundation outcome for diagnostics (off the main actor).
+    nonisolated private static func loadFailure(for url: URL) async -> String? {
         let asset = AVURLAsset(url: url)
         do {
-            guard try await asset.load(.isPlayable) else { return false }
-            return try await !asset.loadTracks(withMediaType: .video).isEmpty
+            guard try await asset.load(.isPlayable) else {
+                return "AVFoundation reports that the movie is not playable."
+            }
+            guard try await !asset.loadTracks(withMediaType: .video).isEmpty else {
+                return "The movie has no video track."
+            }
+            return nil
         } catch {
-            return false
+            return error.localizedDescription
         }
     }
 
@@ -164,7 +178,8 @@ final class LivePhotoPlayback {
                                             object: item, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let url = self.movieURL else { return }
-                self.fail(url)
+                let reason = item.error?.localizedDescription ?? "AVPlayer failed while playing the movie."
+                self.fail(url, reason: reason)
             }
         })
     }
@@ -178,9 +193,10 @@ final class LivePhotoPlayback {
         player.play()
     }
 
-    private func fail(_ url: URL) {
+    private func fail(_ url: URL, reason: String) {
+        loadFailure = reason
         release()
-        onLoadFailed?(url)
+        onLoadFailed?(url, reason)
     }
 
     // MARK: End, stop, release

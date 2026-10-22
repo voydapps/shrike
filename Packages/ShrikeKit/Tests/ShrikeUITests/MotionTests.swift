@@ -25,18 +25,18 @@ final class MotionTests: XCTestCase {
     ]
     private var window: NSWindow?
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         for key in pinKeys { ShrikeDefaults.store.removeObject(forKey: key) }
         ReduceMotion.overrideForTesting = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         ReduceMotion.overrideForTesting = nil
         for key in pinKeys { ShrikeDefaults.store.removeObject(forKey: key) }
         window?.orderOut(nil)
         window = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// A full-screen viewer content view in an offscreen window, with the

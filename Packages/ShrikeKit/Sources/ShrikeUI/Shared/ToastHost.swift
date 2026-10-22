@@ -194,7 +194,7 @@ public final class ToastHostView: HUDSurfaceView {
     private var ordinaryWidthConstraints: [NSLayoutConstraint] = []
     private var progressConstraints: [NSLayoutConstraint] = []
     private var progressEdgeConstraints: [NSLayoutConstraint] = []
-    private let progressBar = NSProgressIndicator()
+    private let progressBar = ExactProgressBar()
 
     // Timer that can pause on hover.
     private var remaining: TimeInterval = 0
@@ -247,11 +247,7 @@ public final class ToastHostView: HUDSurfaceView {
         button.translatesAutoresizingMaskIntoConstraints = false
         addSubview(button)
 
-        progressBar.style = .bar
-        progressBar.isIndeterminate = false
-        progressBar.minValue = 0
-        progressBar.maxValue = 1
-        progressBar.controlSize = .small
+        progressBar.onDarkSurface = true   // the progress card is dark in both appearances
         progressBar.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         progressBar.isHidden = true
         progressBar.translatesAutoresizingMaskIntoConstraints = false
@@ -360,26 +356,23 @@ public final class ToastHostView: HUDSurfaceView {
     // MARK: - Show / dismiss
 
     /// Identifies one presentation without keeping its host (or window) alive.
-    struct ProgressTicket {
-        fileprivate weak var host: ToastHostView?
-        fileprivate let generation: Int
-    }
+    typealias ProgressTicket = TransferProgressTicket
 
     func showProgress(_ content: ToastContent) -> ProgressTicket {
         precondition(content.progress != nil)
         show(content)
-        return ProgressTicket(host: self, generation: showGeneration)
+        return ProgressTicket(owner: self, generation: showGeneration)
     }
 
     func updateProgress(_ content: ToastContent, matching ticket: ProgressTicket) -> ProgressTicket? {
         guard ownsProgress(ticket) else { return nil }
         precondition(content.progress != nil)
         present(content, action: nil, continuingProgress: true)
-        return ProgressTicket(host: self, generation: showGeneration)
+        return ProgressTicket(owner: self, generation: showGeneration)
     }
 
     private func ownsProgress(_ ticket: ProgressTicket) -> Bool {
-        ticket.host === self && ticket.generation == showGeneration && content?.progress != nil
+        ticket.owner === self && ticket.generation == showGeneration && content?.progress != nil
     }
 
     /// Completion of older work must not hide a newer notice or progress owner.
@@ -466,16 +459,13 @@ public final class ToastHostView: HUDSurfaceView {
         surfaceStyle = isProgress ? Self.progressStyle : Self.pillStyle
         if isProgress {
             NSLayoutConstraint.activate(progressConstraints + progressEdgeConstraints)
-            progressBar.isIndeterminate = content.progressIsIndeterminate
-            progressBar.doubleValue = min(1, max(0, content.progress ?? 0))
-            progressBar.setAccessibilityLabel(content.message)
+            // The value is drawn at once, in step with the "n of N" text.
+            progressBar.set(fraction: content.progressIsIndeterminate ? nil : (content.progress ?? 0),
+                            label: content.message)
             progressBar.isHidden = false
-            if content.progressIsIndeterminate { progressBar.startAnimation(nil) }
-            else { progressBar.stopAnimation(nil) }
         } else {
             NSLayoutConstraint.activate(ordinaryWidthConstraints)
-            progressBar.stopAnimation(nil)
-            progressBar.isIndeterminate = false
+            progressBar.stopBusy()
             progressBar.isHidden = true
         }
     }
@@ -497,7 +487,7 @@ public final class ToastHostView: HUDSurfaceView {
 
     public func dismiss(animated: Bool = true) {
         cancelTimer()
-        progressBar.stopAnimation(nil)
+        progressBar.stopBusy()
         content = nil
         action = nil
         setAccessibilityElement(false)
@@ -539,7 +529,7 @@ public final class ToastHostView: HUDSurfaceView {
     /// Test seam: the action button.
     var actionButtonForTesting: NSButton { button }
     var labelForTesting: NSTextField { label }
-    var progressBarForTesting: NSProgressIndicator { progressBar }
+    var progressBarForTesting: ExactProgressBar { progressBar }
 
     /// Test seam: the button's title when visible.
     var actionTitleForTesting: String? { button.isHidden ? nil : button.title }
@@ -598,4 +588,11 @@ public final class ToastHostView: HUDSurfaceView {
     public override func hitTest(_ point: NSPoint) -> NSView? {
         isShowing ? super.hitTest(point) : nil
     }
+}
+
+/// Identifies one progress presentation without keeping its owner (a toast
+/// host, or the Browser's notice band) alive.
+struct TransferProgressTicket {
+    weak var owner: AnyObject?
+    let generation: Int
 }

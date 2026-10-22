@@ -60,9 +60,9 @@ Mac; yours may differ.
    from Applications, not from the DMG.
 
 Shrike is not notarized by Apple. Notarization needs a paid Apple Developer
-account, and Shrike is a free project. The app is signed, so macOS can tell it
-has not been changed since it was built, but Apple has not checked it. macOS
-therefore asks you to confirm once. After that it opens normally.
+account, and Shrike is a free project. The public app uses an ad-hoc signature,
+which does not identify a publisher. macOS can show an unnotarized-app or
+unidentified-developer warning. A downloaded update may require approval again.
 
 **macOS 26 (Tahoe)**
 

@@ -9,8 +9,11 @@
 
 import AppKit
 import ShrikeCore
+import ShrikeIO
 
 extension BrowserWindowController: CompareOrigin {
+
+    var compareWatcherScope: WindowWatcherScope { watcherScope }
 
     /// 2–4 selected = those; 1 = it and the next; over 4 = the first 4.
     func openCompare() {
@@ -60,6 +63,8 @@ extension BrowserWindowController: CompareOrigin {
 }
 
 extension ViewerWindow: CompareOrigin {
+
+    var compareWatcherScope: WindowWatcherScope { watcherScope }
 
     /// The shown photo and the next (the one before at the end).
     func openCompare() {

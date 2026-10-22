@@ -74,7 +74,7 @@ final class ViewerWatchTests: XCTestCase {
         viewer.handleFolderChange(FolderChange(removed: [urls[1]]), in: dir)
         XCTAssertEqual(viewer.groups.map(\.primary.lastPathComponent), ["a.jpg", "c.jpg"])
         XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message,
-                       "“b.jpg” was removed outside Shrike.")
+                       "“b.jpg” was moved or deleted.")
         XCTAssertNil(viewer.contentRootForTesting.toastHost.content?.actionTitle)
         XCTAssertFalse(viewer.undoManagerForTesting.canUndo)
     }

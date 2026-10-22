@@ -75,7 +75,7 @@ final class ZoomLabelTests: XCTestCase {
                                   startIndex: 1, services: try services())
         window.setContentSize(NSSize(width: 800, height: 600))
         window.contentView?.layoutSubtreeIfNeeded()
-        let queue = await window.navigationForTesting.decodeQueue
+        let queue = window.navigationForTesting.decodeQueue
         await queue.purge()
         await queue.setMaxLongEdge(1024)
         window.setGroups(urls.map { ImageGroup(primary: $0) }, startIndex: 0)

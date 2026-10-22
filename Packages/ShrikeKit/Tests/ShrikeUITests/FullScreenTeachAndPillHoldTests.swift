@@ -17,16 +17,16 @@ final class FullScreenTeachAndPillHoldTests: XCTestCase {
 
     private var wasTaught = true
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         Prefs.resetAll()
         wasTaught = ViewerContentView.teachOnceDone
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         ViewerContentView.resetTeachOnceForTesting(taught: wasTaught)
         Prefs.resetAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// `autoHides`: the pill's own idle fade. Most tests force it; nil

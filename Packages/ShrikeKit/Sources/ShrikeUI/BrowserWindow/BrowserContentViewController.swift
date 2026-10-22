@@ -196,6 +196,24 @@ public final class BrowserContentViewController: NSViewController {
     private let tableView = BrowserTableView()
     private let emptyStateView = BrowserEmptyState()
     let filterStrip = BrowserFilterStrip(frame: .zero)
+    private var filterTopConstraint: NSLayoutConstraint?
+
+    /// Puts the window's notice band at the top of the photo area (right of the
+    /// sidebar, left of the inspector). The filter strip and the photos sit
+    /// below it, so a notice moves them down and nothing else.
+    func installNoticeBand(_ band: NSStackView) {
+        band.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(band)
+        filterTopConstraint?.isActive = false
+        let top = filterStrip.topAnchor.constraint(equalTo: band.bottomAnchor)
+        filterTopConstraint = top
+        NSLayoutConstraint.activate([
+            band.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            band.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            band.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            top,
+        ])
+    }
     var onFilterSummaryChange: ((BrowserFilter) -> Void)?
     var isHydratingMarks = false { didSet { updateEmptyState() } }
 
@@ -220,7 +238,8 @@ public final class BrowserContentViewController: NSViewController {
         configureEmptyState()
         view.addSubview(filterStrip)
         filterStrip.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([filterStrip.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor), filterStrip.leadingAnchor.constraint(equalTo: view.leadingAnchor), filterStrip.trailingAnchor.constraint(equalTo: view.trailingAnchor)])
+        filterTopConstraint = filterStrip.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        NSLayoutConstraint.activate([filterTopConstraint!, filterStrip.leadingAnchor.constraint(equalTo: view.leadingAnchor), filterStrip.trailingAnchor.constraint(equalTo: view.trailingAnchor)])
         filterStrip.onChange = { [weak self] value in self?.filter = value; self?.onFilterSummaryChange?(value) }
         layoutForMode()
     }

@@ -142,7 +142,7 @@ final class WindowReleaseTests: XCTestCase {
         let content = viewer.contentRootForTesting
         return ViewerRefs(window: Weak(viewer), content: Weak(content),
                           metal: Weak(content.imageView), layer: Weak(content.imageView.layer),
-                          queue: Weak(await viewer.navigationForTesting.decodeQueue))
+                          queue: Weak(viewer.navigationForTesting.decodeQueue))
     }
 
     /// Turns the run loop (each turn drains the main autorelease pool)
@@ -187,7 +187,9 @@ final class WindowReleaseTests: XCTestCase {
         _ = e.accessibilityLabel?()
         _ = e.accessibilityFrame?()
         _ = e.accessibilityParent?()
-        _ = e.accessibilityIsIgnored?()
+        if e.responds(to: NSSelectorFromString("accessibilityIsIgnored")) {
+            _ = e.perform(NSSelectorFromString("accessibilityIsIgnored"))   // legacy; the typed call is deprecated
+        }
         for child in (e.accessibilityChildren?() ?? nil) ?? [] {
             walkAccessibility(child, depth: depth + 1)
         }

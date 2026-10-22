@@ -458,6 +458,29 @@ final class FileOpsTests: XCTestCase {
         XCTAssertEqual(names(in: dest), ["a.jpg", "b.jpg"], "b (after cancel) and c not copied")
     }
 
+    /// Esc must not leave a file that the count and Undo do not know about
+    /// (cancelled copy said "573 of 900" with 574 on disk).
+    func testStopKeepsCountReceiptAndDiskInStep() async throws {
+        let groups = try (1...6).map { try group(["f\($0).jpg"], in: "cam") }
+        let dest = try tmp.dir("Selects")
+        let ops = makeOps()
+        let stop = TransferStop()
+        var last: FileOpProgress?
+        for try await p in ops.copy(groups, to: dest, conflicts: .always(.keepBoth), stop: stop) {
+            last = p
+            if p.completed == 2, !p.isFinished { stop.stop() }
+        }
+        let final = try XCTUnwrap(last)
+        XCTAssertTrue(final.isFinished)
+        XCTAssertTrue(final.wasCancelled)
+        XCTAssertLessThan(final.receipt.items.count, 6)
+        XCTAssertEqual(names(in: dest).count, final.receipt.items.count, "disk matches the receipt")
+        XCTAssertEqual(final.completed, final.receipt.items.count)
+
+        try await ops.undo(final.receipt)
+        XCTAssertEqual(names(in: dest), [], "Undo leaves nothing behind")
+    }
+
     // MARK: Rename
 
     func testRenamePairAndUndoByRenamingBack() async throws {

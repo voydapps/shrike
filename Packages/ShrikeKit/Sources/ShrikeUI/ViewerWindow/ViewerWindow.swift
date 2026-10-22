@@ -55,7 +55,10 @@ public final class ViewerWindow: NSWindow {
         return manager
     }()
 
-    lazy var fileOps = FileOps(metadata: services.metadataStore, backups: services.backupStore)
+    /// Its own writes are ignored by this window's (and its partner's) watcher only;
+    /// a second window on the folder hears about trash / move / rename.
+    lazy var fileOps = FileOps(metadata: services.metadataStore, backups: services.backupStore,
+                               watchers: watcherScope)
     /// Copy / Move to folder: slots, panel, conflicts, HUD.
     lazy var transfers: FileTransferCoordinator = makeTransferCoordinator()
     /// Trashes run one after another, in press order.
@@ -79,7 +82,9 @@ public final class ViewerWindow: NSWindow {
 
     /// The Browser this viewer was opened from. Weak: the
     /// `WindowCoordinator` owns windows; closing either side drops the pair.
-    public weak var pairedBrowser: BrowserWindowController?
+    public weak var pairedBrowser: BrowserWindowController? {
+        didSet { watcherScope.setPartner(pairedBrowser?.watcherScope) }
+    }
     var reviewDecisionSerial: UInt64 = 0
     var reviewAutomaticMove = false
     var reviewPersistenceBanner: PersistenceBanner?
@@ -106,7 +111,13 @@ public final class ViewerWindow: NSWindow {
     /// us), so a value set in `willExit` was undone on the way out.
     var toolbarShownBeforeFullScreen: Bool?
     /// Watches the displayed item's folder for outside changes.
-    var folderWatcher: FolderWatcher?
+    var folderWatcher: FolderWatcher? {
+        didSet { watcherScope.setWatcher(folderWatcher) }
+    }
+    /// Who ignores this window's own file writes: its watcher and its
+    /// paired Browser's (both are updated explicitly). Other windows'
+    /// watchers still report the change. See `WindowWatcherScope`.
+    let watcherScope = WindowWatcherScope()
     var folderWatchTask: Task<Void, Never>?
     /// Standardized path of the watched folder (cheap compare per paint).
     var watchedFolderPath: String?
@@ -120,6 +131,9 @@ public final class ViewerWindow: NSWindow {
     var backupStateGeneration: UInt64 = 0
     /// Bumps each time the displayed file is redrawn in place (tests).
     var redrawCount: UInt64 = 0
+    /// Overrides the async header-size read in tests that exercise a redraw
+    /// while metadata is still loading.
+    var headerPixelSizeReaderForTesting: (@Sendable (URL) -> CGSize?)?
     /// The larger-texture fetch after the canvas grew.
     var textureRefetchTask: Task<Void, Never>?
     var textureRefetchCount = 0
@@ -546,6 +560,10 @@ public final class ViewerWindow: NSWindow {
     /// The edit exit alert asked by a close or a
     /// navigation. One at a time; a second request while it runs is dropped.
     var editExitTask: Task<Void, Never>?
+    /// Close-time asynchronous queue/cache teardown. Kept so tests and
+    /// coordinated shutdown paths can observe completion instead of
+    /// guessing with a delay.
+    private var closeResourceTeardownTask: Task<Void, Never>?
 
     /// Closing a viewer frees its decode cache,
     /// neighbour textures and on-screen image at once. Measured before:
@@ -589,10 +607,16 @@ public final class ViewerWindow: NSWindow {
         contentRoot.releaseImages()
         contentRoot.imageView.disposeAfterClose()
         let nav = navigation
-        Task.detached(priority: .utility) {
+        closeResourceTeardownTask = Task.detached(priority: .utility) {
             await nav.teardown()
             DisplayTextureFactory.releaseCaches()
         }
+    }
+
+    /// Test seam: waits until the decode queue and shared image caches have
+    /// completed their close-time release work.
+    func waitForResourceTeardownForTesting() async {
+        await closeResourceTeardownTask?.value
     }
 
     /// While our custom full-screen animation runs, the frame must be free
@@ -1772,6 +1796,10 @@ public final class ViewerWindow: NSWindow {
             self?.contentRoot.setEditLoadingVisible(true)
         }
         editLoadTask = Task { @MainActor [weak self] in
+            // A turn or flip pressed in the viewer is on screen but maybe not in the file
+            // yet. Write it first and show the file's pixels, so the editor and the view
+            // agree and nothing is turned twice (or not at all).
+            await self?.settleViewerOrientationForEdit()
             let full: CGImage?
             var fullLease: ImageResourceLease?
             if let sourceLoader {
@@ -1813,6 +1841,20 @@ public final class ViewerWindow: NSWindow {
                 afterEnter?()
             }
         }
+    }
+
+    /// Writes a pending Rotate / Flip and, when the view still carries a turn, replaces
+    /// the displayed pixels with a fresh decode of the file (which resets the view turn).
+    func settleViewerOrientationForEdit() async {
+        let view = contentRoot.imageView
+        guard view.rotationDegrees != 0 || view.isFlippedHorizontally || view.isFlippedVertically else { return }
+        flushPendingOrientation()
+        await orientationWriteChain?.value
+        guard !didTearDown else { return }
+        await redrawDisplayedKeepingViewNow()
+        view.resetOrientation()
+        for url in viewOnlyTurnedURLs { headerPixelSizes[url] = nil }
+        viewOnlyTurnedURLs.removeAll()
     }
 
     /// Delay before "Loading full image…" shows.

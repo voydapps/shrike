@@ -220,6 +220,36 @@ final class SaveFlowTests: XCTestCase {
         XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.actionTitle, "Show")
     }
 
+    // Save Copy into a folder another window shows (the Browser): that
+    // window's watcher must report the new file. The viewer used to tell
+    // every watcher to ignore it, so the Browser stayed at the old count.
+    func testSaveAsIsSeenByAnotherWatcherOfTheFolder() async throws {
+        let url = dir.appendingPathComponent("w.jpg")
+        try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        let browserSide = try FolderWatcher(folder: dir)
+        defer { browserSide.stop() }
+        let copy = dir.appendingPathComponent("w-edited.jpg")
+        viewer.savePanelResponderForTesting = { _, _ in copy }
+        try await enterEditWithRotate(viewer, url: url)
+        let saved = await viewer.saveEditedFile(asPanel: true)
+        XCTAssertTrue(saved)
+
+        let seen = Task { () -> [URL] in
+            var added: [URL] = []
+            for await change in browserSide.changes {
+                added += change.added
+                if !added.isEmpty { break }
+            }
+            return added
+        }
+        let timeout = Task { try await Task.sleep(for: .seconds(8)); browserSide.stop() }
+        let added = await seen.value
+        timeout.cancel()
+        XCTAssertEqual(added.map(\.lastPathComponent), ["w-edited.jpg"])
+    }
+
     // Revert after 2 saves → the first bytes; ⌘Z → the second save.
     func testRevertToOriginalAndUndo() async throws {
         let url = dir.appendingPathComponent("c.jpg")

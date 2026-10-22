@@ -58,7 +58,8 @@ extension ViewerWindow {
             onChange: { [weak self] primaries in self?.tagsDidChange(primaries) },
             onError: { [weak self] line in
                 self?.contentRoot.toast(ToastContent(line, kind: .error))
-            }
+            },
+            suppressing: watcherScope
         )
     }
 

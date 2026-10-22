@@ -159,7 +159,7 @@ extension ViewerWindow {
         let previous = orientationWriteChain
         orientationWriteChain = Task { @MainActor [weak self] in
             await previous?.value
-            FolderWatcherRegistry.shared.ignore(paths: [url], for: .seconds(2))
+            self?.watcherScope.ignore(paths: [url], for: .seconds(2))
             var results: [LosslessRotateResult] = []
             do {
                 for op in writes { results.append(try await rotator.apply(op, to: url)) }

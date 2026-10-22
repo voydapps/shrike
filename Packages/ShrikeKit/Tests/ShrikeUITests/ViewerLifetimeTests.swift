@@ -120,7 +120,7 @@ final class ViewerLifetimeTests: XCTestCase {
             weakView.value = window.imageViewForTesting
             let nav = window.navigationForTesting
             weakNav.value = nav
-            weakQueue.value = await nav.decodeQueue
+            weakQueue.value = nav.decodeQueue
 
             let view = window.imageViewForTesting
             let shown = await waitUntil { view.image != nil && !view.isCurrentImagePlaceholder }
@@ -178,11 +178,13 @@ final class ViewerLifetimeTests: XCTestCase {
     }
 
     /// Four windows open, three closed: memory falls back to about one
-    /// window's working set (numbers printed for the report).
+    /// window's working set. Wait for actual queue/cache teardown and
+    /// report tracked resource snapshots alongside the process footprint.
     func testClosingWindowsReturnsMemory() async throws {
         let services = try services()
         var windows: [ViewerWindow] = []
         let before = Self.footprintMB()
+        let resourcesBefore = ImageResourceBudget.shared.snapshot()
         for w in 0..<4 {
             let urls = try (0..<5).map {
                 try writeJPEG("w\(w)-\($0).jpg", gray: 0.1 + CGFloat($0) * 0.1, width: 6000, height: 4000)
@@ -192,7 +194,7 @@ final class ViewerLifetimeTests: XCTestCase {
                 startIndex: 2,
                 services: services
             )
-            let queue = await window.navigationForTesting.decodeQueue
+            let queue = window.navigationForTesting.decodeQueue
             await queue.setMaxLongEdge(3456)
             windows.append(window)
             let nav = window.navigationForTesting
@@ -206,15 +208,41 @@ final class ViewerLifetimeTests: XCTestCase {
         }
         try await Task.sleep(nanoseconds: 1_500_000_000)
         let four = Self.footprintMB()
-        for window in windows.dropFirst() { window.close() }
+        let resourcesWithFour = ImageResourceBudget.shared.snapshot()
+        for window in windows.dropFirst() {
+            let queue = window.navigationForTesting.decodeQueue
+            window.close()
+            await window.waitForResourceTeardownForTesting()
+            let cachedIDs = await queue.cachedIDs()
+            let inFlightIDs = await queue.inFlightIDs()
+            XCTAssertTrue(cachedIDs.isEmpty, "closed viewer cache is empty")
+            XCTAssertTrue(inFlightIDs.isEmpty, "closed viewer has no in-flight decodes")
+        }
         windows.removeLast(3)
-        _ = await waitUntil(5) { false }
+        let perWindowTracked = (resourcesWithFour.uniqueRetainedBytes - resourcesBefore.uniqueRetainedBytes) / 4
+        let released = await waitUntil(30) {
+            let resourceBytes = ImageResourceBudget.shared.snapshot().uniqueRetainedBytes
+            let processBytes = Self.footprintMB() - before
+            return resourceBytes <= resourcesBefore.uniqueRetainedBytes + Int(Double(perWindowTracked) * 1.6)
+                && processBytes < (four - before) / 4 * 1.6
+        }
         let one = Self.footprintMB()
-        print("MEMORY footprint: start \(Int(before)) MB, 4 windows \(Int(four)) MB, after closing 3 \(Int(one)) MB")
+        let resourcesAfter = ImageResourceBudget.shared.snapshot()
+        print("MEMORY footprint: start \(Int(before)) MB, 4 windows \(Int(four)) MB, after closing 3 \(Int(one)) MB; tracked bytes before=\(resourcesBefore.uniqueRetainedBytes) four=\(resourcesWithFour.uniqueRetainedBytes) after=\(resourcesAfter.uniqueRetainedBytes)")
         let perWindow = (four - before) / 4
+        XCTAssertTrue(released,
+                      "close-time resources did not settle: before=\(resourcesBefore.uniqueRetainedBytes), four=\(resourcesWithFour.uniqueRetainedBytes), after=\(resourcesAfter.uniqueRetainedBytes)")
         XCTAssertLessThan(one - before, perWindow * 1.6,
                           "after closing 3 of 4 windows, about one window's memory must remain")
-        windows.first?.close()
+        if let remaining = windows.first {
+            remaining.close()
+            await remaining.waitForResourceTeardownForTesting()
+        }
+        let allClosed = await waitUntil(10) {
+            ImageResourceBudget.shared.snapshot().uniqueRetainedBytes
+                <= resourcesBefore.uniqueRetainedBytes + 8 * 1_048_576
+        }
+        XCTAssertTrue(allClosed, "tracked image resources remain after every viewer closed: \(ImageResourceBudget.shared.snapshot().uniqueRetainedBytes)")
     }
 
     /// Closing a viewer drops its decode cache even while something else
@@ -227,7 +255,7 @@ final class ViewerLifetimeTests: XCTestCase {
             services: try services()
         )
         let nav = window.navigationForTesting
-        let queue = await nav.decodeQueue
+        let queue = nav.decodeQueue
         let prefetched = await waitUntil { await nav.cachedEntry(at: 1)?.prepared != nil }
         XCTAssertTrue(prefetched)
 

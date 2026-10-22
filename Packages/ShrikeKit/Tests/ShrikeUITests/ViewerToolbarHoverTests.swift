@@ -21,12 +21,12 @@ final class ViewerToolbarHoverTests: XCTestCase {
     private var window: NSWindow?
     private var hover: ToolbarHover?
 
-    override func tearDown() {
+    override func tearDown() async throws {
         window?.toolbar = nil
         window?.close()
         window = nil
         hover = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func settle(_ w: NSWindow) {

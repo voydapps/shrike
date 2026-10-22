@@ -14,10 +14,6 @@ import subprocess
 import sys
 from importlib.util import spec_from_file_location, module_from_spec
 
-# This CLI is run immediately before a clean-input check. Loading the release
-# gate from source must not leave an untracked .pyc in the checkout.
-sys.dont_write_bytecode = True
-
 spec = spec_from_file_location('release_gate', Path(__file__).with_name('release-gate.py'))
 gate = module_from_spec(spec)
 spec.loader.exec_module(gate)

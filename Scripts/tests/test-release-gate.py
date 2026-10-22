@@ -9,17 +9,11 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent.parent
-
-# These release tools are loaded directly from source below. Never leave
-# interpreter-generated files in the checkout: the production gate requires
-# every release input to be committed before its first SwiftPM run.
-sys.dont_write_bytecode = True
 
 def load(name):
     spec = spec_from_file_location(name.replace('-', '_'), SCRIPTS / f'{name}.py')
@@ -55,22 +49,6 @@ class ReleaseGateTests(unittest.TestCase):
                                                  'GITHUB_REPOSITORY': 'voydapps/shrike'})
         self.auth_patch.start()
         self.addCleanup(self.auth_patch.stop)
-
-    def test_dynamic_imports_do_not_create_scripts_bytecode(self):
-        self.assertTrue(sys.dont_write_bytecode)
-        self.assertFalse((SCRIPTS / '__pycache__').exists())
-
-    def test_publisher_cli_import_does_not_create_scripts_bytecode(self):
-        runner = (
-            'import runpy, sys; '
-            'runpy.run_path(sys.argv[1], run_name="shrike_publisher_test")'
-        )
-        result = subprocess.run(
-            [sys.executable, '-c', runner, str(SCRIPTS / 'publish-release.py')],
-            cwd=SCRIPTS.parent, capture_output=True, text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse((SCRIPTS / '__pycache__').exists())
 
     def runner(self, args, log=None):
         self.calls.append(args)

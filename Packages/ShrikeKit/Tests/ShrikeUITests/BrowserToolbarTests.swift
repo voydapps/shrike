@@ -179,7 +179,7 @@ final class BrowserToolbarTests: XCTestCase {
 
         let search = try XCTUnwrap(browser.searchToolbarItem)
         XCTAssertTrue(search.view === browser.searchField, "a plain item holding the field")
-        XCTAssertEqual(browser.searchField.placeholderString, "Find File Names")
+        XCTAssertEqual(browser.searchField.placeholderString, "Search")
         XCTAssertEqual(browser.searchField.accessibilityLabel(), "Find file names in this folder")
         let scope = "Matches file names in this folder. Subfolders are not searched."
         let presetKey = "shrike.shortcuts.preset"
@@ -295,8 +295,116 @@ final class BrowserToolbarTests: XCTestCase {
         }
     }
 
+    /// At the minimum window the open field is 110 pt wide. A hint that
+    /// does not fit is cut mid-letter ("Find Fil") with no ellipsis.
+    func testTheSearchHintFitsTheNarrowField() async throws {
+        let browser = try await browser(images: 1)
+        defer { browser.close() }
+        let field = browser.searchField
+        let cell = try XCTUnwrap(field.cell as? NSSearchFieldCell)
+        let hint = try XCTUnwrap(field.placeholderString)
+        let probe = NSRect(x: 0, y: 0, width: BrowserToolbarRoom.searchFieldWidth, height: 22)
+        let room = cell.searchTextRect(forBounds: probe).width
+        let need = (hint as NSString).size(withAttributes: [.font: field.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)]).width
+        XCTAssertLessThanOrEqual(need, room, "\"\(hint)\" needs \(need) pt, the field has \(room) pt")
+    }
+
+    /// A Copy / Move result sits in its own band above the photos: it does not
+    /// overlap the grid, and it goes away on its own timer or Undo.
+    func testTransferResultNoticeDoesNotCoverThePhotos() async throws {
+        let browser = try await browser(images: 3)
+        defer { browser.close() }
+        let window = try XCTUnwrap(browser.window)
+        window.setContentSize(NSSize(width: 1000, height: 700))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let grid = browser.contentController.gridScrollViewForTesting
+        let before = grid.contentView.bounds.height
+        var undone = false
+        browser.showTransferNotice("Copied 3 items to “copy-dest”.") { undone = true }
+        window.contentView?.layoutSubtreeIfNeeded()
+        let notice = browser.transferNotice
+        XCTAssertFalse(notice.isHidden)
+        XCTAssertEqual(notice.buttonTitles, ["Undo"])
+        let noticeRect = notice.convert(notice.bounds, to: nil)
+        let gridRect = grid.convert(grid.bounds, to: nil)
+        XCTAssertGreaterThan(noticeRect.height, 0)
+        XCTAssertTrue(noticeRect.intersection(gridRect).isNull || noticeRect.intersection(gridRect).height < 0.5,
+                      "the notice \(noticeRect) must not overlap the photos \(gridRect)")
+        XCTAssertLessThan(grid.contentView.bounds.height, before, "the photos make room for it")
+        let undo = try XCTUnwrap(notice.arrangedSubviews.compactMap { $0 as? NSButton }.first)
+        undo.performClick(nil)
+        XCTAssertTrue(undone)
+        XCTAssertTrue(notice.isHidden, "Undo closes the notice")
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(grid.contentView.bounds.height, before, accuracy: 1, "the room is given back")
+    }
+
+    /// The notice band belongs to the photo area: it never touches the sidebar
+    /// or the inspector, the sidebar does not move, and the text starts at the
+    /// grid's own margin. Progress and result share that band.
+    func testNoticeBandStaysInThePhotoAreaAndProgressSharesIt() async throws {
+        let browser = try await browser(images: 3)
+        defer { browser.close() }
+        let window = try XCTUnwrap(browser.window)
+        window.setContentSize(NSSize(width: 1200, height: 700))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let sidebar = browser.splitController.splitViewItems[0].viewController.view
+        let inspector = browser.splitController.splitViewItems[2].viewController.view
+        let grid = browser.contentController.gridScrollViewForTesting
+        func rect(_ view: NSView) -> NSRect { view.convert(view.bounds, to: nil) }
+        func disjoint(_ a: NSRect, _ b: NSRect) -> Bool { a.intersection(b).isNull || a.intersection(b).width < 0.5 || a.intersection(b).height < 0.5 }
+        let sidebarBefore = rect(sidebar)
+        XCTAssertGreaterThan(rect(sidebar).width, 100, "the sidebar is open, so the checks below mean something")
+        XCTAssertGreaterThan(rect(inspector).width, 100, "the inspector is open")
+        let before = grid.contentView.bounds.height
+
+        // Progress first.
+        var content = ToastContent("Copying 2 of 10 items…")
+        content.progress = 0.2
+        let ticket = browser.showTransferProgress(content)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let notice = browser.transferNotice
+        XCTAssertTrue(notice.isShowingProgress)
+        XCTAssertEqual(notice.progressFraction ?? -1, 0.2, accuracy: 0.001)
+        let band = try XCTUnwrap(browser.noticeStackForTesting)
+        for area in [rect(notice), rect(band)] {
+            XCTAssertGreaterThan(area.height, 0)
+            XCTAssertTrue(disjoint(area, rect(sidebar)), "the band must not touch the sidebar \(area) \(rect(sidebar))")
+            XCTAssertTrue(disjoint(area, rect(inspector)), "the band must not touch the inspector")
+            XCTAssertTrue(disjoint(area, rect(grid)), "the band must not cover the photos")
+        }
+        XCTAssertEqual(rect(sidebar), sidebarBefore, "the sidebar does not move")
+        XCTAssertGreaterThanOrEqual(rect(band).minX, rect(sidebar).maxX - 0.5, "the band starts right of the sidebar")
+        XCTAssertLessThanOrEqual(rect(band).maxX, rect(inspector).minX + 0.5, "and ends left of the inspector")
+        XCTAssertEqual(rect(band).minX, rect(browser.contentController.view).minX, accuracy: 0.5)
+        let label = try XCTUnwrap(notice.arrangedSubviews.first as? NSTextField)
+        XCTAssertEqual(notice.convert(label.alignmentRect(forFrame: label.frame), to: nil).minX - rect(notice).minX, BrowserWindowController.noticeInset, accuracy: 1,
+                       "text inset matches the content margin")
+        XCTAssertLessThan(grid.contentView.bounds.height, before)
+
+        // An update keeps the same bar and moves it.
+        content.progress = 0.6
+        let next = try XCTUnwrap(browser.updateTransferProgress(content, matching: ticket))
+        XCTAssertEqual(notice.progressFraction ?? -1, 0.6, accuracy: 0.001)
+        XCTAssertNil(browser.updateTransferProgress(content, matching: ticket), "an old ticket is ignored")
+
+        // The result replaces it in the same band.
+        browser.dismissTransferProgress(matching: next)
+        browser.showTransferNotice("Copied 10 items to “dest”.") {}
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertFalse(notice.isShowingProgress)
+        XCTAssertEqual(notice.message, "Copied 10 items to “dest”.")
+        XCTAssertTrue(disjoint(rect(notice), rect(grid)))
+        XCTAssertTrue(disjoint(rect(notice), rect(sidebar)))
+        XCTAssertEqual(rect(sidebar), sidebarBefore)
+        browser.hideTransferNotice()
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(grid.contentView.bounds.height, before, accuracy: 1)
+        XCTAssertEqual(rect(sidebar), sidebarBefore)
+    }
+
     func testTheMinimumWidthLeavesRoomForAnOpenSearchField() {
-        XCTAssertEqual(BrowserWindowController.minimumWindowWidth, 1030)   // sidebar 200
+        XCTAssertEqual(BrowserWindowController.minimumWindowWidth, 1022)   // sidebar 200
         XCTAssertEqual(BrowserWindowController.contentMinimumWidth, BrowserToolbarRoom.contentMinimumWidth)
         // The narrow layout (View pop-up, open 110 pt field) plus 40 pt.
         XCTAssertEqual(BrowserToolbarRoom.contentMinimumWidth, 574)

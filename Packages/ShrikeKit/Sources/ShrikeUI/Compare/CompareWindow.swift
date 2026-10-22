@@ -40,6 +40,9 @@ protocol CompareOrigin: AnyObject {
     /// Compare closed while it had the keys: the origin takes them back
     /// at once.
     func compareDidClose()
+    /// The origin's watcher scope: Compare's own writes are ignored there
+    /// too, because the origin is told directly (above).
+    var compareWatcherScope: WindowWatcherScope { get }
 }
 
 /// One pane's state.
@@ -101,8 +104,15 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     private var referenceGeneration: UInt64 = 0
     private var chromeObservation: ChromeTextObservation?
     private var persistenceBanner: PersistenceBanner?
-    weak var origin: (any CompareOrigin)?
-    lazy var fileOps = FileOps(metadata: services.metadataStore, backups: services.backupStore)
+    weak var origin: (any CompareOrigin)? {
+        didSet { watcherScope.setPartner(origin?.compareWatcherScope) }
+    }
+    /// Compare watches no folder. Its writes are ignored only in the
+    /// origin's watcher (the origin is told directly); every other window's
+    /// watcher reports them.
+    let watcherScope = WindowWatcherScope()
+    lazy var fileOps = FileOps(metadata: services.metadataStore, backups: services.backupStore,
+                               watchers: watcherScope)
     let compareUndoManager: UndoManager = {
         let manager = UndoManager()
         manager.groupsByEvent = true
@@ -126,6 +136,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
 
     private static let lockItem = NSToolbarItem.Identifier("shrike.compare.lock")
     private static let fitAllItem = NSToolbarItem.Identifier("shrike.compare.fitAll")
+    nonisolated static let minimumWindowSize = NSSize(width: 480, height: 320)
 
     // MARK: Open
 
@@ -156,7 +167,8 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
                    backing: .buffered, defer: false)
         isReleasedWhenClosed = false
         collectionBehavior = [.fullScreenPrimary]
-        minSize = NSSize(width: 480, height: 320)
+        minSize = NSSize(width: min(Self.minimumWindowSize.width, rect.width),
+                         height: min(Self.minimumWindowSize.height, rect.height))
         title = "Compare"
         tabbingMode = .disallowed
         root.frame = NSRect(origin: .zero, size: contentRect(forFrameRect: self.frame).size)
@@ -676,7 +688,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
             .rating, urls: urls, store: services.metadataStore, undoManager: compareUndoManager,
             compute: { Culling.ratingValues(stars, urls: urls, previous: $0) },
             onChange: { [weak self] values in self?.cullingDidChange(values) },
-            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.rating, error: error), kind: .error)) })
+            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.rating, error: error), kind: .error)) }, suppressing: watcherScope)
     }
 
     func toggleFlag(allPanes: Bool) {
@@ -689,7 +701,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
             .flag, urls: urls, store: services.metadataStore, undoManager: compareUndoManager,
             compute: { Culling.toggledFlagValues(urls: urls, leaders: leaders, previous: $0) },
             onChange: { [weak self] values in self?.cullingDidChange(values) },
-            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.flag, error: error), kind: .error)) })
+            onFailure: { [weak self] error in self?.toast(ToastContent(CullingUndo.failureMessage(.flag, error: error), kind: .error)) }, suppressing: watcherScope)
     }
 
     private func cullingDidChange(_ values: [URL: FileRecord]) {
@@ -1082,7 +1094,7 @@ extension CompareWindow {
         let previous = orientationWriteChain
         orientationWriteChain = Task { @MainActor [weak self] in
             await previous?.value
-            FolderWatcherRegistry.shared.ignore(paths: [url], for: .seconds(2))
+            self?.watcherScope.ignore(paths: [url], for: .seconds(2))
             var results: [LosslessRotateResult] = []
             do {
                 for op in writes { results.append(try await rotator.apply(op, to: url)) }
@@ -1110,7 +1122,7 @@ extension CompareWindow {
                 let previous = target.orientationWriteChain
                 target.orientationWriteChain = Task { @MainActor [weak target] in
                     await previous?.value
-                    FolderWatcherRegistry.shared.ignore(paths: [url], for: .seconds(2))
+                    target?.watcherScope.ignore(paths: [url], for: .seconds(2))
                     let redo = try? await store.restore(record)
                     guard let target else { return }
                     target.fileChanged(url)

@@ -966,6 +966,20 @@ public final class MetalImageView: NSView {
     /// On-screen image size in view points.
     private var displayedImageSize: CGSize {
         guard let s = rotatedTextureSize else { return .zero }
+        // The fast display decode rounds its short edge to whole texels
+        // (for example 1024 × 683 for a 3:2 photo). Use the file's exact
+        // aspect ratio for the canvas geometry so swapping to the full
+        // decode cannot change the visible rectangle by those rounding
+        // pixels. The current texture's long edge still sets the scale.
+        if let source = sourcePixelSize, source.width > 0, source.height > 0 {
+            let sourceSize = Int(rotationDegrees) % 180 == 0
+                ? source
+                : CGSize(width: source.height, height: source.width)
+            let textureLong = Double(max(s.width, s.height))
+            let sourceLong = Double(max(sourceSize.width, sourceSize.height))
+            let factor = CGFloat(zoomLevel * textureLong / sourceLong)
+            return CGSize(width: sourceSize.width * factor, height: sourceSize.height * factor)
+        }
         return CGSize(width: s.width * zoomLevel, height: s.height * zoomLevel)
     }
 

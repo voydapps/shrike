@@ -15,6 +15,10 @@ enum EditLayout {
     /// The tool panel column: the panel and its trailing gap.
     static let columnWidth: CGFloat = EditParameterPanel.panelWidth + 16
     /// Room kept around the photo so every crop handle can be hit.
+    /// Crop and Resize share one label column (right-aligned) and one field
+    /// width, so the number fields start at the same x in both tools.
+    static let fieldLabelColumnWidth: CGFloat = 48
+    static let numericFieldWidth: CGFloat = 80
     static let handleMargin: CGFloat = 16
     /// The least photo width worth editing: the window's smallest accepted edge.
     static let minPhotoEdge: CGFloat = 320

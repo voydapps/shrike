@@ -142,6 +142,9 @@ extension ViewerWindow {
             return
         }
         let url = item.shownURL
+        // The side panel's "n of N" follows the title when the list grows or
+        // shrinks (Save Copy, a file added or removed) without a new photo.
+        contentRoot.updateInspectorPosition(index: item.listIndex, total: list.count)
         title = url.lastPathComponent
         representedURL = url.isFileURL ? url : nil
         if contentRoot.isEditModeActive {
@@ -155,9 +158,10 @@ extension ViewerWindow {
         }
         subtitle = WindowTitles.viewerSubtitle(index: item.listIndex, total: list.count, pixelSize: nil)
         let expected = item
+        let sizeReader = headerPixelSizeReaderForTesting
         Task { @MainActor [weak self] in
             let size = await Task.detached(priority: .utility) {
-                WindowTitles.headerPixelSize(of: url)
+                sizeReader?(url) ?? WindowTitles.headerPixelSize(of: url)
             }.value
             guard let self, self.displayedItem == expected,
                   !self.contentRoot.isEditModeActive else { return }

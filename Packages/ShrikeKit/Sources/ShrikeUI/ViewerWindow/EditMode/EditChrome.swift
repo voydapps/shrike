@@ -22,10 +22,14 @@ struct EditChromeState: Equatable {
     var hasPendingToolEdits = false
     var requiresCopy = false
     var isSaving = false
+    /// The Save panel is open and the user has not chosen yet. The edit is
+    /// still locked (`isSaving`), but nothing is being written, so the
+    /// button keeps its normal title.
+    var isAwaitingDestination = false
     var isTransitioning = false
     var acceptsInput: Bool { !isSaving && !isTransitioning }
     var savePolicy = "Changes will replace this file. An original backup is kept."
-    var primaryTitle: String { isSaving ? "Saving…" : (!(hasEdits || hasPendingToolEdits) ? "Done" : (requiresCopy ? "Save Copy…" : "Save Changes")) }
+    var primaryTitle: String { (isSaving && !isAwaitingDestination) ? "Saving…" : (!(hasEdits || hasPendingToolEdits) ? "Done" : (requiresCopy ? "Save Copy…" : "Save Changes")) }
 
     /// Window subtitle in edit mode.
     var subtitle: String { hasEdits ? "Editing · Unsaved changes" : "Editing" }

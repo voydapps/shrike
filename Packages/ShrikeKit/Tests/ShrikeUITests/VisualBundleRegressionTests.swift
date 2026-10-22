@@ -152,7 +152,6 @@ final class VisualBundleRegressionTests: XCTestCase {
                 }
                 XCTAssertEqual(editor.string, value)
                 XCTAssertEqual(editor.selectedRange(), NSRange(location: value.utf16.count, length: 0))
-                print("PERCENT_GEOMETRY large=\(large) value=\(value) font=\(editor.font?.pointSize ?? 0) scrollable=\(field.cell?.isScrollable ?? false) single=\(field.cell?.usesSingleLineMode ?? false) wraps=\(field.cell?.wraps ?? true) firstY=\(firstLine.minY) lastY=\(lastLine.minY) viewport=\(viewport) glyph=\(finalGlyph) caret=\(caret) unit=\(suffixRect) fieldBounds=\(field.bounds) visibleOrigin=\(editor.visibleRect.origin)")
             }
             if typed, editor.allowsUndo {
                 editor.undoManager?.undo()

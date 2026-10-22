@@ -53,8 +53,7 @@ extension ViewerWindow {
                     self.reviewDecisionSerial &+= 1
                     self.reviewAutomaticMove = true; self.reviewJump(to: index); self.reviewAutomaticMove = false
                 }
-            }
-        )
+            }, suppressing: watcherScope)
     }
 
     /// Q / \ : flags or unflags the displayed item.
@@ -67,8 +66,7 @@ extension ViewerWindow {
             .flag, urls: urls, store: services.metadataStore, undoManager: windowUndoManager,
             compute: { Culling.toggledFlagValues(urls: urls, leaders: leaders, previous: $0) },
             onChange: { [weak self] values in self?.cullingDidChange(values) },
-            onFailure: { [weak self] error in self?.contentRoot.toast(CullingUndo.failureMessage(.flag, error: error)) }
-        )
+            onFailure: { [weak self] error in self?.contentRoot.toast(CullingUndo.failureMessage(.flag, error: error)) }, suppressing: watcherScope)
     }
 
     /// Saved values landed (also after undo / redo): update the pill,
@@ -209,14 +207,16 @@ extension ViewerWindow {
         panel.updateAlsoLine(displayedItem.flatMap { PairCopy.alsoLine(for: $0.group, shownURL: $0.shownURL) })
         guard let url = displayedItem?.group.primary,
               let store = services.backupStore else {
-            panel.updateOriginalDate(nil)
+            panel.updateOriginalDate(nil, backupExpected: false)
             return
         }
         Task { [weak self] in
             let availability = await store.availability(for: url)
             let original = availability.canRevert ? availability.originalDate : nil
             guard let self, self.displayedItem?.group.primary == url else { return }
-            self.contentRoot.inspectorPanel.updateOriginalDate(original)
+            // latestDate is set once any edit was saved; without it there
+            // is nothing to back up, so the panel stays quiet.
+            self.contentRoot.inspectorPanel.updateOriginalDate(original, backupExpected: availability.latestDate != nil)
         }
     }
 

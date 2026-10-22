@@ -226,6 +226,20 @@ public final class InspectorPaneController: NSViewController {
         onPublishForTesting?(state)
     }
 
+    /// The picture on show is one of these files and the file's content
+    /// (size, modification date) is not what was read: only then is it read
+    /// again. A rating / flag / tag change reports "modified" too.
+    func previewNeedsReload(_ urls: [URL]) -> Bool {
+        guard let preview = hostView.flatMap({ InspectorPreviewImageView.find(in: $0) }) else { return false }
+        return preview.isShowing(urls) && preview.shownFileContentChanged()
+    }
+
+    /// These files changed on disk: the preview of one of them is read again.
+    func reloadPreview(for urls: [URL]) {
+        guard let preview = hostView.flatMap({ InspectorPreviewImageView.find(in: $0) }) else { return }
+        preview.reloadIfShowing(urls, lookups: panelLookups?())
+    }
+
     /// States published so far (tests: one per click).
     private(set) var publishCount = 0
     /// Test seam: every published state.
@@ -533,6 +547,7 @@ final class InspectorPreviewImageView: NSImageView {
 
     func show(_ url: URL, lookups: Lookups? = nil) {
         guard url != shownURL else { return }
+        shownStamp = FileContentStamp.read(url)
         brokenStack?.isHidden = true
         // A sharp picture (of this or an earlier photo) is on screen: hold it.
         let holding = sharpOnScreen && image != nil
@@ -591,6 +606,35 @@ final class InspectorPreviewImageView: NSImageView {
     }
 
     private var quickShownURL: URL?
+
+    /// The photo on show is one of `urls` (the same file or any file of its group).
+    func isShowing(_ urls: [URL]) -> Bool {
+        guard let shown = shownURL else { return false }
+        let wanted = Set(urls.map { GroupList.canonical($0) })
+        return wanted.contains(GroupList.canonical(shown))
+    }
+
+    /// Size and content modification date of the file when it was read (see
+    /// `FileContentStamp`: a rating, flag or tag changes neither).
+    private var shownStamp: FileContentStamp?
+
+    /// The shown file's size or content date differs from when it was read.
+    /// An unreadable file counts as changed (it may be gone or replaced).
+    func shownFileContentChanged() -> Bool {
+        guard let shown = shownURL else { return false }
+        guard let before = shownStamp else { return true }
+        return before.differs(from: shown)
+    }
+
+    /// The shown file changed on disk: read it again. `show` ignores the
+    /// same URL, so without this the old picture stayed until another photo
+    /// was selected. The caller has dropped the cached pictures first.
+    func reloadIfShowing(_ urls: [URL], lookups: Lookups?) {
+        guard isShowing(urls), shownFileContentChanged(), let shown = shownURL else { return }
+        shownURL = nil
+        sharpURL = nil
+        show(shown, lookups: lookups)
+    }
 
     private func showSharp(_ cg: CGImage, for url: URL) {
         standInTask?.cancel()

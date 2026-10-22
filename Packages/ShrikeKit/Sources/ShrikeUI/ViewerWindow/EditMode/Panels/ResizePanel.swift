@@ -206,15 +206,15 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
-        let percentWidth = percentField.widthAnchor.constraint(equalToConstant: max(80, minimumPercentWidth))
+        let percentWidth = percentField.widthAnchor.constraint(equalToConstant: max(EditLayout.numericFieldWidth, minimumPercentWidth))
         percentFieldWidth = percentWidth
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 16),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -16),
-            widthField.widthAnchor.constraint(equalToConstant: 80),
-            heightField.widthAnchor.constraint(equalToConstant: 80),
+            widthField.widthAnchor.constraint(equalToConstant: EditLayout.numericFieldWidth),
+            heightField.widthAnchor.constraint(equalToConstant: EditLayout.numericFieldWidth),
             percentWidth,
             interpPopup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             applyButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -232,7 +232,7 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
 
     override func layout() {
         if let width = percentFieldWidth {
-            let measured = max(80, minimumPercentWidth)
+            let measured = max(EditLayout.numericFieldWidth, minimumPercentWidth)
             if width.constant != measured { width.constant = measured }
         }
         super.layout()
@@ -250,7 +250,9 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
     private func labelled(_ text: String, field: NSTextField) -> NSStackView {
         let label = NSTextField(labelWithString: text)
         label.font = ChromeTypography.font(12)
+        label.alignment = .right
         label.translatesAutoresizingMaskIntoConstraints = false
+        label.widthAnchor.constraint(equalToConstant: EditLayout.fieldLabelColumnWidth).isActive = true
         let row = NSStackView(views: [label, field])
         row.orientation = .horizontal
         row.spacing = 6

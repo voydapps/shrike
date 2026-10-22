@@ -240,7 +240,7 @@ extension ViewerWindow {
             contentRoot.toast(ToastContent(SaveCopy.saveFailed(name), kind: .error))
             return false
         }
-        FolderWatcherRegistry.shared.ignore(paths: [source], for: .seconds(2))
+        watcherScope.ignore(paths: [source], for: .seconds(2))
         do {
             let record = try await exporter.export(
                 recipe: recipe, from: source, to: source, format: format,
@@ -290,7 +290,10 @@ extension ViewerWindow {
             contentRoot.toast(ToastContent(SaveCopy.saveFailed(destination.lastPathComponent), kind: .error))
             return false
         }
-        FolderWatcherRegistry.shared.ignore(paths: [destination], for: .seconds(2))
+        // Only this viewer's own watcher ignores the copy (it inserts the copy
+        // itself below). The registry would also silence the Browser's watcher,
+        // which then never learned about the new file.
+        folderWatcher?.ignore(paths: [destination], for: .seconds(2))
         do {
             try await exporter.export(
                 recipe: recipe, from: source, to: destination, format: format,
@@ -331,6 +334,13 @@ extension ViewerWindow {
     /// The Save panel with its accessory; returns the chosen URL and
     /// format. Tests answer through `savePanelResponderForTesting`.
     func askSaveAsDestination(suggested: URL, format: ExportFormat, message: String?) async -> (URL, ExportFormat)? {
+        let ctrl = contentRoot.editModeController
+        ctrl.setAwaitingDestination(true)
+        defer { ctrl.setAwaitingDestination(false) }
+        return await presentSaveAsPanel(suggested: suggested, format: format, message: message)
+    }
+
+    private func presentSaveAsPanel(suggested: URL, format: ExportFormat, message: String?) async -> (URL, ExportFormat)? {
         if let responder = savePanelAsyncResponderForTesting {
             return await responder(suggested, message).map { ($0, format) }
         }
@@ -371,7 +381,7 @@ extension ViewerWindow {
                 buttons: [.cancel(), ShrikeAlert.Button("Revert", role: .default)]
             )
             guard choice == 1 else { return }
-            FolderWatcherRegistry.shared.ignore(paths: [url], for: .seconds(2))
+            watcherScope.ignore(paths: [url], for: .seconds(2))
             do {
                 let preRevert = try await store.revertToOriginal(url)
                 self.didChangeFileOnDisk(url, fit: false)
@@ -417,7 +427,7 @@ extension ViewerWindow {
                 self?.contentRoot.toast(ToastContent(SaveCopy.undoFailed(name), kind: .error))
                 return
             }
-            FolderWatcherRegistry.shared.ignore(paths: [url], for: .seconds(2))
+            self?.watcherScope.ignore(paths: [url], for: .seconds(2))
             do {
                 inverse.record = try await store.restore(record)
                 self?.didChangeFileOnDisk(url, fit: false)

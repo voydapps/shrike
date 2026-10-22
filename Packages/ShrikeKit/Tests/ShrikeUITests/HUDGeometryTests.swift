@@ -21,18 +21,18 @@ final class HUDGeometryTests: XCTestCase {
         "shrike.viewer.histogramVisible",
     ]
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         for key in keys { ShrikeDefaults.store.removeObject(forKey: key) }
         HUDGlass.forceFallbackForTesting = false
         ShrikeTokens.increaseContrastOverride = false
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         HUDGlass.forceFallbackForTesting = false
         ShrikeTokens.increaseContrastOverride = nil
         for key in keys { ShrikeDefaults.store.removeObject(forKey: key) }
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeContent(_ size: NSSize, mode: ViewerContentView.WindowMode = .fullscreen) -> ViewerContentView {

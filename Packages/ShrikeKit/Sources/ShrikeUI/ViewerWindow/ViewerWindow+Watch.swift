@@ -4,13 +4,16 @@
 //
 //  File watching in the viewer. The displayed item's
 //  folder is watched with `FolderWatcher` (batched, 200 ms debounce) and
-//  registered with `FolderWatcherRegistry`, so Shrike's own trash / move /
-//  rename / save are ignored for 1 s.
+//  held by `watcherScope`, so this window's own trash / move / rename /
+//  save / rotate are ignored for 1-2 s here and in the paired Browser's
+//  watcher (both are updated explicitly). Any other window's watcher
+//  still reports them, so a second Browser refreshes its thumbnail.
 //
 //  * Added: inserted in name order; the displayed item does not change.
 //  * Removed: leaves the list with no toast and no undo; when it was the
 //    displayed item, the next one shows and the toast "“x.jpg” was
-//    removed outside Shrike." appears.
+//    moved or deleted." appears (by Finder, another app, or another
+//    Shrike window).
 //  * Renamed: keeps its place and its marks; the title updates.
 //  * Modified: decode and thumbnail caches are evicted, then the
 //    displayed image is redrawn without resetting zoom or pan.
@@ -71,21 +74,29 @@ extension ViewerWindow {
         }
         guard !change.isEmpty else { return }
 
-        // Modified: evict both caches; redraw the displayed image in place.
+        // Modified: a rating / flag / tag write is an extended attribute and
+        // is reported too; only a file whose content changed loses its
+        // decoded image and thumbnail, and is redrawn.
         let cache = services.thumbnailCache
         let navigation = self.navigation
         let displayedURLs = Set((displayedItem?.group.allURLs ?? []).map(GroupList.canonical))
-        var redraw = false
-        for url in change.modified {
-            if displayedURLs.contains(GroupList.canonical(url)) { redraw = true }
-        }
         if !change.modified.isEmpty {
             let modified = change.modified
-            Task {
-                for url in modified {
-                    await navigation.decodeQueue.evict(url: url)
-                    await cache.evict(url: url)
+            // A paired Browser's listing is a baseline for files this window
+            // never decoded: those listed with the same size and date keep
+            // their thumbnail. Without one, every file counts as changed.
+            let listed = pairedBrowser?.contentController.allItems ?? []
+            let unchangedByListing = Set(modified).subtracting(BrowserWindowController.contentChanged(modified, items: listed))
+            Task { @MainActor [weak self] in
+                var contentChanged: [URL] = []
+                for url in modified where await navigation.decodeQueue.evictIfContentChanged(url: url) {
+                    if !unchangedByListing.contains(url) { await cache.evict(url: url) }
+                    contentChanged.append(url)
                 }
+                guard let self,
+                      contentChanged.contains(where: { displayedURLs.contains(GroupList.canonical($0)) }),
+                      self.displayedItem != nil else { return }
+                self.redrawDisplayedKeepingView()
             }
             refreshTags(for: modified.filter { list.index(of: $0) != nil })
         }
@@ -95,18 +106,17 @@ extension ViewerWindow {
 
         if let (index, group) = removedDisplayed {
             showAfterRemoval(at: index, folder: folder)
-            contentRoot.toast(ToastContent(Self.removedOutsideCopy(group)))
+            contentRoot.toast(ToastContent(Self.goneCopy(group)))
         } else if listChanged {
             syncListKeepingDisplayed()
         }
-        if redraw && removedDisplayed == nil { redrawDisplayedKeepingView() }
 
         if !change.added.isEmpty { insertAddedFiles(in: folder) }
     }
 
-    /// "“DSC_0042.jpg” was removed outside Shrike."
-    static func removedOutsideCopy(_ group: ImageGroup) -> String {
-        "“\(group.displayName)” was removed outside Shrike."
+    /// "“DSC_0042.jpg” was moved or deleted."
+    static func goneCopy(_ group: ImageGroup) -> String {
+        "“\(group.displayName)” was moved or deleted."
     }
 
     // MARK: - List changes
@@ -234,15 +244,31 @@ extension ViewerWindow {
     /// and swaps the pixels in, keeping zoom, pan and view rotation
     /// (the file was modified).
     func redrawDisplayedKeepingView(fit: Bool = false) {
+        Task { @MainActor [weak self] in await self?.redrawDisplayedKeepingViewNow(fit: fit) }
+    }
+
+    /// The same, for a caller that must wait until the new pixels are in.
+    func redrawDisplayedKeepingViewNow(fit: Bool = false) async {
         guard let item = displayedItem else { return }
         let url = item.group.primary
         let navigation = self.navigation
-        Task { @MainActor [weak self] in
+        // Snapshot dimensions before the async decode can overlap another
+        // watcher redraw. The first redraw may swap in new pixels and clear
+        // the view's size before a second redraw reaches its own apply step.
+        let knownDrawnSize = headerPixelSizes[item.shownURL]
+            ?? headerPixelSizes[url]
+            ?? contentRoot.imageView.sourcePixelSize
+        do {
             await navigation.decodeQueue.evict(url: url)
-            guard let self, let index = self.list.index(of: url),
+            guard let index = self.list.index(of: url),
                   let entry = try? await navigation.jumpEntry(to: index),
                   self.displayedItem?.group.primary == url else { return }
             let view = self.contentRoot.imageView
+            // Keep the last known dimensions attached to the displayed
+            // pixels while the file's replacement is decoded and its new
+            // metadata is read. setImage clears this value when the source
+            // ID changes; that transient nil can outlive a delayed watcher
+            // event on a loaded host.
             let mode = view.contentMode
             let zoom = view.zoom
             let pan = view.pan
@@ -255,6 +281,7 @@ extension ViewerWindow {
             // The file changed: its size is read again (spec 25 §1.1).
             self.headerPixelSizes[url] = nil
             self.headerPixelSizes[item.shownURL] = nil
+            view.sourcePixelSize = knownDrawnSize
             if fit {
                 view.zoomToFit()
             } else {

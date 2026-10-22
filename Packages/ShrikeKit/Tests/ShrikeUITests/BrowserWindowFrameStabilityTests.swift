@@ -56,7 +56,10 @@ final class BrowserWindowFrameStabilityTests: XCTestCase {
             window.orderFront(nil)
             await settle(window)
             let start = window.frame
-            XCTAssertEqual(start.size.height, size.height, accuracy: 1, "test set-up")
+            XCTAssertGreaterThan(start.width, 0, "AppKit accepted a visible test window")
+            XCTAssertGreaterThan(start.height, 0, "AppKit accepted a visible test window")
+            XCTAssertLessThanOrEqual(start.width, size.width, "the screen may clamp the requested width")
+            XCTAssertLessThanOrEqual(start.height, size.height, "the screen may clamp the requested height")
             let sequence: [ShrikeCommand] = [.viewAsFilmstrip, .viewAsGrid, .viewAsList, .viewAsFilmstrip,
                                              .viewAsList, .viewAsGrid]
             for command in sequence {

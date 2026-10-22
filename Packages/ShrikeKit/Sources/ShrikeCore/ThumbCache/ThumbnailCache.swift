@@ -130,8 +130,9 @@ public actor ThumbnailCache {
         var pinned = false
         /// Past the slot queue (decoding or reading disk): can't be dropped.
         var started = false
-        /// The file was evicted while this job ran: hand the image to the
-        /// callers but don't cache it (it shows the old file).
+        /// The file was evicted (or every caller left) while this job ran: its
+        /// task is cancelled and it ends in `CancellationError`, nothing is
+        /// cached, and new requests do not join it (see `liveJob(for:)`).
         var discardResult = false
         var task: Task<CGImage, any Error>?
         let epoch: UInt64
@@ -252,6 +253,10 @@ public actor ThumbnailCache {
     internal func decodeWaiterCountForTesting() -> Int { decodeWaiters.count }
     internal var maxConcurrentDecodesForTesting: Int { maxConcurrentDecodes }
     internal func jobCountForTesting() -> Int { jobs.count }
+    internal func interestForTesting(for source: any ImageSource, maxPixelSize: Int) -> Int {
+        jobs[Self.cacheKey(for: source, maxPixelSize: maxPixelSize)]?.interest ?? 0
+    }
+    internal func doomedJobCountForTesting() -> Int { jobs.values.filter(\.discardResult).count }
 
     // MARK: - Public API
 
@@ -276,8 +281,8 @@ public actor ThumbnailCache {
         }
         try Task.checkCancellation()
 
-        let job = jobs[key] ?? startJob(key: key, source: source, maxPixelSize: maxPixelSize,
-                                         priority: priority)
+        let job = liveJob(for: key) ?? startJob(key: key, source: source, maxPixelSize: maxPixelSize,
+                                                priority: priority)
         raise(job, to: priority)
         job.interest += 1
         // A caller now waits for this job and owns it: if that caller goes
@@ -318,8 +323,8 @@ public actor ThumbnailCache {
         for source in sources {
             let key = Self.cacheKey(for: source, maxPixelSize: maxPixelSize)
             if memory.get(key) != nil { continue }
-            let job = jobs[key] ?? startJob(key: key, source: source, maxPixelSize: maxPixelSize,
-                                            priority: priority)
+            let job = liveJob(for: key) ?? startJob(key: key, source: source, maxPixelSize: maxPixelSize,
+                                                   priority: priority)
             job.pinned = true
             raise(job, to: priority)
         }
@@ -370,6 +375,17 @@ public actor ThumbnailCache {
     }
 
     // MARK: - Jobs
+
+    /// The job a new request may join. A running job that was marked
+    /// "discard" (its callers left, or its file was evicted) has a cancelled
+    /// task and will end in `CancellationError`: a caller that joined it
+    /// would get that error although it never cancelled, and its grid cell
+    /// would stay blank. Such a job is not joined; `startJob` replaces it
+    /// (the old one ends harmlessly, its id no longer matches `jobs[key]`).
+    private func liveJob(for key: String) -> Job? {
+        guard let job = jobs[key], !job.discardResult else { return nil }
+        return job
+    }
 
     private func startJob(key: String, source: any ImageSource, maxPixelSize: Int,
                           priority: ThumbnailPriority) -> Job {

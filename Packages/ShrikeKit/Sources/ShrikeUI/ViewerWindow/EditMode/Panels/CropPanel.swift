@@ -204,8 +204,8 @@ final class CropPanel: NSView, NSTextFieldDelegate {
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -16),
-            widthField.widthAnchor.constraint(equalToConstant: 80),
-            heightField.widthAnchor.constraint(equalToConstant: 80),
+            widthField.widthAnchor.constraint(equalToConstant: EditLayout.numericFieldWidth),
+            heightField.widthAnchor.constraint(equalToConstant: EditLayout.numericFieldWidth),
             aspectPopup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             applyButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
             resetButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -222,7 +222,9 @@ final class CropPanel: NSView, NSTextFieldDelegate {
     private func fieldLabel(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = ChromeTypography.font(12, weight: .regular)
+        label.alignment = .right
         label.translatesAutoresizingMaskIntoConstraints = false
+        label.widthAnchor.constraint(equalToConstant: EditLayout.fieldLabelColumnWidth).isActive = true
         return label
     }
 

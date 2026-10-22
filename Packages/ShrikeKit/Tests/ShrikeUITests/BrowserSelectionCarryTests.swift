@@ -15,12 +15,14 @@ import ImageIO
 import UniformTypeIdentifiers
 import XCTest
 @testable import ShrikeCore
+@testable import ShrikeRendering
 @testable import ShrikeUI
 
 @MainActor
 final class BrowserSelectionCarryTests: XCTestCase {
 
     private var dir: URL!
+    private var savedMotion: Bool?
 
     override func setUp() async throws {
         dir = FileManager.default.temporaryDirectory
@@ -28,9 +30,16 @@ final class BrowserSelectionCarryTests: XCTestCase {
             .appendingPathComponent("Shoot", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         CompareWindow.presentsWindows = false
+        // The filmstrip centres the ⇧-clicked photo with a 0.12 s animated
+        // scroll. That animation kept running while the next test click
+        // scrolled the strip, and snapped it back: the click then hit no
+        // cell (6 of 20 runs). Reduce Motion makes the scroll immediate.
+        savedMotion = ReduceMotion.overrideForTesting
+        ReduceMotion.overrideForTesting = true
     }
 
     override func tearDown() async throws {
+        ReduceMotion.overrideForTesting = savedMotion
         CompareWindow.current?.close()
         CompareWindow.presentsWindows = true
         clearCurrentEvent()
@@ -189,6 +198,14 @@ final class BrowserSelectionCarryTests: XCTestCase {
     /// AppKit's own press tracking takes it, else the window would send
     /// it to the grid (done here).
     private func click(_ item: Int, in grid: BrowserCollectionView, mods: NSEvent.ModifierFlags = []) throws {
+        // A click can only target a cell in the filmstrip's visible
+        // horizontal viewport. Hosted runners are narrower than the local
+        // development monitor, so reveal each test target before clicking.
+        let position: NSCollectionView.ScrollPosition =
+            (grid.collectionViewLayout as? NSCollectionViewFlowLayout)?.scrollDirection == .horizontal
+                ? .centeredHorizontally : .centeredVertically
+        grid.scrollToItems(at: [ip(item)], scrollPosition: position)
+        grid.layoutSubtreeIfNeeded()
         drainMouseEvents()
         grid.window?.postEvent(try mouse(.leftMouseUp, at: item, in: grid, mods: mods), atStart: false)
         grid.mouseDown(with: try mouse(.leftMouseDown, at: item, in: grid, mods: mods))

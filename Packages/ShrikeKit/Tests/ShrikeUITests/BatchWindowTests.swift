@@ -9,6 +9,7 @@
 //  the VoiceOver strings. Windows are built offscreen and never shown.
 //
 
+import SwiftUI
 import XCTest
 import AppKit
 import ImageIO
@@ -219,6 +220,63 @@ final class BatchWindowTests: XCTestCase {
         }
         XCTAssertTrue(model.skippedRows.contains { $0.reason == "Cancelled." })
         XCTAssertTrue(model.summary.hasPrefix("\(result.doneCount) completed · "))
+    }
+
+    // MARK: Bar and counter read the same numbers
+
+    func testProgressBarFractionMatchesTheCounterEveryStep() async throws {
+        let sources = try (0..<6).map { try jpeg(String(format: "IMG_%04d.jpg", $0), w: 800, h: 600) }
+        let model = makeModel()
+        model.add(groups(sources))
+        model.form.format = .png
+        var steps: [(Double, String)] = []
+        model.onProgress = { [weak model] done, total in
+            guard let model else { return }
+            XCTAssertEqual(model.progressFraction, Double(done) / Double(total), accuracy: 1e-9)
+            steps.append((model.progressFraction, model.progressLine))
+        }
+        try await runAndWait(model)
+        XCTAssertFalse(steps.isEmpty)
+        for (fraction, line) in steps {
+            let parts = line.split(separator: " ").compactMap { Double($0) }
+            XCTAssertEqual(fraction, parts[0] / parts[1], accuracy: 1e-9, "bar \(fraction) vs counter \(line)")
+        }
+        XCTAssertEqual(model.progressFraction, 1, accuracy: 1e-9)
+    }
+
+    /// The bar keeps its place when "about N s left" appears or changes.
+    func testProgressBarStaysPutWhenTheTimeTextAppears() throws {
+        let model = makeModel()
+        let host = NSHostingView(rootView: BatchRunningView(model: model))
+        host.frame = NSRect(x: 0, y: 0, width: 900, height: 300)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        /// Left edge (px) of the leftmost drawn pixel: the title, bar and
+        /// file name share one left edge, so it moves if the block moves.
+        func leftEdge() throws -> Int {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+            host.layoutSubtreeIfNeeded()
+            let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+            func level(_ x: Int, _ y: Int) -> CGFloat {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return 0 }
+                return c.redComponent + c.greenComponent + c.blueComponent + c.alphaComponent
+            }
+            let bg = level(2, 2)
+            for x in 0..<rep.pixelsWide {
+                for y in stride(from: 0, to: rep.pixelsHigh * 7 / 10, by: 2) where abs(level(x, y) - bg) > 0.1 { return x }
+            }
+            return -1
+        }
+        let plain = try leftEdge()
+        XCTAssertGreaterThan(plain, 0)
+        model.setEtaTextForTesting("about 47 s left")
+        XCTAssertEqual(try leftEdge(), plain)
+        model.setEtaTextForTesting("about 3 min left")
+        XCTAssertEqual(try leftEdge(), plain)
     }
 
     // MARK: {yyyy-MM-dd}_{lens}_{counter:00} with no lens data
@@ -547,6 +605,106 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertFalse(batch.model.presets.contains { $0.name == name })
     }
 
+    // MARK: Return runs the batch
+
+    private func openThree(_ tag: String) async throws -> (BatchWindowController, NSWindow) {
+        let sources = try (0..<3).map { try jpeg("\(tag)\($0).jpg") }
+        let batch = BatchWindowController.open(groups: groups(sources),
+                                               services: ShrikeServices.makeDefault(), launcher: nil)
+        batch.model.form.format = .png
+        let ready = await waitUntil { batch.model.canRun }
+        XCTAssertTrue(ready)
+        let window = try XCTUnwrap(batch.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        return (batch, window)
+    }
+
+    private func press(_ window: NSWindow, _ chars: String, _ code: UInt16, _ mods: NSEvent.ModifierFlags = []) -> Bool {
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0,
+                                     windowNumber: window.windowNumber, context: nil, characters: chars,
+                                     charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
+        return window.performKeyEquivalent(with: event)
+    }
+
+    /// Return is the default-button key, and Command-Return still works.
+    func testReturnAndCommandReturnPressRun() async throws {
+        for (tag, mods) in [("A", NSEvent.ModifierFlags()), ("B", .command)] {
+            let (batch, window) = try await openThree(tag)
+            XCTAssertTrue(press(window, "\r", 36, mods))
+            XCTAssertEqual(batch.model.phase, .running, "key with \(mods) presses Run")
+            await batch.model.waitForRun()
+            batch.close()
+        }
+    }
+
+    private func textFields(in view: NSView) -> [NSTextField] {
+        view.subviews.flatMap { ($0 as? NSTextField).map { [$0] } ?? [] } + view.subviews.flatMap { textFields(in: $0) }
+    }
+
+    /// The Done view draws "Review Remaining…" only when it has something to
+    /// retry, so a fully successful run shows no greyed-out button.
+    func testReviewRemainingIsOfferedOnlyWhenSomethingRemains() async throws {
+        let urls = try (0..<2).map { try jpeg("OK\($0).jpg") }
+        let model = makeModel()
+        var form = BatchForm(); form.format = .png; form.resizeOn = false
+        form.outputFolder = dir.appendingPathComponent("ok-out"); model.form = form; model.add(groups(urls))
+        try await runAndWait(model)
+        XCTAssertEqual(model.result?.doneCount, 2)
+        XCTAssertFalse(model.canReviewRemaining, "everything succeeded: nothing to review, button hidden")
+    }
+
+    func testReturnInAFieldOnlyCommitsIt() {
+        func key(_ code: UInt16, _ mods: NSEvent.ModifierFlags = [], _ type: NSEvent.EventType = .keyDown) -> NSEvent {
+            NSEvent.keyEvent(with: type, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: 0,
+                             context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                             isARepeat: false, keyCode: code)!
+        }
+        let editor = NSTextView(); editor.isFieldEditor = true
+        let plain = NSTextView()
+        XCTAssertTrue(BatchReturnPolicy.returnShouldOnlyCommitField(event: key(36), firstResponder: editor))
+        XCTAssertTrue(BatchReturnPolicy.returnShouldOnlyCommitField(event: key(76), firstResponder: editor), "keypad Enter")
+        XCTAssertFalse(BatchReturnPolicy.returnShouldOnlyCommitField(event: key(36, .command), firstResponder: editor), "Command-Return always runs")
+        XCTAssertFalse(BatchReturnPolicy.returnShouldOnlyCommitField(event: key(36), firstResponder: plain), "no field being edited")
+        XCTAssertFalse(BatchReturnPolicy.returnShouldOnlyCommitField(event: key(36), firstResponder: nil))
+        XCTAssertFalse(BatchReturnPolicy.returnShouldOnlyCommitField(event: nil, firstResponder: editor), "no event: a click or a test")
+        XCTAssertFalse(BatchReturnPolicy.returnShouldOnlyCommitField(
+            event: NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0,
+                                      windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0),
+            firstResponder: editor), "a mouse click on Run while a field is open still runs")
+    }
+
+    /// End to end: Return with a field open only commits it; the next Return runs.
+    func testReturnInAnOpenFieldCommitsThenSecondReturnRuns() async throws {
+        let (batch, window) = try await openThree("E")
+        defer { batch.close(); BatchReturnPolicy.currentEventForTesting = nil; BatchReturnPolicy.windowForTesting = nil }
+        BatchReturnPolicy.windowForTesting = window
+        let field = try XCTUnwrap(textFields(in: window.contentView!).first { $0.isEditable })
+        XCTAssertTrue(window.makeFirstResponder(field))
+        XCTAssertNotNil(field.currentEditor())
+        BatchReturnPolicy.currentEventForTesting = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)
+        _ = press(window, "\r", 36)
+        XCTAssertEqual(batch.model.phase, .form, "Return in a field does not start the batch")
+        XCTAssertNil(field.currentEditor(), "the field was committed")
+        _ = press(window, "\r", 36)
+        XCTAssertEqual(batch.model.phase, .running, "the next Return runs")
+        await batch.model.waitForRun()
+    }
+
+    func testReturnDoesNothingWhileRunIsDisabled() async throws {
+        let (batch, window) = try await openThree("C")
+        defer { batch.close() }
+        batch.model.form.renameOn = true
+        batch.model.form.template = "{nonsense}"
+        let blocked = await waitUntil { !batch.model.canRun }
+        XCTAssertTrue(blocked)
+        window.contentView?.layoutSubtreeIfNeeded()
+        _ = press(window, "\r", 36)
+        _ = press(window, "\r", 36, .command)
+        XCTAssertEqual(batch.model.phase, .form, "a disabled Run ignores Return")
+    }
+
     // MARK: Close while running, Dock badge, VoiceOver
 
     func testKeepRunningHidesWindowBadgesDockAndBouncesAtTheEnd() async throws {
@@ -577,7 +735,7 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertEqual(asked?.0, "Stop the batch?")
         XCTAssertTrue(asked?.1.hasPrefix("Completed: ") ?? false, asked?.1 ?? "")
         XCTAssertTrue(asked?.1.contains(" of 24 images.") ?? false, asked?.1 ?? "")
-        XCTAssertTrue(asked?.1.hasSuffix("Completed changes are kept; remaining work stops after safe changes.") ?? false, asked?.1 ?? "")
+        XCTAssertTrue(asked?.1.hasSuffix("Completed changes are kept; no new photos are started.") ?? false, asked?.1 ?? "")
         XCTAssertTrue(badges.last??.hasSuffix("%") ?? false, "Dock badge: \(badges)")
 
         await model.waitForRun()
@@ -612,7 +770,7 @@ final class BatchWindowTests: XCTestCase {
 
     func testVoiceOverAndBadgeStrings() {
         XCTAssertEqual(BatchModel.Copy.progress(17, 42), "17 of 42")
-        XCTAssertEqual(BatchModel.Copy.stopAlertInfo(17, 42), "Completed: 17 of 42 images. Completed changes are kept; remaining work stops after safe changes.")
+        XCTAssertEqual(BatchModel.Copy.stopAlertInfo(17, 42), "Completed: 17 of 42 images. Completed changes are kept; no new photos are started.")
         XCTAssertEqual(BatchWindowController.badge(completed: 17, total: 42), "40%")
         XCTAssertEqual(BatchModel.Copy.title(42), "Batch — 42 images")
         XCTAssertEqual(BatchModel.Copy.title(1), "Batch — 1 image")
@@ -809,5 +967,19 @@ final class BatchWindowSnapshotHarness: XCTestCase {
         let rep = NSBitmapImageRep(cgImage: try XCTUnwrap(ctx.makeImage()))
         let data = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
         try data.write(to: URL(fileURLWithPath: folder).appendingPathComponent("\(name).png"))
+    }
+}
+
+@MainActor
+final class BatchWorkingNameTests: XCTestCase {
+    func testNameIsTheFirstUnfinishedPhotoInPlanOrder() {
+        let a = ImageGroup(primary: URL(fileURLWithPath: "/x/a.jpg"))
+        let b = ImageGroup(primary: URL(fileURLWithPath: "/x/b.jpg"))
+        let c = ImageGroup(primary: URL(fileURLWithPath: "/x/c.jpg"))
+        XCTAssertEqual(BatchModel.workingName(queue: [a, b, c], finished: [], fallback: "z"), "a.jpg")
+        // Workers finish out of order: b first, then a. "2 of 3" must show c, not a.
+        XCTAssertEqual(BatchModel.workingName(queue: [a, b, c], finished: [b], fallback: "b.jpg"), "a.jpg")
+        XCTAssertEqual(BatchModel.workingName(queue: [a, b, c], finished: [b, a], fallback: "a.jpg"), "c.jpg")
+        XCTAssertEqual(BatchModel.workingName(queue: [a, b, c], finished: [a, b, c], fallback: "c.jpg"), "c.jpg")
     }
 }

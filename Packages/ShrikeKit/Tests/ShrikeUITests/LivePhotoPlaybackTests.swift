@@ -49,8 +49,9 @@ final class LivePhotoPlaybackTests: XCTestCase {
         return url
     }
 
-    /// A short H.264 movie (`frames` at 30 fps, 64×48).
-    nonisolated private static func writeMovie(to url: URL, frames: Int = 9) throws {
+    /// A short H.264 movie (`frames` at 30 fps, 64×48). Keep the fixture
+    /// long enough for playback-state assertions on slower hosted runners.
+    nonisolated private static func writeMovie(to url: URL, frames: Int = 60) throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 48,
@@ -95,6 +96,11 @@ final class LivePhotoPlaybackTests: XCTestCase {
             try Data("not a movie".utf8).write(to: mov)
         } else if movie {
             try Self.writeMovie(to: mov)
+            let asset = AVURLAsset(url: mov)
+            guard try await asset.load(.isPlayable),
+                  !(try await asset.loadTracks(withMediaType: .video)).isEmpty else {
+                throw CocoaError(.fileReadCorruptFile, userInfo: [NSURLErrorKey: mov])
+            }
         }
         let first = ImageGroup(primary: still, companions: movie || brokenMovie
                                ? [.init(url: mov, kind: .livePhotoMovie)] : [])
@@ -139,6 +145,15 @@ final class LivePhotoPlaybackTests: XCTestCase {
 
     private func state(_ content: ViewerContentView) -> LivePhotoPlayback.State {
         content.livePhotoPlayback?.state ?? .idle
+    }
+
+    private func waitUntilPlaying(_ content: ViewerContentView, label: String = "playing") async throws {
+        try await waitUntil(label, timeout: 8) {
+            self.state(content) == .playing || content.livePhotoPlayback?.loadFailure != nil
+        }
+        XCTAssertNil(content.livePhotoPlayback?.loadFailure,
+                     "Live Photo asset loading failed: \(content.livePhotoPlayback?.loadFailure ?? "unknown error")")
+        XCTAssertEqual(state(content), .playing, label)
     }
 
     // MARK: The badge
@@ -199,7 +214,7 @@ final class LivePhotoPlaybackTests: XCTestCase {
         try await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertNil(content.livePhotoPlayback, "nothing before 300 ms")
 
-        try await waitUntil("playing") { self.state(content) == .playing }
+        try await waitUntilPlaying(content)
         let playback = try XCTUnwrap(content.livePhotoPlayback)
         XCTAssertEqual(playback.isMuted, true, "muted by default")
         let movieView = try XCTUnwrap(playback.movieView)
@@ -330,6 +345,8 @@ final class LivePhotoPlaybackTests: XCTestCase {
         badge.requestPlay(withSound: false, fromHover: false)
         try await waitUntil("badge hides") { badge.isHidden }
         XCTAssertEqual(state(content), .idle)
+        XCTAssertNotNil(content.livePhotoPlayback?.loadFailure,
+                        "the failed AVFoundation load should remain observable for diagnostics")
         XCTAssertFalse(content.subviews.contains { $0 is LivePhotoMovieView })
     }
 

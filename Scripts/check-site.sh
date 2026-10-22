@@ -14,8 +14,8 @@ for f in index.html changelog.html style.css site.js 404.html robots.txt sitemap
   [ -f "site/$f" ] || bad "missing site/$f"
 done
 
-# The page has no version, hash or size that changes per release, so there is nothing to fill in.
-# The download button points at the fixed asset name the release workflow publishes.
+# Keep current-version labels and download claims aligned with the verified public release.
+# The download button uses the fixed asset name; update availability copy only after publication.
 grep -q 'releases/latest/download/Shrike.dmg' site/index.html || bad "download link to Shrike.dmg missing in index.html"
 grep -n 'PLACEHOLDER' site/*.html && bad "placeholder text left in site/*.html"
 
@@ -49,6 +49,12 @@ grep -n 'Ar''gus' site/*.html site/*.js site/robots.txt site/sitemap.xml && bad 
 grep -n 'is notarized' site/*.html && bad "phrase 'is notarized' found"
 grep -n 'Voyd\|VOYD' site/*.html && bad "voyd must be written in lower case"
 grep -n ' style="' site/*.html && bad "inline style attribute (blocked by the page's CSP)"
+
+# The source candidate and generated changelog must agree. Download availability
+# stays tied to the published asset and is checked separately above.
+candidate_version=$(sed -n 's/.*MARKETING_VERSION: "\([^"]*\)".*/\1/p' project.yml)
+[ -n "$candidate_version" ] || bad "source candidate version is missing"
+grep -Fq "## $candidate_version - " CHANGELOG.md || bad "source candidate is missing from CHANGELOG.md"
 
 # The changelog page is generated from CHANGELOG.md; it must match.
 if command -v node >/dev/null 2>&1; then

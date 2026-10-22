@@ -54,7 +54,8 @@ extension BrowserWindowController {
                 self?.refreshTags(for: primaries)
                 self?.pairedViewer?.refreshTags(for: primaries)
             },
-            onError: { [weak self] line in self?.toast(line, kind: .error) }
+            onError: { [weak self] line in self?.toast(line, kind: .error) },
+            suppressing: watcherScope
         )
     }
 

@@ -109,7 +109,7 @@ final class OverflowMenuFormTests: XCTestCase {
     private func stateWhenOpened(_ row: NSMenuItem) -> NSControl.StateValue {
         guard let copy = row.copy() as? NSMenuItem else { return .mixed }
         copy.state = .mixed
-        _ = (copy.target as? NSMenuItemValidation)?.validateMenuItem(copy)
+        _ = (copy.target as? any NSMenuItemValidation)?.validateMenuItem(copy)
         return copy.state
     }
 

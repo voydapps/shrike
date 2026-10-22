@@ -117,7 +117,7 @@ public final class BatchModel: ObservableObject {
         public static func unknownToken(_ token: String) -> String { "Unknown token {\(token)}." }
         public static func progress(_ done: Int, _ total: Int) -> String { "\(done) of \(total)" }
         public static func stopAlertInfo(_ done: Int, _ total: Int) -> String {
-            "Completed: \(done) of \(images(total)). Completed changes are kept; remaining work stops after safe changes."
+            "Completed: \(done) of \(images(total)). Completed changes are kept; no new photos are started."
         }
     }
 
@@ -568,6 +568,13 @@ public final class BatchModel: ObservableObject {
         }
     }
 
+    /// What the bar shows: the same `completed` and `total` as the counter text.
+    public var progressFraction: Double { total > 0 ? min(1, Double(completed) / Double(total)) : 0 }
+
+    #if DEBUG
+    func setEtaTextForTesting(_ text: String?) { etaText = text }
+    #endif
+
     public var progressLine: String {
         let base = Copy.progress(completed, total)
         guard let etaText else { return base }
@@ -588,6 +595,8 @@ public final class BatchModel: ObservableObject {
         etaText = nil
         isStopping = false
         currentName = plan.items.first?.primary.lastPathComponent
+        runQueue = plan.items
+        finishedSources = []
         startedAt = .now
         let runner = self.runner
         runTask = Task { [weak self] in
@@ -616,10 +625,25 @@ public final class BatchModel: ObservableObject {
     /// Waits for the run to end (tests, and a Stop from the close alert).
     public func waitForRun() async { await runTask?.value }
 
+    /// The plan's photos in order, and the ones that have finished (workers
+    /// finish out of order, so the runner's "item that just finished" is not
+    /// the photo being worked on).
+    private var runQueue: [ImageGroup] = []
+    private var finishedSources: Set<ImageGroup> = []
+
+    /// The first photo in plan order that is not finished; `fallback` when all are.
+    static func workingName(queue: [ImageGroup], finished: Set<ImageGroup>, fallback: String?) -> String? {
+        queue.first { !finished.contains($0) }?.primary.lastPathComponent ?? fallback
+    }
+
     private func progressed(_ progress: BatchProgress) {
         completed = progress.completed
         total = progress.total
-        if let name = progress.currentName { currentName = name }
+        if let item = progress.item { finishedSources.insert(item.source) }
+        // Name, counter and bar come from this one step: the name is the next
+        // photo still to do, never an earlier one that already finished.
+        currentName = Self.workingName(queue: runQueue, finished: finishedSources,
+                                       fallback: progress.currentName ?? currentName)
         etaText = Self.eta(completed: completed, total: total,
                            elapsed: startedAt.map { ContinuousClock.now - $0 })
         onProgress?(completed, total)

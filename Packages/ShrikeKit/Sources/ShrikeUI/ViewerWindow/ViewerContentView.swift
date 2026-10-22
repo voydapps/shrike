@@ -1710,7 +1710,7 @@ public final class ViewerContentView: NSView {
                 guard let self else { return .zero }
                 return self.imageView.convert(self.imageView.drawnImageRect, to: self)
             }
-            playback.onLoadFailed = { [weak self] failed in
+            playback.onLoadFailed = { [weak self] failed, _ in
                 guard let self, failed == self.livePhotoMovie else { return }
                 self.livePhotoFailed = true
                 self.refreshLivePhotoBadge()

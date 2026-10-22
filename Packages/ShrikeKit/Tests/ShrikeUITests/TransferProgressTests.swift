@@ -99,6 +99,22 @@ final class TransferProgressTests: XCTestCase {
         return completed
     }
 
+    /// The Browser shows progress in its notice band above the photos, not as a toast.
+    private func heldBrowserProgress(_ gate: ConflictGate, browser: BrowserWindowController,
+                                     file: StaticString = #filePath, line: UInt = #line) async -> Bool {
+        let notice = browser.transferNotice
+        let ready = await waitUntil { gate.continuation != nil && notice.isShowingProgress }
+        XCTAssertTrue(ready, "Conflict must be awaiting an answer while the band shows progress", file: file, line: line)
+        guard ready else {
+            _ = await finish(browser.trashChain, gate: gate, cancel: true, file: file, line: line)
+            return false
+        }
+        XCTAssertNil(browser.toastHost.content, "no toast card over the photos", file: file, line: line)
+        XCTAssertNil(notice.progressFraction, "busy, with no invented completed work", file: file, line: line)
+        XCTAssertTrue(browser.transfers.isShowingProgress, "Esc still cancels while the band shows progress", file: file, line: line)
+        return true
+    }
+
     private func heldProgress(_ gate: ConflictGate, host: ToastHostView,
                               task: Task<Void, Never>?,
                               file: StaticString = #filePath, line: UInt = #line) async -> Bool {
@@ -114,7 +130,7 @@ final class TransferProgressTests: XCTestCase {
             let visible = !bar.isHiddenOrHasHiddenAncestor
             XCTAssertTrue(visible, "The real held progress indicator must be visible before answering the installed conflict gate",
                           file: file, line: line)
-            XCTAssertTrue(bar.isIndeterminate, "A group-level transfer with no completed work must expose native busy progress",
+            XCTAssertNil(bar.fraction, "A group-level transfer with no completed work must expose native busy progress",
                           file: file, line: line)
             XCTAssertEqual(host.content?.progress, 0, "Busy presentation must not invent completed work",
                            file: file, line: line)
@@ -175,9 +191,9 @@ final class TransferProgressTests: XCTestCase {
     }
 
     private func progressBar(in host: ToastHostView,
-                             file: StaticString = #filePath, line: UInt = #line) throws -> NSProgressIndicator {
-        func indicators(in view: NSView) -> [NSProgressIndicator] {
-            ((view as? NSProgressIndicator).map { [$0] } ?? []) + view.subviews.flatMap { indicators(in: $0) }
+                             file: StaticString = #filePath, line: UInt = #line) throws -> ExactProgressBar {
+        func indicators(in view: NSView) -> [ExactProgressBar] {
+            ((view as? ExactProgressBar).map { [$0] } ?? []) + view.subviews.flatMap { indicators(in: $0) }
         }
         // HUDSurfaceView redirects added content into its contentHost.
         let bars = indicators(in: host)
@@ -216,14 +232,63 @@ final class TransferProgressTests: XCTestCase {
         let gate = ConflictGate()
         browser.transfers.conflictResponder = { _ in await gate.wait() }
         browser.transfer(.copy, [ImageGroup(primary: first)], to: destination)
-        guard await heldProgress(gate, host: browser.toastHost, task: browser.trashChain) else { return }
+        guard await heldBrowserProgress(gate, browser: browser) else { return }
         XCTAssertTrue(browser.transfers.isShowingProgress)
         gate.answer()
         guard await finish(browser.trashChain, gate: gate) else { return }
         await assertSettledHidden(browser.toastHost)
         XCTAssertFalse(browser.transfers.isShowingProgress)
+        XCTAssertFalse(browser.transferNotice.isShowingProgress, "the band is free of progress")
         XCTAssertFalse(browser.window?.undoManager?.canUndo ?? true)
         XCTAssertEqual(try Data(contentsOf: first), original)
+        XCTAssertEqual(try Data(contentsOf: existing), previous)
+    }
+
+    /// The Browser's transfer band keeps one height for progress and for the result
+    /// (with its Undo button), and its text is as tall as one line, centred on the button.
+    func testTransferBandKeepsOneHeightAndCentresItsText() throws {
+        let browser = BrowserWindowController(services: .makeDefault(), initialFolder: source)
+        defer { browser.close() }
+        let notice = browser.transferNotice
+        browser.window?.contentView?.layoutSubtreeIfNeeded()
+        notice.showProgress("Copying 3 of 320…", fraction: 0.1)
+        browser.window?.contentView?.layoutSubtreeIfNeeded()
+        let progressHeight = notice.frame.height
+        let progressLabel = try XCTUnwrap(notice.arrangedSubviews.first as? NSTextField)
+        XCTAssertLessThanOrEqual(progressLabel.frame.height, ceil(progressLabel.intrinsicContentSize.height),
+                                 "the label is not stretched, so its text is not clipped")
+        notice.show("Copied 3 items.", buttons: [("Undo", {})])
+        browser.window?.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(notice.frame.height, progressHeight, "photos below do not jump when the result replaces progress")
+        XCTAssertEqual(notice.frame.height, InlineNotice.fixedBandHeight)
+        let label = try XCTUnwrap(notice.arrangedSubviews.first as? NSTextField)
+        let button = try XCTUnwrap(notice.arrangedSubviews.compactMap { $0 as? NSButton }.first)
+        XCTAssertEqual(label.frame.midY, button.frame.midY, accuracy: 0.51, "text is centred on the Undo button")
+    }
+
+    /// Regression (0.2.25 QA): Esc while the band shows Copy progress must stop the copy.
+    func testBrowserEscKeyCancelsCopyWhileBandShowsProgress() async throws {
+        let (first, existing, _) = try files()
+        let previous = try Data(contentsOf: existing)
+        var services = ShrikeServices.makeDefault()
+        services.backupStore = nil
+        let browser = BrowserWindowController(services: services, initialFolder: source)
+        defer { browser.close() }
+        browser.fileOps = ops()
+        let loaded = await waitUntil { browser.contentController.visibleItems.count == 2 }
+        XCTAssertTrue(loaded)
+        let gate = ConflictGate()
+        browser.transfers.conflictResponder = { _ in await gate.wait() }
+        browser.transfer(.copy, [ImageGroup(primary: first)], to: destination)
+        guard await heldBrowserProgress(gate, browser: browser) else { return }
+        let esc = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+            context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false, keyCode: 53))
+        XCTAssertTrue(browser.handleKey(esc), "Esc is consumed while the band shows progress")
+        gate.answer()
+        guard await finish(browser.trashChain, gate: gate) else { return }
+        XCTAssertFalse(browser.transfers.isShowingProgress)
         XCTAssertEqual(try Data(contentsOf: existing), previous)
     }
 
@@ -385,7 +450,7 @@ final class TransferProgressTests: XCTestCase {
         browser.fileOps = operation
         browser.transfers.conflictResponder = { _ in await gate.wait() }
         browser.transfer(.copy, [ImageGroup(primary: first), ImageGroup(primary: missing)], to: destination)
-        guard await heldProgress(gate, host: browser.toastHost, task: browser.trashChain) else { return }
+        guard await heldBrowserProgress(gate, browser: browser) else { return }
         gate.answer()
         guard await finish(browser.trashChain, gate: gate) else { return }
         XCTAssertEqual(browser.toastHost.content?.kind, .error)
@@ -421,7 +486,7 @@ final class TransferProgressTests: XCTestCase {
 
     func testTicketDoesNotRetainReleasedHostOrClosedViewer() async throws {
         var host: ToastHostView? = ToastHostView(placement: .viewer)
-        weak var weakHost = host
+        weak let weakHost = host
         var progress = ToastContent("Progress")
         progress.progress = 0
         let ticket = try XCTUnwrap(host?.showProgress(progress))
@@ -437,7 +502,7 @@ final class TransferProgressTests: XCTestCase {
 
         let (first, _, next) = try files()
         var window: ViewerWindow? = viewer([first, next])
-        weak var weakWindow = window
+        weak let weakWindow = window
         let coordinator = try XCTUnwrap(window?.transfers)
         window?.close()
         window = nil
