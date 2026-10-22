@@ -45,6 +45,7 @@ class ReleaseGateTests(unittest.TestCase):
         self.lookup_failure = None
         self.raw_lookup = None
         self.push_access = True
+        self.permissions_omitted = False
         self.auth_patch = patch.dict(os.environ, {'GH_TOKEN': 'offline-harness-token',
                                                  'GITHUB_REPOSITORY': 'voydapps/shrike'})
         self.auth_patch.start()
@@ -59,6 +60,8 @@ class ReleaseGateTests(unittest.TestCase):
                 return self.raw_lookup
             endpoint = args[4]
             if endpoint == 'repos/voydapps/shrike':
+                if self.permissions_omitted:
+                    return json.dumps({'full_name': 'voydapps/shrike'})
                 return json.dumps({'full_name': 'voydapps/shrike',
                                    'permissions': {'push': self.push_access}})
             self.assertTrue(endpoint.startswith('repos/voydapps/shrike/releases?per_page=100&page='))
@@ -337,6 +340,22 @@ class ReleaseGateTests(unittest.TestCase):
         self.receipt_fixture()
         self.push_access = False
         with self.assertRaisesRegex(RuntimeError, 'authenticated push access'):
+            publisher.publish(self.root, 'v1.2.3', self.runner)
+        self.assert_no_release_mutation()
+
+    def test_installation_token_without_permissions_key_reaches_create(self):
+        # GITHUB_TOKEN (app installation token): no `permissions` key in the repo response.
+        self.receipt_fixture()
+        self.permissions_omitted = True
+        publisher.publish(self.root, 'v1.2.3', self.runner)
+        creates = [a for a in self.calls if a[:3] == ['gh', 'release', 'create']]
+        self.assertEqual(len(creates), 1)
+
+    def test_installation_token_still_blocked_by_existing_draft(self):
+        self.receipt_fixture()
+        self.permissions_omitted = True
+        self.release_pages = [[{'tag_name': 'v1.2.3', 'draft': True}]]
+        with self.assertRaisesRegex(RuntimeError, 'existing draft/partial release'):
             publisher.publish(self.root, 'v1.2.3', self.runner)
         self.assert_no_release_mutation()
 
