@@ -939,7 +939,10 @@ final class EditTransitionTests: XCTestCase {
         XCTAssertTrue(c.chromeState.acceptsInput)
     }
 
-    func testHeldPhotoPreparationReplacementAndCloseResolvesOriginalRequestAndReleasesWindow() async throws {
+    func testHeldPhotoPreparationReplacementAndCloseResolvesOriginalRequestAndReleasesWindow() throws {
+        try runWithoutXCTestEventPump { try await self.heldPhotoPreparationReplacementAndCloseResolvesOriginalRequestAndReleasesWindow() }
+    }
+    private func heldPhotoPreparationReplacementAndCloseResolvesOriginalRequestAndReleasesWindow() async throws {
         for replaceSession in [false, true] {
             var viewer: ViewerWindow?
             var urls: [URL] = []

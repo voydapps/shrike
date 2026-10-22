@@ -21,12 +21,12 @@ final class ViewerPreviewLifetimeTests: XCTestCase {
         return await condition()
     }
 
-    func testCloseReleasesViewerWhileEmbeddedPreviewIsStillHeld() async throws {
-        try await exercise(.embedded, closeWhileHeld: true)
+    func testCloseReleasesViewerWhileEmbeddedPreviewIsStillHeld() throws {
+        try runWithoutXCTestEventPump { try await self.exercise(.embedded, closeWhileHeld: true) }
     }
 
-    func testCloseReleasesViewerWhileThumbnailCacheIsStillHeld() async throws {
-        try await exercise(.thumbnail, closeWhileHeld: true)
+    func testCloseReleasesViewerWhileThumbnailCacheIsStillHeld() throws {
+        try runWithoutXCTestEventPump { try await self.exercise(.thumbnail, closeWhileHeld: true) }
     }
 
     func testEmbeddedPreviewStillPaintsBeforeFullImageInActiveViewer() async throws {

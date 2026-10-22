@@ -241,14 +241,18 @@ final class InspectorPanelImageTests: XCTestCase {
         let ahead = await waitUntil { cache.cachedThumbnail(for: FileImageSource(url: b), maxPixelSize: px) != nil }
         XCTAssertTrue(ahead, "B's panel picture was read ahead")
 
+        // A's own first show may put its stand-in up when the quick read
+        // beats the sharp one (nothing sharp was on screen to hold); only
+        // the step to B is under test.
+        let quickShowsBefore = preview.quickShows, blankingsBefore = preview.blankings
         try click(b, in: browser)
         await browser.waitForInspectorInfo()
         browser.inspectorForTesting.view.layoutSubtreeIfNeeded()
         host.layoutSubtreeIfNeeded()
         XCTAssertEqual(preview.shownURL, b)
         XCTAssertTrue(preview.isShowingSharp, "B is sharp before any read")
-        XCTAssertEqual(preview.quickShows, 0)
-        XCTAssertEqual(preview.blankings, 0)
+        XCTAssertEqual(preview.quickShows, quickShowsBefore, "B never shows a stand-in")
+        XCTAssertEqual(preview.blankings, blankingsBefore, "the picture never goes blank on the step")
     }
 
     // MARK: Header heights

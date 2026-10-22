@@ -40,12 +40,22 @@ final class DrawnSizeTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    private func viewer(_ url: URL) -> ViewerWindow {
+    /// A viewer on `url` once its own first paint has landed. It used to
+    /// be handed a stand-in image with no source ID instead; the viewer's
+    /// real paint then still came later, and its new source ID cleared
+    /// the drawn size. Here that paint landed after the header read; on
+    /// the slower runner it sometimes landed after the rotate, and the
+    /// size stayed nil because the same item is not titled again.
+    private func viewer(_ url: URL) async -> ViewerWindow {
         var services = ShrikeServices.makeDefault()
         services.backupStore = store
         let viewer = ViewerWindow(groups: [ImageGroup(primary: url)], startIndex: 0, services: services)
-        viewer.markDisplayedForTesting(0)
-        viewer.imageViewForTesting.image = SaveFlowTests.image()
+        let deadline = Date().addingTimeInterval(10)
+        while viewer.imageViewForTesting.sourceID == nil || viewer.displayedItem == nil, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(viewer.imageViewForTesting.sourceID, "The viewer painted its own photo")
+        XCTAssertNotNil(viewer.displayedItem)
         return viewer
     }
 
@@ -62,7 +72,7 @@ final class DrawnSizeTests: XCTestCase {
     func testRotateSwapsTheDrawnSizeAtOnceAndKeepsItAfterTheWrite() async throws {
         let url = dir.appendingPathComponent("a.jpg")
         try SaveFlowTests.writeImage(url, type: .jpeg)   // 16 x 8
-        let viewer = viewer(url)
+        let viewer = await viewer(url)
         defer { viewer.close() }
         viewer.updateTitle()
         let landscape = await settle(viewer, containing: "16 × 8")
@@ -80,7 +90,7 @@ final class DrawnSizeTests: XCTestCase {
         }
         XCTAssertEqual(viewer.imageViewForTesting.sourcePixelSize, CGSize(width: 8, height: 16))
 
-        let again = self.viewer(url)
+        let again = await self.viewer(url)
         defer { again.close() }
         again.updateTitle()
         let portrait = await settle(again, containing: "8 × 16")
@@ -97,7 +107,7 @@ final class DrawnSizeTests: XCTestCase {
         defer { ViewerWindow.watchFoldersForTesting = watching }
         let url = dir.appendingPathComponent("delayed-watcher.jpg")
         try SaveFlowTests.writeImage(url, type: .jpeg)
-        let viewer = viewer(url)
+        let viewer = await viewer(url)
         defer { viewer.close() }
         viewer.updateTitle()
         let landscape = await settle(viewer, containing: "16 × 8")
@@ -147,7 +157,7 @@ final class DrawnSizeTests: XCTestCase {
     func testRotateBeforeTheFirstReadReturnedStillEndsPortrait() async throws {
         let url = dir.appendingPathComponent("early.jpg")
         try SaveFlowTests.writeImage(url, type: .jpeg)
-        let viewer = viewer(url)
+        let viewer = await viewer(url)
         defer { viewer.close() }
         viewer.updateTitle()
         viewer.dispatch(.rotateRight)     // nothing cached yet
@@ -160,7 +170,7 @@ final class DrawnSizeTests: XCTestCase {
     func testRotateThenBackIsTheOriginalSize() async throws {
         let url = dir.appendingPathComponent("b.jpg")
         let before = try SaveFlowTests.writeImage(url, type: .jpeg)
-        let viewer = viewer(url)
+        let viewer = await viewer(url)
         defer { viewer.close() }
         viewer.updateTitle()
         _ = await settle(viewer, containing: "16 × 8")
@@ -175,7 +185,7 @@ final class DrawnSizeTests: XCTestCase {
     func testUndoReturnsTheOriginalSize() async throws {
         let url = dir.appendingPathComponent("c.jpg")
         try SaveFlowTests.writeImage(url, type: .jpeg)
-        let viewer = viewer(url)
+        let viewer = await viewer(url)
         defer { viewer.close() }
         viewer.updateTitle()
         _ = await settle(viewer, containing: "16 × 8")
@@ -191,7 +201,7 @@ final class DrawnSizeTests: XCTestCase {
     func testExternalChangeReadsTheNewSize() async throws {
         let url = dir.appendingPathComponent("d.jpg")
         try SaveFlowTests.writeImage(url, type: .jpeg)
-        let viewer = viewer(url)
+        let viewer = await viewer(url)
         defer { viewer.close() }
         viewer.updateTitle()
         _ = await settle(viewer, containing: "16 × 8")

@@ -151,8 +151,11 @@ final class WindowReleaseTests: XCTestCase {
                           queue: Weak(viewer.navigationForTesting.decodeQueue))
     }
 
-    /// Turns the run loop (each turn drains the main autorelease pool)
-    /// until nothing in `alive` is left, or `timeout`.
+    /// Turns the run loop until nothing in `alive` is left, or `timeout`.
+    /// Each turn's own pool is drained; what the test body autoreleased
+    /// is drained by the run-loop callout it ran in. The lifetime tests
+    /// run through `runWithoutXCTestEventPump`, so no XCTest waiter pool
+    /// (which lives for the whole test method) can hold a closed window.
     private func settle(_ timeout: TimeInterval = 12, alive: () -> [String]) async -> [String] {
         let deadline = Date().addingTimeInterval(timeout)
         while !alive().isEmpty, Date() < deadline {
@@ -247,7 +250,10 @@ final class WindowReleaseTests: XCTestCase {
         XCTAssertEqual(view.releasedCanvasSubmissionsForTesting, 1)
     }
 
-    func testFinalCloseDetachesTheGraphicsLayerEvenWhenItsViewIsRetained() async throws {
+    func testFinalCloseDetachesTheGraphicsLayerEvenWhenItsViewIsRetained() throws {
+        try runWithoutXCTestEventPump { try await self.finalCloseDetachesTheGraphicsLayerEvenWhenItsViewIsRetained() }
+    }
+    private func finalCloseDetachesTheGraphicsLayerEvenWhenItsViewIsRetained() async throws {
         let coordinator = WindowCoordinator()
         let viewer = try await openViewer(coordinator, groups: plainGroups(), services: services())
         let retainedView = viewer.imageViewForTesting
@@ -272,7 +278,10 @@ final class WindowReleaseTests: XCTestCase {
         viewer.close()
     }
 
-    func testViewerIsFreedAfterPerformClose() async throws {
+    func testViewerIsFreedAfterPerformClose() throws {
+        try runWithoutXCTestEventPump { try await self.viewerIsFreedAfterPerformClose() }
+    }
+    private func viewerIsFreedAfterPerformClose() async throws {
         let coordinator = WindowCoordinator()
         let services = try services()
         let groups = plainGroups()
@@ -286,7 +295,10 @@ final class WindowReleaseTests: XCTestCase {
         await assertFreed(try XCTUnwrap(r), coordinator)
     }
 
-    func testViewerIsFreedAfterClose() async throws {
+    func testViewerIsFreedAfterClose() throws {
+        try runWithoutXCTestEventPump { try await self.viewerIsFreedAfterClose() }
+    }
+    private func viewerIsFreedAfterClose() async throws {
         let coordinator = WindowCoordinator()
         let services = try services()
         let groups = plainGroups()
@@ -303,7 +315,10 @@ final class WindowReleaseTests: XCTestCase {
 
     /// The panels the user keeps shown (histogram on, the position
     /// overlay kept), several photos visited, then ⌘W.
-    func testViewerWithHistogramAndOverlayIsFreed() async throws {
+    func testViewerWithHistogramAndOverlayIsFreed() throws {
+        try runWithoutXCTestEventPump { try await self.viewerWithHistogramAndOverlayIsFreed() }
+    }
+    private func viewerWithHistogramAndOverlayIsFreed() async throws {
         Prefs.viewerHistogramVisible = true
         Prefs.viewerPositionOverlayAutoHides = false
         let coordinator = WindowCoordinator()
@@ -326,7 +341,10 @@ final class WindowReleaseTests: XCTestCase {
 
     /// Full-screen chrome built (the HUD glass container and
     /// every HUD in it), then the window closes.
-    func testViewerWithFullScreenChromeIsFreed() async throws {
+    func testViewerWithFullScreenChromeIsFreed() throws {
+        try runWithoutXCTestEventPump { try await self.viewerWithFullScreenChromeIsFreed() }
+    }
+    private func viewerWithFullScreenChromeIsFreed() async throws {
         let coordinator = WindowCoordinator()
         let services = try services()
         let groups = plainGroups()
@@ -353,7 +371,10 @@ final class WindowReleaseTests: XCTestCase {
     }
 
     /// Edit mode entered and left, then the window closes.
-    func testViewerIsFreedAfterEditMode() async throws {
+    func testViewerIsFreedAfterEditMode() throws {
+        try runWithoutXCTestEventPump { try await self.viewerIsFreedAfterEditMode() }
+    }
+    private func viewerIsFreedAfterEditMode() async throws {
         let coordinator = WindowCoordinator()
         let services = try services()
         let groups = plainGroups()
@@ -375,7 +396,10 @@ final class WindowReleaseTests: XCTestCase {
     }
 
     /// A Live Photo on screen (the LIVE badge shown, played once).
-    func testLivePhotoViewerIsFreed() async throws {
+    func testLivePhotoViewerIsFreed() throws {
+        try runWithoutXCTestEventPump { try await self.livePhotoViewerIsFreed() }
+    }
+    private func livePhotoViewerIsFreed() async throws {
         let coordinator = WindowCoordinator()
         let services = try services()
         let still = writeJPEG("live.jpg", width: 1200, height: 1600)
@@ -401,7 +425,10 @@ final class WindowReleaseTests: XCTestCase {
     /// The app's own open path (Finder / `open -a`): the early decode
     /// handed over to the new viewer, the folder scan, the window up
     /// with its photo, a second viewer cascaded from it; one is closed.
-    func testViewerOpenedLikeFinderIsFreed() async throws {
+    func testViewerOpenedLikeFinderIsFreed() throws {
+        try runWithoutXCTestEventPump { try await self.viewerOpenedLikeFinderIsFreed() }
+    }
+    private func viewerOpenedLikeFinderIsFreed() async throws {
         Prefs.viewerHistogramVisible = true
         let coordinator = WindowCoordinator()
         coordinator.standaloneFrameForTesting = NSRect(x: 80, y: 80, width: 900, height: 640)
@@ -437,7 +464,10 @@ final class WindowReleaseTests: XCTestCase {
 
     /// Closed through accessibility, the way a screen reader or automation
     /// closes windows: the tree is read, then the close button is pressed.
-    func testViewerIsFreedAfterAccessibilityClose() async throws {
+    func testViewerIsFreedAfterAccessibilityClose() throws {
+        try runWithoutXCTestEventPump { try await self.viewerIsFreedAfterAccessibilityClose() }
+    }
+    private func viewerIsFreedAfterAccessibilityClose() async throws {
         Prefs.viewerHistogramVisible = true
         let coordinator = WindowCoordinator()
         let services = try services()
@@ -452,6 +482,32 @@ final class WindowReleaseTests: XCTestCase {
             _ = close.accessibilityPerformPress()
             if !viewer.didTearDown { viewer.performClose(nil) }
             XCTAssertTrue(viewer.didTearDown, "the close button closed the window")
+        }
+        await assertFreed(try XCTUnwrap(r), coordinator)
+    }
+
+    /// Window-server events reach the viewer through `NSApp.sendEvent`,
+    /// which autoreleases the window. On the release-gate runner XCTest
+    /// sent such events from its own wait, in a pool that lived for the
+    /// whole test, and closed viewers looked leaked. Through the app's
+    /// own event path (one pool per event) the window must still be freed.
+    func testViewerIsFreedAfterWindowServerEvents() throws {
+        try runWithoutXCTestEventPump { try await self.viewerIsFreedAfterWindowServerEvents() }
+    }
+    private func viewerIsFreedAfterWindowServerEvents() async throws {
+        let coordinator = WindowCoordinator()
+        let services = try services()
+        let groups = plainGroups()
+        var r: ViewerRefs?
+        do {
+            let viewer = try await openViewer(coordinator, groups: groups, services: services)
+            r = await refs(viewer)
+            for subtype in [NSEvent.EventSubtype.windowExposed, .windowMoved] {
+                let event = try XCTUnwrap(NSEvent.otherEvent(with: .appKitDefined, location: .zero, modifierFlags: [],
+                    timestamp: 0, windowNumber: viewer.windowNumber, context: nil, subtype: subtype.rawValue, data1: 0, data2: 0))
+                autoreleasepool { NSApp.sendEvent(event) }
+            }
+            viewer.performClose(nil)
         }
         await assertFreed(try XCTUnwrap(r), coordinator)
     }
@@ -492,7 +548,10 @@ final class WindowReleaseTests: XCTestCase {
 
     // MARK: Browser and Compare
 
-    func testBrowserIsFreedAfterClose() async throws {
+    func testBrowserIsFreedAfterClose() throws {
+        try runWithoutXCTestEventPump { try await self.browserIsFreedAfterClose() }
+    }
+    private func browserIsFreedAfterClose() async throws {
         _ = plainGroups()
         let services = try services()
         let window = Weak<NSWindow>(nil)
@@ -512,7 +571,10 @@ final class WindowReleaseTests: XCTestCase {
         XCTAssertEqual(left, [], "a closed Browser must be freed; still alive: \(left)")
     }
 
-    func testCompareWindowIsFreedAfterClose() async throws {
+    func testCompareWindowIsFreedAfterClose() throws {
+        try runWithoutXCTestEventPump { try await self.compareWindowIsFreedAfterClose() }
+    }
+    private func compareWindowIsFreedAfterClose() async throws {
         let groups = plainGroups()
         var services = try services()
         services.backupStore = nil

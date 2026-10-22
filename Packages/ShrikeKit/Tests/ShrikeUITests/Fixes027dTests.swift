@@ -269,7 +269,10 @@ final class Fixes027dTests: XCTestCase {
         XCTAssertEqual((plain.accessibilityChildren() ?? []).count, 0, "one element per cell")
         window.rateDisplayed(2)
         window.toggleFlagDisplayed()
-        let ready5 = await waitUntil { root.filmstripMarksForTesting(0)?.rating == 2 }
+        // The rating and the flag are two separate writes; wait for both.
+        let ready5 = await waitUntil {
+            root.filmstripMarksForTesting(0)?.rating == 2 && root.filmstripMarksForTesting(0)?.flagged == true
+        }
         XCTAssertTrue(ready5)
         let marked = try XCTUnwrap(root.filmstripCellViewForTesting(0))
         XCTAssertEqual(marked.accessibilityLabel(), "p0.jpg, 2 stars, flagged")

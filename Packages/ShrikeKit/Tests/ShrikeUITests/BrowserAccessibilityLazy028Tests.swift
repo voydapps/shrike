@@ -188,7 +188,10 @@ final class BrowserAccessibilityLazy028Tests: XCTestCase {
         XCTAssertTrue(NSLocationInRange(900, table.rows(in: table.visibleRect)))
     }
 
-    func testNativeListAccessibilityReferencesReleaseAfterClose() async throws {
+    func testNativeListAccessibilityReferencesReleaseAfterClose() throws {
+        try runWithoutXCTestEventPump { try await self.nativeListAccessibilityReferencesReleaseAfterClose() }
+    }
+    private func nativeListAccessibilityReferencesReleaseAfterClose() async throws {
         var browser: BrowserWindowController? = try await open(.list)
         weak let closedBrowser = browser
         weak let closedContent = browser?.contentController

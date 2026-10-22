@@ -237,7 +237,14 @@ final class LaunchOpenSpeedTests: XCTestCase {
         let url = try writeJPEG("big.jpg", width: 2400, height: 1600)
         DecodeHandoff.shared.start(url: url, targetLongEdge: Prefs.maxDisplayLongEdge,
                                    preparer: DisplayTextureFactory.preparer)
-        try await Task.sleep(for: .milliseconds(400))   // the early decode finishes
+        // The early decode finishes (on the 3-CPU runner it took longer
+        // than the fixed 400 ms this used to sleep). Waiting for its box
+        // does not touch the decode the viewer's queue claims.
+        let finished = await Task.detached {
+            DecodeHandoff.shared.waitForFinished(url: url, target: Prefs.maxDisplayLongEdge,
+                                                 deadline: .now() + .seconds(30)) != nil
+        }.value
+        XCTAssertTrue(finished, "the early decode finished")
         let start = CFAbsoluteTimeGetCurrent()
         let viewer = ViewerWindow(groups: [ImageGroup(primary: url)], startIndex: 0, services: services)
         defer { viewer.close() }
