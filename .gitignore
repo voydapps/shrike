@@ -58,3 +58,7 @@ fastlane/Preview.html
 
 # Local signing config (holds the developer team ID); template is Config/Local.xcconfig.example
 Config/Local.xcconfig
+
+# Python bytecode (Scripts/tests import publish-release.py; CI gate rejects untracked files)
+__pycache__/
+*.pyc
