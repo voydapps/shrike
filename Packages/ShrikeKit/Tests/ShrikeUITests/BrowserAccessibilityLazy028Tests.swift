@@ -55,10 +55,7 @@ final class BrowserAccessibilityLazy028Tests: XCTestCase {
         Prefs.browserViewMode = mode.rawValue
         let browser = BrowserWindowController(services: services, initialFolder: dir)
         browser.contentController.listMaterializationStatsForTesting = stats
-        let deadline = Date().addingTimeInterval(15)
-        while browser.contentController.allItems.count < 1000, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await browser.listingTask?.value
         XCTAssertEqual(browser.contentController.allItems.count, 1000)
         browser.window?.setContentSize(NSSize(width: 1100, height: 700))
         browser.window?.alphaValue = 0

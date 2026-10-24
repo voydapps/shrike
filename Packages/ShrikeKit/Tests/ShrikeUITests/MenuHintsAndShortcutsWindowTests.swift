@@ -129,7 +129,8 @@ final class MenuHintsAndShortcutsWindowTests: XCTestCase {
         let browser = coordinator.openBrowser(at: dir, selecting: nil, services: coordinator.services!)
         let window = try XCTUnwrap(browser.window)
         window.makeKeyAndOrderFront(nil)
-        for _ in 0..<200 where browser.contentController.visibleItems.count < 30 { try await Task.sleep(for: .milliseconds(10)) }
+        await browser.listingTask?.value
+        XCTAssertEqual(browser.contentController.visibleItems.count, 30, "the listing finished with all 30 photos")
 
         browser.dispatch(.openInViewer)
         let viewer = try XCTUnwrap(browser.pairedViewer, "the paired viewer opened")

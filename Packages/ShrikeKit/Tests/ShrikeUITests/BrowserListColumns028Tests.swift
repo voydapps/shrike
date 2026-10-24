@@ -42,10 +42,8 @@ final class BrowserListColumns028Tests: XCTestCase {
     private func openList() async throws -> BrowserWindowController {
         Prefs.browserViewMode = BrowserViewMode.list.rawValue
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
-        let deadline = Date().addingTimeInterval(10)
-        while browser.contentController.allItems.count < 5, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await browser.listingTask?.value
+        XCTAssertEqual(browser.contentController.allItems.count, 5, "the listing finished with all five photos")
         browser.window?.setContentSize(NSSize(width: 1100, height: 600))
         browser.window?.contentView?.layoutSubtreeIfNeeded()
         return browser

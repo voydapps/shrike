@@ -172,10 +172,7 @@ final class TagEditorTests: XCTestCase {
         try FinderTags.write(b, tags: ["Client"])
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
         defer { browser.close() }
-        let deadline = Date().addingTimeInterval(3)
-        while browser.contentController.visibleItems.count < 2, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await browser.listingTask?.value
         XCTAssertEqual(browser.contentController.visibleItems.count, 2)
         browser.contentController.selectAll()
         let inspector = browser.inspectorForTesting

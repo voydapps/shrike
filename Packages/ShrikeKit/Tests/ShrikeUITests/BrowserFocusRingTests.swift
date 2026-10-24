@@ -38,8 +38,8 @@ final class BrowserFocusRingTests: XCTestCase {
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
         defer { browser.close() }
         let content = browser.contentController
-        let deadline = Date().addingTimeInterval(5)
-        while content.visibleItems.count < 2, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        await browser.listingTask?.value
+        XCTAssertEqual(content.visibleItems.count, 2, "the listing finished with both photos")
         let window = try XCTUnwrap(browser.window)
         let ring = browser.focusRing()
         XCTAssertEqual(ring.count, 4, "photos, search, sidebar and info panel: \(ring)")

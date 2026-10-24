@@ -59,10 +59,7 @@ final class BrowserInspectorLayoutTests: XCTestCase {
         defer { browser.close() }
         let window = try XCTUnwrap(browser.window)
         window.setContentSize(NSSize(width: 1280, height: 800))
-        let deadline = Date().addingTimeInterval(5)
-        while browser.contentController.visibleItems.count < 2, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await browser.listingTask?.value
         let items = browser.contentController.visibleItems
         XCTAssertEqual(items.count, 2)
         // Warm-up (first SwiftUI build of the pane).
@@ -91,10 +88,8 @@ final class BrowserInspectorLayoutTests: XCTestCase {
         defer { browser.close() }
         let window = try XCTUnwrap(browser.window)
         window.setContentSize(NSSize(width: 1280, height: 800))
-        let deadline = Date().addingTimeInterval(5)
-        while browser.contentController.visibleItems.count < 1, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await browser.listingTask?.value
+        XCTAssertEqual(browser.contentController.visibleItems.count, 1, "the listing finished with the photo")
         browser.contentController.selectAll()
         let pane = browser.inspectorForTesting.view
         var preview: InspectorPreviewImageView?

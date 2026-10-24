@@ -63,8 +63,7 @@ final class BrowserContextMenuTests: XCTestCase {
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
         defer { browser.close() }
         let content = browser.contentController
-        let deadline = Date().addingTimeInterval(5)
-        while content.visibleItems.count < 2, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        await browser.listingTask?.value
         XCTAssertEqual(content.visibleItems.count, 2)
         let menu = try XCTUnwrap(content.collectionViewForTesting.menu)
         let rename = try XCTUnwrap(menu.items.first { $0.title == "Rename…" })

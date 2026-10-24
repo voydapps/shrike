@@ -51,14 +51,21 @@ final class Audit1024LowsBTests: XCTestCase {
             CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
             XCTAssertTrue(CGImageDestinationFinalize(dest))
         }
+        let savedSortKey = Prefs.browserSortKey, savedSortAscending = Prefs.browserSortAscending
+        addTeardownBlock { @MainActor in
+            Prefs.browserSortKey = savedSortKey
+            Prefs.browserSortAscending = savedSortAscending
+        }
         Prefs.browserSortKey = "name"
         Prefs.browserSortAscending = true
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
         defer { browser.close() }
         let content = browser.contentController
-        let deadline = Date().addingTimeInterval(5)
-        while content.visibleItems.count < 4, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
-        content.select(url: dir.appendingPathComponent("b.jpg").standardizedFileURL)
+        // Wait for the listing itself, not a clock: on a cold CI runner the first listing took
+        // longer than any fixed budget, and Home / End on a grid with no items selects nothing.
+        await browser.listingTask?.value
+        XCTAssertEqual(content.visibleItems.count, 4, "the listing finished with all four photos")
+        XCTAssertTrue(content.select(url: dir.appendingPathComponent("b.jpg").standardizedFileURL))
         XCTAssertTrue(browser.handleKeySnapshot(KeyEventSnapshot(key: "", keyCode: 119)))
         XCTAssertEqual(content.selectedItems.map(\.displayName), ["d.jpg"], "End")
         XCTAssertTrue(browser.handleKeySnapshot(KeyEventSnapshot(key: "", keyCode: 115)))

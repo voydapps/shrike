@@ -224,10 +224,7 @@ final class PreferencesResetTests: XCTestCase {
         }
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: root)
         do {
-            let deadline = Date().addingTimeInterval(5)
-            while browser.contentController.visibleItems.map(\.url) != expected, Date() < deadline {
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            await browser.listingTask?.value
             XCTAssertEqual(browser.contentController.visibleItems.map(\.url), expected, "the Browser must contain the three owned fixture files")
             guard browser.contentController.visibleItems.map(\.url) == expected else {
                 throw NSError(domain: "PreferencesResetTests.ownedListing", code: 1)

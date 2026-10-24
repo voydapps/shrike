@@ -129,10 +129,7 @@ final class BrowserListedContentChangeTests: XCTestCase {
         try Data([0xFF, 0xD8, 0xFF]).write(to: url)
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
         defer { browser.close() }
-        let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline, browser.contentController.allItems.count != 1 {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        await browser.listingTask?.value
         XCTAssertEqual(browser.contentController.allItems.count, 1)
 
         FileAttributes.setRating(5, at: url)
