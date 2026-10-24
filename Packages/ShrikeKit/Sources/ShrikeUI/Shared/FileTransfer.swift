@@ -300,7 +300,7 @@ final class FileTransferCoordinator {
         }.value
         let alert = ShrikeAlert.make(
             message: FileTransferCopy.conflictTitle(existing.lastPathComponent, folder: conflict.destinationFolder),
-            information: FileTransferCopy.conflictMessage(alsoReplacing: conflict.otherFilesReplaced.map(\.lastPathComponent)),
+            information: FileTransferCopy.conflictMessage(alsoReplacing: conflict.allOtherFilesReplaced.map(\.lastPathComponent)),
             buttons: [.cancel("Skip"), ShrikeAlert.Button("Replace"), ShrikeAlert.Button("Keep Both", role: .default)]
         )
         let label = NSTextField(wrappingLabelWithString: details)

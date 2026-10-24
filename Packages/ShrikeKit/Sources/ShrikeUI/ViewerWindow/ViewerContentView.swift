@@ -557,6 +557,11 @@ public final class ViewerContentView: NSView {
         // Discard shows this again directly, with no
         // preview frame in between.
         imageBeforeEdit = imageView.image.map { ($0, imageView.sourceID, imageView.imageResourceLease, imageView.imageIsLazy) }
+        // A shown photo can be a lazy CGImage that reads its pixels from the file on first
+        // use. If another app changes the file while we edit, that read hits pages that are
+        // gone (a crash, 0.2.28 gate D1). Leaving edit checks this stamp first.
+        imageBeforeEditURL = url
+        imageBeforeEditStamp = url.flatMap { FileContentStamp.read($0) }
 
         // Parameter panel on the right, below the edit toolbar (the
         // safe area ends under the titlebar + toolbar in a window).
@@ -652,6 +657,18 @@ public final class ViewerContentView: NSView {
 
     /// The image on screen when edit mode began (restored on Discard).
     private var imageBeforeEdit: (CGImage, String?, ImageResourceLease?, Bool)?
+    private var imageBeforeEditURL: URL?
+    private var imageBeforeEditStamp: FileContentStamp?
+    /// Leaving edit mode found that the photo's file changed meanwhile. The window shows
+    /// the file's current pixels (a fresh decode) instead of the saved pre-edit image.
+    var onPreEditImageStale: (() -> Void)?
+    /// Test seam: the stamp read when the file is checked at exit.
+    var preEditFileChangedForTesting: Bool { preEditFileChanged() }
+
+    private func preEditFileChanged() -> Bool {
+        guard let url = imageBeforeEditURL, url.isFileURL else { return false }
+        return FileContentStamp.read(url) != imageBeforeEditStamp
+    }
 
     /// "Loading full image…" while edit mode waits for the full decode.
     private(set) lazy var editLoadingView: HUDSurfaceView = {
@@ -947,11 +964,21 @@ public final class ViewerContentView: NSView {
         onEditModeActiveChanged?(false)
         imageView.fileDragEnabled = true
         applyFitInsets()   // the rest fit area before the photo comes back
+        var staleOnExit = false
         if restoreImage, let (image, sourceID, lease, lazy) = imageBeforeEdit {
-            imageView.setImage(image, sourceID: sourceID, prepared: nil, resourceLease: lease, imageIsLazy: lazy)
-            histogram.imageShown(image, url: histogramURL)
+            if preEditFileChanged() {
+                // The saved image may read its pixels from a file that changed (smaller, or
+                // another photo): never touch it. A fresh decode of the file replaces it.
+                staleOnExit = true
+            } else {
+                imageView.setImage(image, sourceID: sourceID, prepared: nil, resourceLease: lease, imageIsLazy: lazy)
+                histogram.imageShown(image, url: histogramURL)
+            }
         }
         imageBeforeEdit = nil
+        imageBeforeEditURL = nil
+        imageBeforeEditStamp = nil
+        defer { if staleOnExit { onPreEditImageStale?() } }
         // Back to the viewer at fit, with no leftover zoom, pan or half-finished
         // animation from the edit canvas (its fit area had room for the tool column).
         imageView.zoomToFit()
@@ -1184,8 +1211,9 @@ public final class ViewerContentView: NSView {
         errorOverlay.isHidden = true
         addSubview(errorOverlay)
         NSLayoutConstraint.activate([
-            errorOverlay.topAnchor.constraint(equalTo: topAnchor),
-            errorOverlay.bottomAnchor.constraint(equalTo: bottomAnchor),
+            errorOverlay.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor),
+            // The card sits in the photo area, above a docked filmstrip, not under it.
+            errorOverlay.bottomAnchor.constraint(equalTo: imageView.bottomAnchor),
             errorOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
             errorOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
@@ -1527,6 +1555,8 @@ public final class ViewerContentView: NSView {
         editModeController.releaseAfterClose()
         isEditModeActive = false
         imageBeforeEdit = nil
+        imageBeforeEditURL = nil
+        imageBeforeEditStamp = nil
         releaseLivePhoto()
         histogram.reset()
         loupeView.sourceImage = nil

@@ -338,6 +338,13 @@ public struct BatchRunner: Sendable {
         plan.items.reduce(0) { Task.isCancelled || Header($1.primary) != nil ? $0 : $0 + 1 }
     }
 
+    /// The photos of the plan Shrike can't read (all of them are checked).
+    public func unreadablePhotos(in plan: BatchPlan) -> Set<URL> {
+        var bad = Set<URL>()
+        for item in plan.items where !Task.isCancelled && Header(item.primary) == nil { bad.insert(item.primary) }
+        return bad
+    }
+
     /// How many photos would be re-encoded over their own file if the user
     /// confirms (`overwritesOriginals`): the output folder is the photo's
     /// folder and the output keeps its name and format. The Batch window

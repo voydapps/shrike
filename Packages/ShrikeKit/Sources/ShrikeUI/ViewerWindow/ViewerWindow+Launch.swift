@@ -188,11 +188,25 @@ extension ViewerWindow {
     static func initialTextureLongEdge(frame: NSRect? = nil) -> Int {
         let pref = Prefs.maxDisplayLongEdge
         guard let screen = NSScreen.main else { return pref }
-        let visible = screen.visibleFrame.size
-        var size = frame?.size ?? savedFrameSize() ?? NSSize(width: 1200, height: 800)
+        return initialTextureLongEdge(frame: frame, visible: screen.visibleFrame.size,
+                                      scale: screen.backingScaleFactor, pref: pref)
+    }
+
+    /// The size a new viewer window is built at when nothing was saved: 1200 x 800 pt,
+    /// but never larger than the visible screen. The first layout and the early decode
+    /// (`initialTextureLongEdge`) must agree on this size, or a screen narrower than
+    /// 1200 pt decodes the first photo twice.
+    static func defaultWindowSize(visible: NSSize) -> NSSize {
+        NSSize(width: min(1200, visible.width), height: min(800, visible.height))
+    }
+
+    /// The same, with the screen given (tests simulate small and 1x screens).
+    static func initialTextureLongEdge(frame: NSRect?, visible: NSSize, scale: CGFloat, pref: Int,
+                                       defaultSizeForTesting: Bool = false) -> Int {
+        var size = frame?.size ?? (defaultSizeForTesting ? nil : savedFrameSize()) ?? defaultWindowSize(visible: visible)
         size.width = min(size.width, visible.width)
         size.height = min(size.height, visible.height)
-        let px = Int((max(size.width, size.height) * screen.backingScaleFactor).rounded(.up))
+        let px = Int((max(size.width, size.height) * scale).rounded(.up))
         return max(256, min(pref, px))
     }
 

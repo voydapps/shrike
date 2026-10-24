@@ -92,6 +92,11 @@ final class ErrorOverlayView: NSView {
     /// Below this card width the two buttons stack, each full width.
     static let stackButtonsBelow: CGFloat = 300
     private var buttonStack: NSStackView?
+    private var titleBelowGlyph: NSLayoutConstraint?
+    private var titleAtTop: NSLayoutConstraint?
+    /// Below this overlay height the warning glyph is left out so the card fits above a
+    /// docked filmstrip (a 340 pt window).
+    static let hideGlyphBelow: CGFloat = 250
     private var buttonStackFullWidth: [NSLayoutConstraint] = []
 
     private let title = NSTextField(labelWithString: "Can't open")
@@ -189,7 +194,13 @@ final class ErrorOverlayView: NSView {
             nextButton.widthAnchor.constraint(equalTo: buttons.widthAnchor),
             revealButton.widthAnchor.constraint(equalTo: buttons.widthAnchor),
         ]
+        titleBelowGlyph = title.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 12)
+        titleAtTop = title.topAnchor.constraint(equalTo: container.topAnchor, constant: 20)
+        let cardTop = container.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 4)
+        let cardBottom = container.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -4)
+        cardTop.priority = NSLayoutConstraint.Priority(rawValue: 495); cardBottom.priority = cardTop.priority
         NSLayoutConstraint.activate([
+            titleBelowGlyph!, cardTop, cardBottom,
             container.centerXAnchor.constraint(equalTo: centerXAnchor),
             container.centerYAnchor.constraint(equalTo: centerYAnchor),
             container.widthAnchor.constraint(lessThanOrEqualToConstant: Self.cardWidth),
@@ -200,7 +211,6 @@ final class ErrorOverlayView: NSView {
             icon.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             icon.widthAnchor.constraint(equalToConstant: 40),
             icon.heightAnchor.constraint(equalToConstant: 40),
-            title.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 12),
             title.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             body.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
             body.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
@@ -224,6 +234,18 @@ final class ErrorOverlayView: NSView {
         if abs(body.preferredMaxLayoutWidth - textWidth) > 0.5, textWidth > 0 {
             body.preferredMaxLayoutWidth = textWidth
             needsLayout = true
+        }
+        let compact = bounds.height > 0 && bounds.height < Self.hideGlyphBelow
+        if glyph?.isHidden != compact {
+            // Constraints change after this layout pass; a change inside it is not picked up.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let compactNow = self.bounds.height > 0 && self.bounds.height < Self.hideGlyphBelow
+                self.glyph?.isHidden = compactNow
+                self.titleBelowGlyph?.isActive = !compactNow
+                self.titleAtTop?.isActive = compactNow
+                self.needsLayout = true
+            }
         }
         if let stack = buttonStack, container.bounds.width > 0 {
             let narrow = container.bounds.width < Self.stackButtonsBelow

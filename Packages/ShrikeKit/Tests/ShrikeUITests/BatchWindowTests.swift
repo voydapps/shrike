@@ -152,6 +152,28 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertEqual(model.unreadableLine, "3 photos can't be read and will be skipped.")
     }
 
+    /// The Run button, the summary and the "Change N original photos?" question count only
+    /// the photos the run can process; the unreadable one is named in its own line.
+    func testCountsLeaveOutUnreadablePhotos() async throws {
+        let urls = try [jpeg("c1.jpg", in: "cnt"), jpeg("c2.jpg", in: "cnt")]
+        let bad = urls[0].deletingLastPathComponent().appendingPathComponent("c3-bad.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).write(to: bad)
+        let model = makeModel()
+        var form = BatchForm(); form.convertOn = false; form.resizeOn = false
+        form.renameOn = true; form.template = "pic-{counter}"; form.outputFolder = nil
+        model.form = form
+        model.add(groups(urls + [bad]))
+        await model.waitForPreview()
+        XCTAssertEqual(model.queue.count, 3)
+        XCTAssertEqual(model.unreadableCount, 1)
+        XCTAssertEqual(model.processableCount, 2)
+        XCTAssertEqual(model.unreadableLine, "1 photo can't be read and will be skipped.")
+        XCTAssertTrue(model.consequenceSummary.contains("2 original files"), model.consequenceSummary)
+        XCTAssertEqual(BatchModel.Copy.runButton(model.processableCount), "Run 2 Photos")
+        let plan = try XCTUnwrap(model.makePlan().plan)
+        XCTAssertEqual(model.originalsAtRisk(plan).count, 2)
+    }
+
     func testReviewRemainingPreservesNoncontiguousNamesWhileRunAnotherStartsFresh() async throws {
         let urls = try [jpeg("GPS.jpg"), jpeg("Coast.jpg"), jpeg("Gardener.jpg")]
         let sourceBytes = try urls.map { try Data(contentsOf: $0) }
@@ -425,6 +447,12 @@ final class BatchWindowTests: XCTestCase {
         await BatchUndo.lastTask?.value
         XCTAssertEqual(names(in: "trip2"), originals)
         XCTAssertFalse(batch.canUndoBatch)
+        // The Done screen says the batch was taken back and offers nothing that is gone.
+        XCTAssertTrue(batch.model.isUndone)
+        XCTAssertEqual(batch.model.resultTitle, "Batch undone")
+        XCTAssertEqual(batch.model.summary, "The changes were taken back.")
+        XCTAssertNil(batch.model.undoActionName)
+        XCTAssertTrue(batch.model.doneURLs.isEmpty)
         XCTAssertEqual(undo.undoActionName, "Other Change", "the batch's own undo is gone, the other stays")
         undo.undo()
         XCTAssertTrue(other.ran)

@@ -32,6 +32,25 @@ final class BrokenPhotoTests: XCTestCase {
         return url
     }
 
+    /// A 340 pt window leaves ~210 pt above the filmstrip: the card drops its glyph and
+    /// fits inside the overlay, both buttons visible.
+    func testCardInAShortAreaDropsTheGlyphAndFits() async throws {
+        let overlay = ErrorOverlayView(frame: NSRect(x: 0, y: 0, width: 240, height: 208))
+        overlay.configureRecovery(title: "Previous Photo", revealAvailable: true) {}
+        for _ in 0..<5 {
+            overlay.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        XCTAssertEqual(overlay.glyph?.isHidden, true)
+        let card = overlay.cardFrameForTesting
+        XCTAssertGreaterThanOrEqual(card.minY, -0.5)
+        XCTAssertLessThanOrEqual(card.maxY, 208.5)
+        XCTAssertFalse(overlay.revealButton.isHidden)
+        let tall = ErrorOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        tall.layoutSubtreeIfNeeded()
+        XCTAssertEqual(tall.glyph?.isHidden, false)
+    }
+
     func testErrorCardTextWrapsInsideTheCardAndHasTwoButtons() {
         let overlay = ErrorOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         overlay.layoutSubtreeIfNeeded()

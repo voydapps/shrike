@@ -42,7 +42,7 @@ enum SaveCopy {
 
     /// FS-7: the file changed on disk while it was open in edit mode.
     static func changedOnDiskTitle(_ name: String) -> String { "“\(name)” changed while you were editing it." }
-    static let changedOnDiskMessage = "Another app changed this file after you started editing. Saving applies your edits to the new version, not to the picture you edited."
+    static let changedOnDiskMessage = "Another app changed this file after you started editing. Saving applies your edits to the new version, not to the photo you edited."
 
     /// A5 title / message.
     static func backupFailedTitle(_ name: String) -> String { "Shrike didn't save “\(name)”." }

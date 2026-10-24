@@ -45,7 +45,7 @@ struct EditingTab: View {
                 QualityRow(title: "HEIC quality", value: store.editHEICQuality)
                 Toggle("Keep metadata when saving", isOn: store.editPreserveEXIFOnSave)
                 Toggle("Remove location when saving", isOn: store.editStripGPSOnSave)
-                Text("Some basic edits use 8-bit colour. When conversion is needed, Save Copy protects the higher-precision original.")
+                Text("Some basic edits use 8-bit colour. When conversion is needed, Save Copy… protects the higher-precision original.")
                     .font(.system(size: ChromeTypography.size(12))).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } header: {
                 Text("Saving").font(.headline)

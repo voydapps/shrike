@@ -29,12 +29,16 @@
 - Compare uses clearer words, and its options are in View > Compare Options.
 - While you edit, the info panel steps aside. It comes back when you finish, unless you opened it yourself.
 - The viewer title bar is a soft, see-through band.
-- Rating items in the menu read as words, such as Rate 3 Stars.
+- VoiceOver reads the rating items in the menu as words, such as Rate 3 Stars.
 - In the Browser, the window can be narrower when the side panes are hidden.
 - In the info panel, mixed tags show how many photos have each tag.
 - Reduce Motion is respected in the full-screen animation.
 
 ### Fixed
+- Shrike no longer quits when you leave an edit without saving after another app changed the photo. It shows the photo as it is now.
+- Batch counts (Run N Photos and the question before it changes your originals) leave out photos Shrike can't read. After Undo Batch, the done screen says the batch was undone.
+- The Replace question names every file that goes to the Trash.
+- The "Can't open" card fits above the filmstrip in a small window, and Reveal in Finder shows when the broken photo is the first one you open.
 - Revert brings back the right photo, even after a photo was replaced.
 - Undo Copy never deletes a different file with the same name.
 - If you type a tag after you click a colour tag, the colour tag stays.
@@ -44,7 +48,7 @@
 - A photo that was skipped on purpose can be selected in Batch's done screen. Batch rows are listed in order, and Undo Batch is one of the done actions.
 - The tag filter has a Tags row, also when you open it from the toolbar. It says so when there are no tags.
 - Quitting during a save waits for the save and says so.
-- The zoom label only shows when you zoom. The page counter is gone.
+- The zoom label only shows when you zoom.
 - The info panel for a selection whose first photo cannot be read shows a neutral stack, not "Can't preview".
 - In the editor, the photo fits above the note about saving, and the buttons keep their size.
 - VoiceOver reads the info panel, the rating and the tag chips with clear names.

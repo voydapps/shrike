@@ -350,7 +350,7 @@ struct BatchFormView: View {
             Spacer(minLength: 12)
             Button("Cancel", action: actions.cancel)
                 .keyboardShortcut(.cancelAction)
-            Button(model.reviewingRemaining ? "Retry \(model.queue.count) Remaining \(model.queue.count == 1 ? "Photo" : "Photos")" : BatchModel.Copy.runButton(model.queue.count)) {
+            Button(model.reviewingRemaining ? "Retry \(model.queue.count) Remaining \(model.queue.count == 1 ? "Photo" : "Photos")" : BatchModel.Copy.runButton(model.processableCount)) {
                 let event = BatchReturnPolicy.currentEvent
                 let window = BatchReturnPolicy.currentWindow
                 if BatchReturnPolicy.returnShouldOnlyCommitField(event: event, firstResponder: window?.firstResponder) {
@@ -751,7 +751,9 @@ struct BatchDoneView: View {
     /// under it, in the same column and at the same top as the running view.
     private var calm: some View {
         VStack(alignment: .leading, spacing: 12) {
-            titleRow(icon: "checkmark.circle.fill", color: Color(nsColor: .systemGreen), text: model.summary)
+            titleRow(icon: model.isUndone ? "arrow.uturn.backward.circle" : "checkmark.circle.fill",
+                     color: model.isUndone ? Color(nsColor: .secondaryLabelColor) : Color(nsColor: .systemGreen),
+                     text: model.isUndone ? model.resultTitle + "\n" + model.summary : model.summary)
             folderLink
         }
         .batchColumn()

@@ -269,7 +269,9 @@ public final class ViewerWindow: NSWindow {
 
         // A generous default size; the user can fullscreen with `F` or ⌃⌘F.
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let size = NSSize(width: 1200, height: 800)
+        // Not wider than the screen: the early decode (initialTextureLongEdge) sizes the
+        // first texture for this same frame, so a small screen decodes the photo once.
+        let size = Self.defaultWindowSize(visible: screenFrame.size)
         let origin = NSPoint(
             x: screenFrame.midX - size.width / 2,
             y: screenFrame.midY - size.height / 2
@@ -324,6 +326,11 @@ public final class ViewerWindow: NSWindow {
         // Edit mode on a narrow canvas: the inspector steps aside (spec 26 §5).
         contentRoot.onEditModeActiveChanged = { [weak self] active in
             self?.editModeLayoutChanged(active: active)
+        }
+        // Another app changed the photo's file during the edit: the pre-edit image is not put
+        // back; the file's current pixels are decoded fresh (0.2.28 gate D1).
+        contentRoot.onPreEditImageStale = { [weak self] in
+            self?.redrawDisplayedKeepingView(fit: true)
         }
         // 0.2.10 audit item 3: a resize that bypasses `contentMinSize` (a programmatic
         // or Accessibility `setFrame`) must not leave edit mode under 648 pt.

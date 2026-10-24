@@ -317,6 +317,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
               let launcher, let undo = launcher.undoManager else { return }
         let runner = model.runner
         let toast = launcherToast
+        let model = self.model
         let gate = UndoOnce()
         undoOnce = gate
         // The gate is the undo's own target (the handler keeps it alive), so
@@ -325,7 +326,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         undo.registerUndo(withTarget: gate) { [gate] _ in
             MainActor.assumeIsolated {
                 guard gate.take() else { return }
-                BatchUndo.run(runner: runner, result: result, toast: toast)
+                BatchUndo.run(runner: runner, result: result, toast: toast) { model.markUndone() }
             }
         }
         undo.setActionName(name)
@@ -347,7 +348,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         guard canUndoBatch, let result = model.result, let gate = undoOnce, gate.take() else { return }
         // Edit > Undo would otherwise still offer this batch (audit on-screen L6).
         launcher?.undoManager?.removeAllActions(withTarget: gate)
-        BatchUndo.run(runner: model.runner, result: result, toast: launcherToast)
+        BatchUndo.run(runner: model.runner, result: result, toast: launcherToast) { [model] in model.markUndone() }
     }
 
     // MARK: Done view actions
@@ -501,12 +502,14 @@ enum BatchUndo {
     /// The last undo's work (tests wait on it).
     static var lastTask: Task<Void, Never>?
 
-    static func run(runner: BatchRunner, result: BatchResult, toast: (@MainActor @Sendable (String) -> Void)?) {
+    static func run(runner: BatchRunner, result: BatchResult, toast: (@MainActor @Sendable (String) -> Void)?,
+                    onUndone: (@MainActor () -> Void)? = nil) {
         let previous = lastTask
         lastTask = Task { @MainActor in
             await previous?.value
             do {
                 try await runner.undo(result)
+                onUndone?()
             } catch {
                 toast?(BatchWindowController.Copy.undoFailed)
             }

@@ -258,6 +258,16 @@ public struct FileConflict: Sendable, Hashable {
         return all.filter { !clashing.contains($0.lastPathComponent.lowercased()) }
     }
 
+    /// Every file Replace moves to the Trash besides the one the alert names: the other
+    /// clashing files of the group (a RAW and a sidecar that clash too) and
+    /// `otherFilesReplaced`. The alert lists them all, so it never says "the existing
+    /// file" when more than one goes.
+    public var allOtherFilesReplaced: [URL] {
+        let primary = existingPrimary?.lastPathComponent.lowercased()
+        let clashingOthers = existing.filter { $0.lastPathComponent.lowercased() != primary }
+        return clashingOthers + otherFilesReplaced
+    }
+
     /// The existing file that matches the incoming primary, if any.
     public var existingPrimary: URL? {
         existing.first { $0.lastPathComponent.caseInsensitiveCompare(incoming.primary.lastPathComponent) == .orderedSame }

@@ -235,13 +235,21 @@ final class LaunchOpenSpeedTests: XCTestCase {
     /// before the window is ordered front (no empty first frame).
     func testReadyTextureIsOnTheCanvasBeforeOrderFront() async throws {
         let url = try writeJPEG("big.jpg", width: 2400, height: 1600)
-        DecodeHandoff.shared.start(url: url, targetLongEdge: Prefs.maxDisplayLongEdge,
+        // The early decode is made at the size the new viewer's queue asks
+        // for, as `WindowCoordinator.startEarlyDecode` does. Both read the
+        // same saved viewer frame (no frame hint here). Made at the
+        // max-long-edge pref instead, it only fit a 2x screen (1200 pt x 2
+        // = this file's 2400 px); on a 1x screen (the 1024 x 768 CI
+        // runner) the queue wants 1024 px, drops the 4096 px entry as
+        // oversize and decodes the photo again, and this test then
+        // timed that second decode.
+        let edge = ViewerWindow.initialTextureLongEdge()
+        DecodeHandoff.shared.start(url: url, targetLongEdge: edge,
                                    preparer: DisplayTextureFactory.preparer)
-        // The early decode finishes (on the 3-CPU runner it took longer
-        // than the fixed 400 ms this used to sleep). Waiting for its box
-        // does not touch the decode the viewer's queue claims.
+        // The early decode finishes. Waiting for its box does not touch
+        // the decode the viewer's queue claims.
         let finished = await Task.detached {
-            DecodeHandoff.shared.waitForFinished(url: url, target: Prefs.maxDisplayLongEdge,
+            DecodeHandoff.shared.waitForFinished(url: url, target: edge,
                                                  deadline: .now() + .seconds(30)) != nil
         }.value
         XCTAssertTrue(finished, "the early decode finished")
@@ -257,6 +265,8 @@ final class LaunchOpenSpeedTests: XCTestCase {
         let readyMs = ms(start)
         print("[ready photo] init \(fmt(initMs)) ms, ready photo on the canvas at \(fmt(readyMs)) ms")
         XCTAssertTrue(painted)
+        let spawned = await viewer.navigationForTesting.decodeQueue.spawnedIndicesForTesting()
+        XCTAssertEqual(spawned, [0], "the early decode is the one shown; the queue did not decode the photo again")
         XCTAssertTrue(viewer.imageViewForTesting.hasTextureForTesting, "the texture is set before order front")
         XCTAssertEqual(viewer.displayedItem?.listIndex, 0)
         XCTAssertGreaterThan(viewer.imageViewForTesting.drawableSizeForTesting.width, 1,

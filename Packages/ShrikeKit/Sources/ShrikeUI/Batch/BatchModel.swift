@@ -138,7 +138,11 @@ public final class BatchModel: ObservableObject {
 
     /// Queued photos the preview already knows Shrike can't read (they are skipped at run time).
     /// Counted over the whole queue, not only the preview's first rows.
-    @Published public private(set) var unreadableCount = 0
+    @Published public private(set) var unreadablePhotos: Set<URL> = []
+    public var unreadableCount: Int { unreadablePhotos.count }
+    /// Queued photos the run can process: the counts in the Run button, the summary and the
+    /// "Change N original photos?" question leave out the unreadable ones (they are skipped).
+    public var processableCount: Int { max(0, queue.count - unreadableCount) }
     public var unreadableLine: String? {
         let n = unreadableCount
         guard n > 0 else { return nil }
@@ -167,6 +171,14 @@ public final class BatchModel: ObservableObject {
 
     @Published public private(set) var result: BatchResult?
     @Published public private(set) var summary = ""
+    /// The run was taken back (Undo Batch or Edit > Undo). The Done screen says so and no
+    /// longer offers Undo Batch or the files that were taken back.
+    @Published public private(set) var isUndone = false
+    public func markUndone() {
+        guard phase == .done, result != nil, !isUndone else { return }
+        isUndone = true
+        summary = "The changes were taken back."
+    }
     @Published public private(set) var skippedRows: [SkippedRow] = []
     @Published public var selectedResultRows: Set<URL> = []
 
@@ -210,7 +222,7 @@ public final class BatchModel: ObservableObject {
                 return lead + " Remaining work may change \(n == 1 ? "the original file" : "original files"). " + recovery
             }
         }
-        let n = queue.count
+        let n = processableCount
         if form.writesToFolder, overwriteCount > 0 {
             return "Create \(n) \(n == 1 ? "photo" : "photos") in \(outputFolder.map(UserFacingPath.string) ?? "the output folder"). "
                 + overwriteSentence + " " + recovery
@@ -231,6 +243,7 @@ public final class BatchModel: ObservableObject {
     }
     public var resultTitle: String {
         guard let result else { return "Batch" }
+        if isUndone { return "Batch undone" }
         if result.cancelledCount > 0 { return "Batch stopped" }
         if result.doneCount == 0 && result.failedCount > 0 { return "No photos completed" }
         return skippedRows.isEmpty ? "Batch complete" : "Batch finished with issues"
@@ -258,7 +271,7 @@ public final class BatchModel: ObservableObject {
     public func runAnother() {
         guard phase == .done || reviewingRemaining else { return }
         remainingPlan = nil; reviewingRemaining = false
-        queue = []; selection = []; result = nil; skippedRows = []; summary = ""; phase = .form
+        queue = []; selection = []; result = nil; skippedRows = []; summary = ""; isUndone = false; phase = .form
         schedulePreview()
     }
 
@@ -448,7 +461,7 @@ public final class BatchModel: ObservableObject {
         templateError = built.templateError
         guard let plan = built.plan, !queue.isEmpty else {
             previewRows = []
-            unreadableCount = 0
+            unreadablePhotos = []
             moreCount = 0
             validationMessage = nil
             return
@@ -460,10 +473,10 @@ public final class BatchModel: ObservableObject {
             // Show the names a confirmed run would use.
             var confirmed = plan
             confirmed.overwritesOriginals = true
-            let (rows, validation, disclosures, overwrites) = await Self.evaluate(confirmed, runner: runner)
-            let unreadable = await Self.countUnreadable(confirmed, runner: runner)
+            let unreadable = await Self.findUnreadable(confirmed, runner: runner)
+            let (rows, validation, disclosures, overwrites) = await Self.evaluate(confirmed, runner: runner, skipping: unreadable)
             guard let self, !Task.isCancelled, generation == self.previewGeneration else { return }
-            self.unreadableCount = unreadable
+            self.unreadablePhotos = unreadable
             self.conversionDisclosures = disclosures
             self.overwriteCount = overwrites
             self.previewRows = rows
@@ -474,15 +487,16 @@ public final class BatchModel: ObservableObject {
     }
 
     @concurrent
-    nonisolated static func countUnreadable(_ plan: BatchPlan, runner: BatchRunner) async -> Int {
-        runner.unreadableCount(in: plan)
+    nonisolated static func findUnreadable(_ plan: BatchPlan, runner: BatchRunner) async -> Set<URL> {
+        runner.unreadablePhotos(in: plan)
     }
 
     @concurrent
-    nonisolated static func evaluate(_ plan: BatchPlan, runner: BatchRunner) async
+    nonisolated static func evaluate(_ plan: BatchPlan, runner: BatchRunner, skipping unreadable: Set<URL> = []) async
         -> ([BatchPreviewRow], BatchValidationError?, [String], Int) {
         let rows = await runner.preview(plan, limit: previewLimit)
-        let overwrites = runner.originalsOverwritten(by: plan)
+        // A photo that can't be read is skipped, so it never overwrites anything.
+        let overwrites = runner.groupsOverwritten(by: plan).filter { !unreadable.contains($0.primary) }.count
         var disclosures = Set<String>()
         if plan.convert != nil || plan.resize != nil || !(plan.recipe?.isEmpty ?? true) {
             let sizes = await headerSizes(plan.items.map(\.primary))
@@ -654,8 +668,10 @@ public final class BatchModel: ObservableObject {
     /// file is the photo's own file (the runner compares case-folded paths).
     func originalsAtRisk(_ plan: BatchPlan) -> [ImageGroup] {
         switch plan.output {
-        case .inPlace: return plan.items
-        case .folder: return overwriteCount > 0 ? runner.groupsOverwritten(by: plan) : []
+        case .inPlace: return plan.items.filter { !unreadablePhotos.contains($0.primary) }
+        case .folder:
+            return overwriteCount > 0
+                ? runner.groupsOverwritten(by: plan).filter { !unreadablePhotos.contains($0.primary) } : []
         }
     }
 
@@ -775,6 +791,7 @@ public final class BatchModel: ObservableObject {
             return
         }
         result = final
+        isUndone = false
         summary = Self.summary(final, verb: Self.verb(for: plan))
         skippedRows = final.items.compactMap { item in
             switch item.outcome {
@@ -811,6 +828,7 @@ public final class BatchModel: ObservableObject {
         guard phase == .done else { return }
         phase = .form
         result = nil
+        isUndone = false
         summary = ""
         skippedRows = []
         completed = 0
@@ -885,7 +903,8 @@ public final class BatchModel: ObservableObject {
 
     /// Files the run made or changed (Show in Finder).
     public var doneURLs: [URL] {
-        result?.items.compactMap { if case .done(let url) = $0.outcome { return url }; return $0.isPartial ? $0.finalURL : nil } ?? []
+        if isUndone { return [] }
+        return result?.items.compactMap { if case .done(let url) = $0.outcome { return url }; return $0.isPartial ? $0.finalURL : nil } ?? []
     }
 
     /// Folders to open in Shrike: the Output folder, or the folders of
@@ -915,7 +934,7 @@ public final class BatchModel: ObservableObject {
     /// "Batch Rename" / "Batch Rotate" / "Batch Rotate and Rename", or nil
     /// when the run left nothing to undo in place.
     public var undoActionName: String? {
-        guard let plan = lastPlan, let result, result.canUndo else { return nil }
+        guard !isUndone, let plan = lastPlan, let result, result.canUndo else { return nil }
         if result.items.contains(where: { $0.recoveryRequired != nil }) { return "Batch Changes" }
         if case .folder = plan.output, plan.convert != nil || plan.resize != nil { return result.replacedOriginals.isEmpty ? nil : "Batch Changes" }
         let rotated = !result.rotations.isEmpty

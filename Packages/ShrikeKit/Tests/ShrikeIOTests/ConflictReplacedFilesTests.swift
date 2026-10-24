@@ -47,4 +47,21 @@ final class ConflictReplacedFilesTests: XCTestCase {
                                     existing: [jpg], destinationFolder: dest, remainingConflicts: 0)
         XCTAssertTrue(conflict.otherFilesReplaced.isEmpty)
     }
+
+    /// A full group replacing a full group: all three clash, so all three go; the alert
+    /// must name the two besides the primary (gate 0.2.28: it said "the existing file").
+    func testFullGroupOnFullGroupNamesEveryOtherFile() throws {
+        let dest = tmp.url.appendingPathComponent("dest", isDirectory: true)
+        try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+        var existing: [URL] = []
+        for name in ["IMG_9001.JPG", "IMG_9001.CR2", "IMG_9001.xmp", "IMG_9002.JPG"] {
+            let url = dest.appendingPathComponent(name)
+            try Data([1]).write(to: url)
+            if name.hasPrefix("IMG_9001") { existing.append(url) }
+        }
+        let incoming = ImageGroup(primary: tmp.url.appendingPathComponent("IMG_9001.JPG"))
+        let conflict = FileConflict(incoming: incoming, existing: existing, destinationFolder: dest, remainingConflicts: 0)
+        XCTAssertTrue(conflict.otherFilesReplaced.isEmpty, "all of them clash; none is only 'also' replaced")
+        XCTAssertEqual(conflict.allOtherFilesReplaced.map(\.lastPathComponent).sorted(), ["IMG_9001.CR2", "IMG_9001.xmp"])
+    }
 }

@@ -47,4 +47,30 @@ final class ViewerFirstTextureSizeTests: XCTestCase {
         XCTAssertEqual(ViewerWindow.takeInitialTextureLongEdge(), ViewerWindow.initialTextureLongEdge(frame: hint))
         XCTAssertNil(ViewerWindow.nextFrameHint, "one use")
     }
+
+    /// A screen narrower than 1200 pt (the 1024 x 768 CI runner, a small laptop): the
+    /// window is built at the screen's size, and the early decode asks for exactly that
+    /// size, so the first layout needs nothing larger and the photo is decoded once.
+    func testSmallScreenBuildsTheWindowAndTheEarlyDecodeForTheSameSize() {
+        let visible = NSSize(width: 1024, height: 700)
+        let window = ViewerWindow.defaultWindowSize(visible: visible)
+        XCTAssertEqual(window, NSSize(width: 1024, height: 700), "clamped to the screen")
+        for scale in [CGFloat(1), 2] {
+            let early = ViewerWindow.initialTextureLongEdge(frame: nil, visible: visible, scale: scale, pref: 4096,
+                                                            defaultSizeForTesting: true)
+            XCTAssertEqual(early, Int(1024 * scale), "early decode = the window's long edge at the screen's scale")
+        }
+        // A big screen keeps the generous default.
+        let big = ViewerWindow.defaultWindowSize(visible: NSSize(width: 2560, height: 1400))
+        XCTAssertEqual(big, NSSize(width: 1200, height: 800))
+    }
+
+    func testNewViewerIsNeverWiderThanTheScreen() throws {
+        guard let screen = NSScreen.main else { throw XCTSkip("no screen") }
+        let services = ShrikeServices.makeDefault()
+        let viewer = ViewerWindow(groups: [], startIndex: 0, services: services)
+        defer { viewer.close() }
+        XCTAssertLessThanOrEqual(viewer.frame.width, screen.visibleFrame.width + 0.5)
+        XCTAssertLessThanOrEqual(viewer.frame.height, screen.visibleFrame.height + 0.5)
+    }
 }
