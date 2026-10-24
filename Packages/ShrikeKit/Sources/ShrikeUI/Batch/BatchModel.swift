@@ -211,6 +211,9 @@ public final class BatchModel: ObservableObject {
         if result.doneCount == 0 && result.failedCount > 0 { return "No photos completed" }
         return skippedRows.isEmpty ? "Batch complete" : "Batch finished with issues"
     }
+    /// The Done view's hint about selecting skips is only useful when some
+    /// skip was on purpose (not "Cancelled." or an unreadable file).
+    public var hasIntentionalSkips: Bool { result?.hasIntentionalSkips ?? false }
     public var canReviewRemaining: Bool {
         guard let result, let lastPlan else { return false }
         return !runner.retryPlan(for: result, original: lastPlan, selectedIntentionalSkips: selectedResultRows).items.isEmpty
@@ -235,9 +238,20 @@ public final class BatchModel: ObservableObject {
         schedulePreview()
     }
 
-    public init(runner: BatchRunner, presetStore: BatchPresetStore = BatchPresetStore()) {
+    /// The settings of the last run, as one `BatchPreset` (JSON). A new
+    /// window starts from them, so a Custom setup is not lost.
+    static let lastFormKey = "shrike.batch.lastForm"
+    private let defaults: UserDefaults
+
+    public init(runner: BatchRunner, presetStore: BatchPresetStore = BatchPresetStore(),
+                defaults: UserDefaults = ShrikeDefaults.store) {
         self.runner = runner
         self.presetStore = presetStore
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.lastFormKey),
+           let saved = try? JSONDecoder().decode(BatchPreset.self, from: data) {
+            apply(saved)
+        }
         Task { [weak self] in await self?.reloadPresets() }
     }
 
@@ -581,10 +595,19 @@ public final class BatchModel: ObservableObject {
         return "\(base) · \(etaText)"
     }
 
+    /// Remembers the form for the next Batch window. The output folder is
+    /// not kept (a new window offers its own default).
+    func rememberForm() {
+        var saved = preset(named: "")
+        saved.outputFolderPath = nil
+        if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: Self.lastFormKey) }
+    }
+
     public func run() {
         guard canRun else { return }
         let built = makePlan()
         guard let plan = built.plan else { return }
+        rememberForm()
         lastPlan = plan
         result = nil
         let stop = BatchStop()
@@ -711,8 +734,13 @@ public final class BatchModel: ObservableObject {
     /// "Done. 40 images converted, 2 skipped."
     static func summary(_ result: BatchResult, verb: String) -> String {
         let partial = result.items.filter(\.isPartial).count
-        let failed = result.items.filter { if case .failed = $0.outcome { return !$0.isPartial }; return false }.count
-        let skipped = result.items.filter { if case .skipped(let why) = $0.outcome { return why != .cancelled && !$0.isPartial }; return false }.count
+        let failed = result.items.filter {
+            switch $0.outcome {
+            case .failed, .skipped(.unreadable): return !$0.isPartial
+            default: return false
+            }
+        }.count
+        let skipped = result.items.filter { if case .skipped(let why) = $0.outcome { return why != .cancelled && why != .unreadable && !$0.isPartial }; return false }.count
         return [(result.doneCount, "completed"), (partial, "partially changed"), (failed, "failed"),
                 (skipped, "skipped"), (result.cancelledCount, "not processed")]
             .filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }.joined(separator: " · ")

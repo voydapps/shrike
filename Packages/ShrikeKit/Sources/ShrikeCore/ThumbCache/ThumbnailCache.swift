@@ -213,6 +213,12 @@ public actor ThumbnailCache {
         }
     }
 
+    /// The ticker sleeps 60 s per round: without this a dropped cache's task
+    /// would linger until its next wake-up.
+    deinit { evictionTicker?.cancel() }
+
+    var evictionTickerForTesting: Task<Void, Never>? { evictionTicker }
+
     // MARK: - Decode slot semaphore
 
     /// Queues for a slot (caller checked none is free). Returns false when
@@ -704,6 +710,21 @@ public actor ThumbnailCache {
                 _ = disk.removeFile(shard.appendingPathComponent(name), token: token)
             }
         }.value
+    }
+
+    /// `evict(url:)` unless the thumbnail on hand is for the file as it is now.
+    /// The key holds path, mtime and size; a rating, flag or tag (an extended
+    /// attribute) changes none of them. Returns whether it evicted.
+    @discardableResult
+    public func evictIfContentChanged(url: URL) async -> Bool {
+        // A fresh URL: Foundation caches resource values on the instance.
+        let stem = Self.keyStem(for: FileImageSource(url: URL(fileURLWithPath: url.path)))
+        let shard = diskRoot.appendingPathComponent(String(stem.prefix(2)), isDirectory: true)
+        let onDisk = ((try? FileManager.default.contentsOfDirectory(atPath: shard.path)) ?? [])
+            .contains { $0.hasPrefix(stem) }
+        if onDisk || memory.contains(keyPrefix: stem) { return false }
+        await evict(url: url)
+        return true
     }
 
     /// Sets the disk-tier ceiling. Takes effect at once: if the cache is

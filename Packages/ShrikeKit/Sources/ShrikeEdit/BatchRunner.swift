@@ -166,6 +166,12 @@ public enum BatchSkipReason: Sendable, Hashable {
     /// The rename template rendered an empty name.
     case emptyName
 
+    /// Review Remaining picks these up on its own (the user did not choose
+    /// to skip them). The other skips are on purpose; the user may select them.
+    public var isRetriedAutomatically: Bool {
+        self == .cancelled || self == .unreadable || self == .diskFull
+    }
+
     /// The text shown to the user.
     public var message: String {
         switch self {
@@ -248,7 +254,19 @@ public struct BatchResult: Sendable {
 
     public var doneCount: Int { items.filter { if case .done = $0.outcome { return true }; return false }.count }
     public var skippedCount: Int { items.count - doneCount }
-    public var failedCount: Int { items.filter { if case .failed = $0.outcome { return true }; return $0.isPartial }.count }
+    /// A file Shrike could not read counts as failed, not as a skip.
+    public var failedCount: Int {
+        items.filter {
+            switch $0.outcome {
+            case .failed, .skipped(.unreadable): return true
+            default: return $0.isPartial
+            }
+        }.count
+    }
+    /// Skipped on purpose and not picked up by Review Remaining on its own.
+    public var hasIntentionalSkips: Bool {
+        items.contains { if case .skipped(let why) = $0.outcome { return !why.isRetriedAutomatically && !$0.isPartial }; return false }
+    }
     public var cancelledCount: Int { items.filter { if case .skipped(.cancelled) = $0.outcome { return true }; return false }.count }
     /// Only in-place work can be undone.
     public var canUndo: Bool { !renames.isEmpty || !rotations.isEmpty || !replacedOriginals.isEmpty }
@@ -314,7 +332,7 @@ public struct BatchRunner: Sendable {
             case .done: return false
             case .failed: return true
             case .skipped(let reason): return includingIntentionalSkips || selectedIntentionalSkips.contains(item.source.primary)
-                || reason == .cancelled || reason == .unreadable || reason == .diskFull || item.isPartial
+                || reason.isRetriedAutomatically || item.isPartial
             }
         }
         // Results arrive in worker-completion order. Recovery is still the

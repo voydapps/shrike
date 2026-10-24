@@ -26,6 +26,7 @@ final class BatchWindowTests: XCTestCase {
     private var backups: BackupStore!
 
     override func setUp() async throws {
+        ShrikeDefaults.store.removeObject(forKey: BatchModel.lastFormKey)
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("shrike-batch-ui-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -34,6 +35,7 @@ final class BatchWindowTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        ShrikeDefaults.store.removeObject(forKey: BatchModel.lastFormKey)
         if let current = BatchWindowController.current {
             await current.model.waitForRun()
             current.close()

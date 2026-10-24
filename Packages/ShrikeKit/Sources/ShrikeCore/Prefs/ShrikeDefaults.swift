@@ -46,6 +46,17 @@
 
 import Foundation
 
+#if !DEBUG
+/// Release builds (the shipped app) have no test machinery: the store is
+/// `UserDefaults.standard`. The test store below is compiled in Debug only
+/// (`swift test` and the Debug app build), which saves about 14 KB in the
+/// app. Tests must therefore run in Debug; a Release test run would write
+/// into the real `app.shrike` domain.
+public enum ShrikeDefaults {
+    // UserDefaults isn't Sendable in the SDK; Foundation locks internally.
+    nonisolated(unsafe) public static let store: UserDefaults = .standard
+}
+#else
 public enum ShrikeDefaults {
 
     /// Name prefix of the old per-process suites in `~/Library/Preferences`
@@ -306,3 +317,4 @@ final class InMemoryTestDefaults: UserDefaults {
 
     override func synchronize() -> Bool { true }
 }
+#endif

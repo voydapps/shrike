@@ -12,11 +12,13 @@ import UniformTypeIdentifiers
 final class AuditRemediationTests: XCTestCase {
     private var root: URL!
     override func setUp() async throws {
+        ShrikeDefaults.store.removeObject(forKey: BatchModel.lastFormKey)
         root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-remediation-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         Prefs.resetAll(); CompareWindow.presentsWindows = false
     }
     override func tearDown() async throws {
+        ShrikeDefaults.store.removeObject(forKey: BatchModel.lastFormKey)
         ContactSheetSheet.previewRendererForTesting = nil
         CullingUndo.beforeWriteForTesting = nil
         await CullingUndo.waitForPendingWrites()

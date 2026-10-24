@@ -110,4 +110,53 @@ final class ThumbnailCacheEvictTests: XCTestCase {
         let empty = await cache.currentDiskBytes()
         XCTAssertEqual(empty, 0)
     }
+
+    func testEvictIfContentChanged_keepsThumbnailOnAttributeWrite_dropsOnContentChange() async throws {
+        let tmp = TempDir("thumb-evict-xattr")
+        defer { tmp.cleanup() }
+        let cacheRoot = tmp.url.appendingPathComponent("cache")
+        let cache = try ThumbnailCache(diskURL: cacheRoot)
+        let url = try copyFixture("small.jpg", to: tmp.url, as: "x.jpg")
+        let source = FileImageSource(url: url)
+        _ = try await cache.thumbnail(for: source, maxPixelSize: 64)
+        await cache.waitForPendingDiskWrites()
+        let prefix = ThumbnailCache.pathPrefix(for: source)
+
+        // A rating / flag / tag is an extended attribute.
+        XCTAssertEqual(setxattr(url.path, "com.apple.metadata:test", "5", 1, 0, 0), 0)
+        let evictedByAttribute = await cache.evictIfContentChanged(url: url)
+        XCTAssertFalse(evictedByAttribute)
+        XCTAssertNotNil(cache.cachedThumbnail(for: source, maxPixelSize: 64))
+        XCTAssertEqual(diskFiles(cacheRoot, prefix: prefix).count, 1)
+
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd(); try handle.write(contentsOf: Data([0, 0, 0])); try handle.close()
+        let evictedByContent = await cache.evictIfContentChanged(url: url)
+        XCTAssertTrue(evictedByContent)
+        XCTAssertEqual(diskFiles(cacheRoot, prefix: prefix), [])
+    }
+
+    func testDroppedCache_endsItsEvictionTicker() async throws {
+        let tmp = TempDir("thumb-ticker")
+        defer { tmp.cleanup() }
+        var cache: ThumbnailCache? = try ThumbnailCache(diskURL: tmp.url.appendingPathComponent("cache"))
+        weak var weakCache = cache
+        var ticker: Task<Void, Never>?
+        for _ in 0..<200 where ticker == nil {
+            ticker = await cache?.evictionTickerForTesting
+            if ticker == nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        }
+        let task = try XCTUnwrap(ticker)
+        cache = nil
+        for _ in 0..<50 where weakCache != nil { await Task.yield() }
+        XCTAssertNil(weakCache)
+        let ended = await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await task.value; return true }
+            group.addTask { try? await Task.sleep(nanoseconds: 5_000_000_000); return false }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        XCTAssertTrue(ended, "the ticker should stop when its cache goes away")
+    }
 }

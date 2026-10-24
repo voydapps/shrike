@@ -135,7 +135,7 @@ struct BatchFormView: View {
                     if SaveAsAccessory.showsQuality(model.form.format) {
                         Text("Quality").dimsWithRow()
                         Slider(value: quality, in: 60...100)
-                            .frame(width: 140)
+                            .frame(width: BatchLayout.qualitySliderWidth)
                             .accessibilityLabel("Quality")
                             .accessibilityValue(Text(verbatim: "\(model.form.quality)"))
                             .sliderDimsWithRow()
@@ -270,7 +270,7 @@ struct BatchFormView: View {
                     .truncationMode(.head)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .frame(minWidth: 220, maxWidth: 320, alignment: .leading)
+                    .frame(minWidth: 220, maxWidth: BatchLayout.outputFieldMaxWidth, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .textBackgroundColor)))
                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color(nsColor: .separatorColor)))
                     .help(model.outputFolder.map(UserFacingPath.string) ?? "")
@@ -402,11 +402,17 @@ struct BatchQueuePane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Text(verbatim: "\(model.queue.count) \(model.queue.count == 1 ? "photo" : "photos") chosen · \(model.scopeDescription)")
-                    .font(.system(size: 13, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: "\(model.queue.count) \(model.queue.count == 1 ? "photo" : "photos") chosen")
+                        .font(.system(size: 13, weight: .semibold))
+                        .monospacedDigit()
+                    Text(verbatim: model.scopeDescription)
+                        .font(.system(size: ChromeTypography.size(11)))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .foregroundStyle(.secondary)
                 Spacer()
                 Button(action: actions.addItems) { Image(systemName: "plus") }
                     .buttonStyle(.borderless)
@@ -420,7 +426,8 @@ struct BatchQueuePane: View {
                     .help("Remove from Queue")
                     .accessibilityLabel("Remove from Queue")
             }
-            .padding(.horizontal, 12)
+            .padding(.leading, BatchLayout.queueHeadingInset)
+            .padding(.trailing, 12)
             .padding(.vertical, 8)
             List(selection: $model.selection) {
                 ForEach(model.queue) { item in
@@ -629,31 +636,32 @@ struct BatchRunningView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer()
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text(model.runningTitle)
                     .font(.system(size: 15, weight: .semibold))
-                HStack(spacing: 12) {
-                    BatchProgressBar(fraction: model.progressFraction)
-                        .frame(width: 480, height: 6)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityAddTraits(.updatesFrequently)
-                        .accessibilityLabel("Batch progress")
-                        .accessibilityValue(BatchModel.Copy.progress(model.completed, model.total))
-                    Text(model.progressLine)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                }
+                    .padding(.bottom, 12)
+                BatchProgressBar(fraction: model.progressFraction)
+                    .frame(height: 6)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityAddTraits(.updatesFrequently)
+                    .accessibilityLabel("Batch progress")
+                    .accessibilityValue(BatchModel.Copy.progress(model.completed, model.total))
+                    .padding(.bottom, 8)
+                Text(model.progressLine)
+                    .font(.system(size: ChromeTypography.size(13)))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .accessibilityHidden(true)
+                    .padding(.bottom, 6)
                 Text(model.currentName ?? " ")
                     .font(.system(size: ChromeTypography.size(11)))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 40)
-            Spacer()
+            .batchColumn()
             Divider()
             HStack {
                 Spacer()
@@ -673,9 +681,6 @@ struct BatchRunningView: View {
 struct BatchDoneView: View {
     @ObservedObject var model: BatchModel
     let actions: BatchViewActions
-
-    /// The green check in the calm case (nothing skipped).
-    static let calmCheckSize: CGFloat = 48
 
     var body: some View {
         VStack(spacing: 0) {
@@ -704,35 +709,22 @@ struct BatchDoneView: View {
         }
     }
 
-    /// Everything went through: a large check, the summary and the
-    /// folder, centred in the area.
+    /// Everything went through: a check before the summary, the folder
+    /// under it, in the same column and at the same top as the running view.
     private var calm: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: Self.calmCheckSize))
-                .foregroundStyle(Color(nsColor: .systemGreen))
-                .accessibilityHidden(true)
-            Text(model.summary)
-                .font(.system(size: 17, weight: .semibold))
-                .multilineTextAlignment(.center)
+        VStack(alignment: .leading, spacing: 12) {
+            titleRow(icon: "checkmark.circle.fill", color: Color(nsColor: .systemGreen), text: model.summary)
             folderLink
-                .frame(maxWidth: 560)
         }
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .batchColumn()
     }
 
     /// Some items were skipped or failed: the summary, the folder, then
     /// one row per item with its reason.
     private var withReasons: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: model.result?.doneCount == 0 ? "xmark.circle" : "exclamationmark.triangle")
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
-                    .accessibilityHidden(true)
-                Text(model.resultTitle + "\n" + model.summary)
-                    .font(.system(size: 15, weight: .semibold))
-            }
+            titleRow(icon: model.result?.doneCount == 0 ? "xmark.circle" : "exclamationmark.triangle",
+                     color: Color(nsColor: .secondaryLabelColor), text: model.resultTitle + "\n" + model.summary)
             folderLink
             List(selection: $model.selectedResultRows) {
                 ForEach(model.skippedRows, id: \.source) { row in
@@ -752,10 +744,24 @@ struct BatchDoneView: View {
             }
             .listStyle(.inset(alternatesRowBackgrounds: model.skippedRows.count > 8))
             .frame(minHeight: 100, maxHeight: 320)
-            Text("Select intentional skips to include them in Review Remaining.").font(.caption).foregroundStyle(.secondary)
+            if model.hasIntentionalSkips {
+                Text("Select intentional skips to include them in Review Remaining.").font(.caption).foregroundStyle(.secondary)
+            }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .batchColumn()
+    }
+
+    /// The icon slot and the title; the title starts 30 pt in, so it lines
+    /// up with the running title's text and the folder link.
+    private func titleRow(icon: String, color: Color, text: String) -> some View {
+        HStack(alignment: .top, spacing: BatchLayout.doneIconGap) {
+            Image(systemName: icon)
+                .font(.system(size: BatchLayout.doneIconSize))
+                .frame(height: BatchLayout.doneTitleLine)
+                .foregroundStyle(color)
+                .accessibilityHidden(true)
+            Text(text).font(.system(size: 15, weight: .semibold))
+        }
     }
 
     /// The Output folder (or the folder changed in place) as a link:
@@ -768,9 +774,22 @@ struct BatchDoneView: View {
                     .truncationMode(.middle)
             }
             .buttonStyle(.link)
+            .padding(.leading, BatchLayout.doneIconSize + BatchLayout.doneIconGap)
             .help("Show in Finder")
             .accessibilityLabel("Show “\(folder.lastPathComponent)” in Finder")
         }
+    }
+}
+
+/// The result side (running, done) is one centred column with its content
+/// left-aligned, starting at a fixed distance from the top.
+extension View {
+    func batchColumn() -> some View {
+        frame(maxWidth: BatchLayout.columnWidth, alignment: .leading)
+            .padding(.horizontal, BatchLayout.columnMargin)
+            .padding(.top, BatchLayout.columnTopInset)
+            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -778,4 +797,19 @@ struct BatchDoneView: View {
 /// minimum width and a trailing edge, so the right edges line up row to row.
 enum BatchLayout {
     static let dimensionsColumnWidth: CGFloat = 96
+    /// The form column must fit beside the 280 pt queue pane at the minimum
+    /// window width, also with Larger Interface (a wider row pushed the
+    /// whole split off the left edge). Test: BatchColumnLayoutTests.
+    static let qualitySliderWidth: CGFloat = 104
+    static let outputFieldMaxWidth: CGFloat = 280
+    static let columnWidth: CGFloat = 560
+    static let columnMargin: CGFloat = 40
+    static let columnTopInset: CGFloat = 56
+    static let doneIconSize: CGFloat = 22
+    /// Line height of the 15 pt title: the icon is centred on it, so the
+    /// taller icon does not push the title down.
+    static let doneTitleLine: CGFloat = 18
+    static let doneIconGap: CGFloat = 8
+    /// Leading space of the queue heading: the row names start here.
+    static let queueHeadingInset: CGFloat = 16
 }

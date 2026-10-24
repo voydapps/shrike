@@ -155,3 +155,76 @@ final class ZoomLabelTests: XCTestCase {
         XCTAssertEqual(hud.zoomBadgeTextForTesting, percent(view.pixelScale))
     }
 }
+
+/// The zoom HUD always ends hidden, also when full screen starts around
+/// its fade (the QA run found it stuck on screen in full screen).
+@MainActor
+final class ZoomBadgeHidesTests: XCTestCase {
+
+    override func tearDown() async throws {
+        HUDGlass.forceFallbackForTesting = false
+    }
+
+    private func sleep(_ seconds: Double) async {
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    private func makeContent(fullscreen: Bool) -> ViewerContentView {
+        let content = ViewerContentView(services: .makeDefault())
+        content.frame = CGRect(x: 0, y: 0, width: 1200, height: 800)
+        content.windowMode = fullscreen ? .fullscreen : .windowed
+        content.layoutSubtreeIfNeeded()
+        return content
+    }
+
+    /// `pulseAt`: when (seconds after the pulse) full screen starts.
+    private func run(glass: Bool, switchAt: Double?, startFullscreen: Bool = false,
+                     file: StaticString = #filePath, line: UInt = #line) async {
+        HUDGlass.forceFallbackForTesting = !glass
+        let content = makeContent(fullscreen: startFullscreen)
+        content.userChangedZoom()
+        XCTAssertTrue(content.zoomBadgeShownForTesting, file: file, line: line)
+        if let switchAt {
+            await sleep(switchAt)
+            content.windowMode = .fullscreen
+            content.layoutSubtreeIfNeeded()
+        }
+        await sleep(2.2)
+        XCTAssertFalse(content.zoomBadgeShownForTesting,
+                       "glass \(glass), switch at \(String(describing: switchAt)): the zoom HUD is stuck on screen",
+                       file: file, line: line)
+    }
+
+    func testHidesInFullScreenWithGlass() async { await run(glass: true, switchAt: nil, startFullscreen: true) }
+    func testHidesInFullScreenWithoutGlass() async { await run(glass: false, switchAt: nil, startFullscreen: true) }
+    func testHidesWhenFullScreenStartsBeforeTheFade() async { await run(glass: true, switchAt: 1.1) }
+    func testHidesWhenFullScreenStartsDuringTheFade() async { await run(glass: true, switchAt: 1.3) }
+    func testHidesWhenFullScreenStartsDuringTheFadeWithoutGlass() async { await run(glass: false, switchAt: 1.3) }
+    func testHidesWhenFullScreenStartsRightAway() async { await run(glass: true, switchAt: 0.05) }
+
+    /// The fade is dropped (the HUD snaps back to visible mid-fade): the
+    /// hand-made hide still removes it.
+    func testALostFadeIsFinishedByHand() async {
+        for fullscreen in [false, true] {
+            let content = makeContent(fullscreen: fullscreen)
+            content.userChangedZoom()
+            await sleep(1.3)
+            content.forceZoomBadgeVisibleForTesting()
+            XCTAssertTrue(content.zoomBadgeShownForTesting)
+            await sleep(1.0)
+            XCTAssertFalse(content.zoomBadgeShownForTesting, "fullscreen \(fullscreen): a lost fade left the HUD up")
+        }
+    }
+
+    /// A newer pulse is not hidden by an older pulse's safety hide.
+    func testANewPulseOutlivesTheOldOnesSafetyHide() async {
+        let content = makeContent(fullscreen: true)
+        content.userChangedZoom()
+        await sleep(1.5)
+        content.userChangedZoom()
+        await sleep(0.5)   // the old pulse's safety hide (at 1.8 s) has run
+        XCTAssertTrue(content.zoomBadgeShownForTesting)
+        await sleep(2.0)
+        XCTAssertFalse(content.zoomBadgeShownForTesting)
+    }
+}

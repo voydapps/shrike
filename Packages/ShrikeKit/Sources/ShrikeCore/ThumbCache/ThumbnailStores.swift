@@ -97,6 +97,11 @@ final class ThumbnailMemoryLRU: @unchecked Sendable {
         for node in nodes.values where node.key.hasPrefix(keyPrefix) { remove(node) }
     }
 
+    func contains(keyPrefix: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return nodes.values.contains { $0.key.hasPrefix(keyPrefix) }
+    }
+
     func removeAll() {
         lock.lock(); defer { lock.unlock() }
         nodes.removeAll()

@@ -46,7 +46,7 @@ let package = Package(
             name: "ShrikeUI",
             dependencies: ["ShrikeCore", "ShrikeRendering", "ShrikeEdit", "ShrikeIO"],
             path: "Sources/ShrikeUI",
-            swiftSettings: sharedSwiftSettings
+            swiftSettings: sharedSwiftSettings + sizeOptimizedSettings
         ),
 
         // Edit — Crop, Resize, Rotate, ColorAdjust, Undo, lossless
@@ -56,7 +56,7 @@ let package = Package(
             name: "ShrikeEdit",
             dependencies: ["ShrikeCore", "ShrikeIO"],
             path: "Sources/ShrikeEdit",
-            swiftSettings: sharedSwiftSettings
+            swiftSettings: sharedSwiftSettings + sizeOptimizedSettings
         ),
 
         // IO — file operations, Finder tag bridging, external editor invocation.
@@ -64,7 +64,7 @@ let package = Package(
             name: "ShrikeIO",
             dependencies: ["ShrikeCore"],
             path: "Sources/ShrikeIO",
-            swiftSettings: sharedSwiftSettings
+            swiftSettings: sharedSwiftSettings + sizeOptimizedSettings
         ),
 
         // Harness test target — proves the build/test plumbing works end to end.
@@ -134,4 +134,12 @@ var sharedSwiftSettings: [SwiftSetting] {
         .enableExperimentalFeature("StrictConcurrency"),
         .unsafeFlags(["-warnings-as-errors"], .when(configuration: .release)),
     ]
+}
+
+// Release-only -Osize for the UI-shaped modules (ShrikeUI, ShrikeEdit, ShrikeIO).
+// Saves about 2 MB in the universal app. ShrikeCore (decode, thumbnails),
+// ShrikeRendering (Metal) and GRDB stay on -O. Debug builds and `swift test`
+// are not affected.
+var sizeOptimizedSettings: [SwiftSetting] {
+    [.unsafeFlags(["-Osize"], .when(configuration: .release))]
 }

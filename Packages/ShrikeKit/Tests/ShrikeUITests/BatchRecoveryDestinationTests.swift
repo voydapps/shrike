@@ -12,12 +12,14 @@ final class BatchRecoveryDestinationTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
+        ShrikeDefaults.store.removeObject(forKey: BatchModel.lastFormKey)
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("shrike-batch-recovery-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
     override func tearDown() async throws {
+        ShrikeDefaults.store.removeObject(forKey: BatchModel.lastFormKey)
         try? FileManager.default.removeItem(at: dir)
     }
 
@@ -39,7 +41,9 @@ final class BatchRecoveryDestinationTests: XCTestCase {
         model.run(); await model.waitForRun()
         XCTAssertEqual(model.result?.doneCount, 1)
         XCTAssertEqual(model.result?.skippedCount, 1)
-        XCTAssertEqual(model.result?.failedCount, 0)
+        XCTAssertEqual(model.result?.failedCount, 1, "a file Shrike cannot read is a failure, not a skip")
+        XCTAssertEqual(model.summary, "1 completed · 1 failed")
+        XCTAssertFalse(model.hasIntentionalSkips, "an unreadable file is retried on its own; no hint to select it")
         let unreadable = try XCTUnwrap(model.result?.items.first { $0.source.primary == broken })
         if case .skipped(.unreadable) = unreadable.outcome {} else { XCTFail("Corrupt input must be skipped as unreadable") }
         let completed = firstFolder.appendingPathComponent("good.png"), completedBytes = try Data(contentsOf: completed)

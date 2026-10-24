@@ -2522,6 +2522,7 @@ public final class ViewerContentView: NSView {
     /// the texture zoom.
     private func pulseZoomBadge() {
         zoomBadge.setZoom(imageView.pixelScale)
+        zoomBadge.isHidden = false
         zoomBadge.alphaValue = 1
         zoomBadgeVisibilityChanged()
         zoomBadgePulse &+= 1
@@ -2532,12 +2533,27 @@ public final class ViewerContentView: NSView {
                 ctx.duration = 0.3
                 self.zoomBadge.animator().alphaValue = 0
             } completionHandler: {
-                MainActor.assumeIsolated {
-                    if self.zoomBadgePulse == pulse { self.zoomBadgeVisibilityChanged() }
-                }
+                MainActor.assumeIsolated { self.finishZoomBadgeFade(pulse) }
             }
             self.zoomBadgeVisibilityChanged()
+            // The fade is only a nicety. A full-screen change or a rebuilt
+            // layer can drop it (or its completion) and leave the HUD up,
+            // so the hide is also done by hand a little after the fade.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                MainActor.assumeIsolated { self?.finishZoomBadgeFade(pulse) }
+            }
         }
+    }
+
+    /// Makes sure the HUD of `pulse` is gone (a newer pulse is left alone).
+    private func finishZoomBadgeFade(_ pulse: Int) {
+        guard zoomBadgePulse == pulse else { return }
+        // Hidden by every channel (animation, alpha, isHidden): a glass
+        // surface or a rebuilt layer may ignore one of them.
+        zoomBadge.layer?.removeAllAnimations()
+        zoomBadge.alphaValue = 0
+        zoomBadge.isHidden = true
+        zoomBadgeVisibilityChanged()
     }
 
     /// The zoom HUD was shown or hidden (spec 27 B2): the toast's "stay below the
@@ -2558,9 +2574,11 @@ public final class ViewerContentView: NSView {
     }
 
     internal var zoomBadgeTextForTesting: String { zoomBadge.textForTesting }
-    internal var zoomBadgeShownForTesting: Bool { zoomBadge.alphaValue > 0 }
+    internal var zoomBadgeShownForTesting: Bool { zoomBadge.alphaValue > 0 && !zoomBadge.isHidden }
     internal func hideZoomBadgeForTesting() { zoomBadge.alphaValue = 0; zoomBadgeVisibilityChanged() }
     internal var zoomBadgeForTesting: HUDSurfaceView { zoomBadge }
+    /// Tests: pretends the fade was lost and the HUD snapped back on.
+    internal func forceZoomBadgeVisibleForTesting() { zoomBadge.isHidden = false; zoomBadge.alphaValue = 1 }
 
     // MARK: - Hover / panel reveal
 

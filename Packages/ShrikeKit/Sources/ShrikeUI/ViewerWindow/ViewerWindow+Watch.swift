@@ -82,15 +82,10 @@ extension ViewerWindow {
         let displayedURLs = Set((displayedItem?.group.allURLs ?? []).map(GroupList.canonical))
         if !change.modified.isEmpty {
             let modified = change.modified
-            // A paired Browser's listing is a baseline for files this window
-            // never decoded: those listed with the same size and date keep
-            // their thumbnail. Without one, every file counts as changed.
-            let listed = pairedBrowser?.contentController.allItems ?? []
-            let unchangedByListing = Set(modified).subtracting(BrowserWindowController.contentChanged(modified, items: listed))
             Task { @MainActor [weak self] in
                 var contentChanged: [URL] = []
                 for url in modified where await navigation.decodeQueue.evictIfContentChanged(url: url) {
-                    if !unchangedByListing.contains(url) { await cache.evict(url: url) }
+                    await cache.evictIfContentChanged(url: url)
                     contentChanged.append(url)
                 }
                 guard let self,
