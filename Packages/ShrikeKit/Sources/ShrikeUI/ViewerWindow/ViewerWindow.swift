@@ -99,6 +99,8 @@ public final class ViewerWindow: NSWindow {
     var pendingSwipeHandOver: (index: Int, handOver: SwipeHandOver)?
     /// Trims the decode cache a while after the viewer is hidden.
     var hiddenTrimTask: Task<Void, Never>?
+    /// Hidden by Return-to-Browser and waiting to be shown again.
+    var isParkedForBrowser = false
     /// The ⌥R readability check (spec 24 §4).
     var rawSwitchTask: Task<Void, Never>?
     /// FastStone preset: Esc in paired full screen also returns to the Browser.
@@ -570,6 +572,14 @@ public final class ViewerWindow: NSWindow {
     /// 4 windows 1487 MB, close 3 → still 951 MB. Whatever may still
     /// hold the window object (AppKit, accessibility clients, a late
     /// task), the pixels are gone.
+    /// Shown again after being parked: bring back the detail a trim dropped.
+    public override func becomeKey() {
+        super.becomeKey()
+        guard isParkedForBrowser else { return }
+        isParkedForBrowser = false
+        requestFullResolutionIfNeeded()
+    }
+
     public override func close() {
         // Final close is already authorized by windowShouldClose. Retire the
         // attached canvas before AppKit orders the window out; afterwards its
@@ -1776,7 +1786,7 @@ public final class ViewerWindow: NSWindow {
             return
         }
         guard contentRoot.imageView.image != nil else {
-            contentRoot.toast("No image to edit")
+            contentRoot.toast("No photo to edit")
             return
         }
         guard !didTearDown, editLoadTask == nil else { return }

@@ -91,6 +91,25 @@ final class SharedPrimitivesTests: XCTestCase {
         XCTAssertFalse(host.isAccessibilityElement(), "hidden means gone")
     }
 
+    /// Audit L17: the pointer rests on the toast, the user switches app: no mouseExited,
+    /// so losing focus has to restart the clock.
+    func testAToastPausedUnderThePointerResumesWhenTheAppLosesFocus() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        let container = NSView(frame: window.contentView!.bounds)
+        window.contentView!.addSubview(container)
+        let host = ToastHostView(placement: .viewer)
+        host.install(in: container)
+        host.show(ToastContent("Moved “a.jpg” to the Trash.", actionTitle: "Undo")) {}
+        host.pauseTimer()
+        XCTAssertTrue(host.isPaused)
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        XCTAssertFalse(host.isPaused)
+        host.pauseTimer()
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        XCTAssertFalse(host.isPaused)
+    }
+
     // MARK: - Alerts
 
     func testAlertButtonsAreAddedRightToLeft() {
@@ -116,9 +135,9 @@ final class SharedPrimitivesTests: XCTestCase {
             WindowTitles.viewerSubtitle(index: 42, total: 180, pixelSize: CGSize(width: 6000, height: 4000)),
             "43 of 180 · 6000 × 4000"
         )
-        XCTAssertEqual(WindowTitles.browserSubtitle(visible: 252, total: 252), "252 images")
-        XCTAssertEqual(WindowTitles.browserSubtitle(visible: 47, total: 252), "47 of 252 images")
-        XCTAssertEqual(WindowTitles.browserSubtitle(visible: 1, total: 1), "1 image")
+        XCTAssertEqual(WindowTitles.browserSubtitle(visible: 252, total: 252), "252 photos")
+        XCTAssertEqual(WindowTitles.browserSubtitle(visible: 47, total: 252), "47 of 252 photos")
+        XCTAssertEqual(WindowTitles.browserSubtitle(visible: 1, total: 1), "1 photo")
     }
 
     // MARK: - Copy
@@ -136,9 +155,9 @@ final class SharedPrimitivesTests: XCTestCase {
         XCTAssertEqual(FileActionCopy.putBack(original: group("a.jpg"), restored: group("a 2.jpg")),
                        "Put back as “a 2.jpg”.")
         XCTAssertEqual(ViewerWindow.edgeCopy(.next, current: "Day 1", target: "Day 2"),
-                       "Last image. Press → again to open “Day 2”.")
+                       "Last photo. Press → again to open “Day 2”.")
         XCTAssertEqual(ViewerWindow.edgeCopy(.previous, current: "Day 1", target: nil),
-                       "First image in “Day 1”.")
+                       "First photo in “Day 1”.")
     }
 
     // MARK: - Viewer undo

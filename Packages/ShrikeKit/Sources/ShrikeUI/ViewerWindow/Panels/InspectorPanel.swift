@@ -193,7 +193,7 @@ final class InspectorPanel: HUDSurfaceView {
     var indexSummaryForTesting: String { viewModel.indexSummary }
 
     func updateIndexSummary(index: Int, total: Int) {
-        let text = "\(index + 1) of \(total)"
+        let text = "\((index + 1).formatted(.number)) of \(total.formatted(.number))"
         if viewModel.indexSummary != text { viewModel.indexSummary = text }
     }
 
@@ -447,7 +447,8 @@ struct InspectorContent: View {
         VStack(alignment: .leading, spacing: 7) {
             header("Rating & Flag")
             HStack(spacing: 0) {
-                ForEach(1...5, id: \.self) { i in
+                HStack(spacing: 0) {
+                    ForEach(1...5, id: \.self) { i in
                     let filled = model.marks.rating >= i
                     Button { model.actions.rate(i) } label: {
                         Image(systemName: filled ? "star.fill" : "star")
@@ -458,6 +459,18 @@ struct InspectorContent: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Rate \(i) star\(i == 1 ? "" : "s")")
+                }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Rating")
+                .accessibilityValue(model.marks.rating == 0 ? "No stars" : "\(model.marks.rating) of 5 stars")
+                .accessibilityAdjustableAction { direction in
+                    let now = model.marks.rating
+                    switch direction {
+                    case .increment: model.actions.rate(min(5, now + 1))
+                    case .decrement: model.actions.rate(max(0, now - 1))
+                    @unknown default: break
+                    }
                 }
                 if model.marks.rating > 0 {
                     InspectorClearLink { model.actions.rate(0) }

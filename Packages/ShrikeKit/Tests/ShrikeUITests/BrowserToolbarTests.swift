@@ -230,16 +230,16 @@ final class BrowserToolbarTests: XCTestCase {
         XCTAssertEqual(window.titleVisibility, .visible)
         XCTAssertEqual(window.title, "Holiday")
         XCTAssertEqual(window.representedURL?.standardizedFileURL, dir.standardizedFileURL)
-        XCTAssertEqual(window.subtitle, "1 image")
-        XCTAssertEqual(WindowTitles.browserSubtitle(visible: 252, total: 252), "252 images")
-        XCTAssertEqual(WindowTitles.browserSubtitle(visible: 47, total: 252), "47 of 252 images")
+        XCTAssertEqual(window.subtitle, "1 photo")
+        XCTAssertEqual(WindowTitles.browserSubtitle(visible: 252, total: 252), "252 photos")
+        XCTAssertEqual(WindowTitles.browserSubtitle(visible: 47, total: 252), "47 of 252 photos")
     }
 
     func testSubtitleIsEmptyThenLoadingAfter150ms() async throws {
         let browser = try await browser(images: 2)
         defer { browser.close() }
         let window = try XCTUnwrap(browser.window)
-        XCTAssertEqual(window.subtitle, "2 images")
+        XCTAssertEqual(window.subtitle, "2 photos")
         browser.beginSubtitleLoading()
         XCTAssertEqual(window.subtitle, "", "empty before the count is known")
         try await Task.sleep(for: .milliseconds(60))
@@ -416,6 +416,34 @@ final class BrowserToolbarTests: XCTestCase {
         XCTAssertEqual(BrowserToolbarRoom.room(contentWidth: 750, sidebarShown: false, inspectorShown: true), 620)
     }
 
+    /// Hidden side panes lower the window's minimum width (audit on-screen L17).
+    func testTheMinimumWidthFollowsTheShownPanes() async throws {
+        typealias Room = BrowserToolbarRoom
+        XCTAssertEqual(Room.minimumWindowWidth(sidebarShown: true, inspectorShown: true), 1022)
+        XCTAssertEqual(Room.minimumWindowWidth(sidebarShown: true, inspectorShown: false), 574 + 208 + 50)
+        XCTAssertEqual(Room.minimumWindowWidth(sidebarShown: false, inspectorShown: true), 574 + 130 + 240)
+        XCTAssertEqual(Room.minimumWindowWidth(sidebarShown: false, inspectorShown: false), 754)
+        XCTAssertEqual(Room.minimumWindowWidth(sidebarShown: false, inspectorShown: false, visibleWidth: 700), 700)
+        // The window follows its panes: the toolbar room at that width fits the narrow layout.
+        let room = Room.room(contentWidth: 754, sidebarShown: false, inspectorShown: false)
+        XCTAssertEqual(room, Room.contentMinimumWidth)
+
+        let browser = try await browser(images: 1)
+        defer { browser.close() }
+        let window = try XCTUnwrap(browser.window)
+        let items = browser.splitController.splitViewItems
+        window.setFrame(NSRect(x: 0, y: 0, width: 1500, height: 800), display: false)
+        items[0].isCollapsed = true
+        items[2].isCollapsed = true
+        browser.updateMinimumWindowWidth()
+        XCTAssertEqual(window.minSize.width, Room.minimumWindowWidth(
+            sidebarShown: false, inspectorShown: false,
+            visibleWidth: (window.screen ?? NSScreen.main)?.visibleFrame.width))
+        items[2].isCollapsed = false
+        browser.updateMinimumWindowWidth()
+        XCTAssertGreaterThan(window.minSize.width, 754)
+    }
+
     /// Back/Forward, View, Sort and Filter never go into »,
     /// with Search closed or open, at the minimum width, with the side
     /// panes shown or hidden, arriving there in steps or in one jump.
@@ -425,7 +453,7 @@ final class BrowserToolbarTests: XCTestCase {
         let window = try XCTUnwrap(browser.window)
         let toolbar = try XCTUnwrap(window.toolbar)
         let items = browser.splitController.splitViewItems
-        window.subtitle = "19 images"
+        window.subtitle = "19 photos"
         let minimum = window.minSize.width
         XCTAssertEqual(minimum, BrowserWindowController.minimumWindowWidth)
         XCTAssertEqual(BrowserToolbarRoom.fieldWidth(room: BrowserToolbarRoom.contentMinimumWidth),

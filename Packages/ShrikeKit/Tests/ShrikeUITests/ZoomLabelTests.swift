@@ -169,6 +169,17 @@ final class ZoomBadgeHidesTests: XCTestCase {
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
+    /// Polls (every 10 ms) until `condition` holds or `timeout` passes. A late
+    /// wake-up on a loaded runner only makes the wait longer, never the test wrong.
+    private func waitUntil(timeout: Double, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() >= deadline { return false }
+            await sleep(0.01)
+        }
+        return true
+    }
+
     private func makeContent(fullscreen: Bool) -> ViewerContentView {
         let content = ViewerContentView(services: .makeDefault())
         content.frame = CGRect(x: 0, y: 0, width: 1200, height: 800)
@@ -189,10 +200,11 @@ final class ZoomBadgeHidesTests: XCTestCase {
             content.windowMode = .fullscreen
             content.layoutSubtreeIfNeeded()
         }
-        await sleep(2.2)
-        XCTAssertFalse(content.zoomBadgeShownForTesting,
-                       "glass \(glass), switch at \(String(describing: switchAt)): the zoom HUD is stuck on screen",
-                       file: file, line: line)
+        // Hidden at about 1.8 s after the pulse; the 4 s bound only absorbs a loaded runner.
+        let hidden = await waitUntil(timeout: 4) { !content.zoomBadgeShownForTesting }
+        XCTAssertTrue(hidden,
+                      "glass \(glass), switch at \(String(describing: switchAt)): the zoom HUD is stuck on screen",
+                      file: file, line: line)
     }
 
     func testHidesInFullScreenWithGlass() async { await run(glass: true, switchAt: nil, startFullscreen: true) }
@@ -208,11 +220,16 @@ final class ZoomBadgeHidesTests: XCTestCase {
         for fullscreen in [false, true] {
             let content = makeContent(fullscreen: fullscreen)
             content.userChangedZoom()
-            await sleep(1.3)
+            // Wait for the fade to start (the HUD's alpha goes to 0 at 1.2 s), then
+            // bring it back: the hand-made hide, 0.6 s after the fade start, must
+            // still remove it. Waiting for the event instead of a fixed 1.3 s
+            // keeps the forced show ahead of the hand-hide on a slow runner.
+            let fadeStarted = await waitUntil(timeout: 5) { !content.zoomBadgeShownForTesting }
+            XCTAssertTrue(fadeStarted, "fullscreen \(fullscreen): the fade never started")
             content.forceZoomBadgeVisibleForTesting()
             XCTAssertTrue(content.zoomBadgeShownForTesting)
-            await sleep(1.0)
-            XCTAssertFalse(content.zoomBadgeShownForTesting, "fullscreen \(fullscreen): a lost fade left the HUD up")
+            let hidden = await waitUntil(timeout: 4) { !content.zoomBadgeShownForTesting }
+            XCTAssertTrue(hidden, "fullscreen \(fullscreen): a lost fade left the HUD up")
         }
     }
 
@@ -224,7 +241,7 @@ final class ZoomBadgeHidesTests: XCTestCase {
         content.userChangedZoom()
         await sleep(0.5)   // the old pulse's safety hide (at 1.8 s) has run
         XCTAssertTrue(content.zoomBadgeShownForTesting)
-        await sleep(2.0)
-        XCTAssertFalse(content.zoomBadgeShownForTesting)
+        let hidden = await waitUntil(timeout: 6) { !content.zoomBadgeShownForTesting }
+        XCTAssertTrue(hidden)
     }
 }

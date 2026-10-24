@@ -256,7 +256,7 @@ struct PrintAccessoryView: View {
             }
             .pickerStyle(.radioGroup)
             .horizontalRadioGroupLayout()
-            Toggle("Print file name under the image", isOn: $model.showFileName)
+            Toggle("Print file name under the photo", isOn: $model.showFileName)
         }
         .padding(16)
         .fixedSize()
@@ -441,7 +441,7 @@ final class PrintController: NSObject {
 
     func run(on window: NSWindow?) {
         let operation = NSPrintOperation(view: view, printInfo: printInfo)
-        operation.jobTitle = pages.count == 1 ? pages[0].name : "\(pages.count) images"
+        operation.jobTitle = pages.count == 1 ? pages[0].name : "\(pages.count) photos"
         operation.showsPrintPanel = true
         operation.showsProgressPanel = true
         operation.canSpawnSeparateThread = false

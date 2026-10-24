@@ -70,8 +70,8 @@ final class EditToolsTopBarTests: XCTestCase {
         XCTAssertEqual(controller.toolbarDefaultItemIdentifiers(controller.toolbar), [
             EditToolbarController.ItemID.cancel, .flexibleSpace, EditToolbarController.ItemID.tools,
             EditToolbarController.ItemID.undoRedo, .flexibleSpace, EditToolbarController.ItemID.reset,
-            EditToolbarController.ItemID.done,
-        ])
+            EditToolbarController.ItemID.saveCopy, EditToolbarController.ItemID.done,
+        ], "Save Copy… has its place from the start (greyed until there are edits)")
         let item = try XCTUnwrap(controller.toolbar(controller.toolbar,
                                                     itemForItemIdentifier: EditToolbarController.ItemID.tools,
                                                     willBeInsertedIntoToolbar: true))
@@ -179,7 +179,7 @@ final class EditToolsTopBarTests: XCTestCase {
         LiveTooltips.shared.refreshIfPresetChanged()
         let rewritten = try XCTUnwrap(item.toolTip)
         XCTAssertTrue(rewritten.hasSuffix("\n" + ViewerWindow.rawEditBlockedCopy), rewritten)
-        XCTAssertTrue(rewritten.hasPrefix("Edit Image"), "the base text is still there")
+        XCTAssertTrue(rewritten.hasPrefix("Edit Photo"), "the base text is still there")
         bar.setEditExtraLine(nil)
         XCTAssertFalse(try XCTUnwrap(item.toolTip).contains("\n"), "cleared")
     }
@@ -299,7 +299,8 @@ final class EditToolsTopBarTests: XCTestCase {
         XCTAssertTrue(stack.arrangedSubviews[3] === capsule.undoRedo)
         XCTAssertTrue(stack.arrangedSubviews[4] === capsule.resetButton)
         XCTAssertTrue(stack.arrangedSubviews[5] === capsule.saveCopyButton)
-        XCTAssertTrue(capsule.saveCopyButton.isHidden, "Clean edit has no secondary action")
+        XCTAssertFalse(capsule.saveCopyButton.isHidden, "the secondary keeps its place")
+        XCTAssertFalse(capsule.saveCopyButton.isEnabled, "greyed: a clean edit has nothing to save as a copy")
         XCTAssertTrue(stack.arrangedSubviews[6] === capsule.doneButton)
         XCTAssertEqual(stack.spacing, 10)
     }
@@ -350,7 +351,7 @@ final class EditToolsTopBarTests: XCTestCase {
         let menu = viewer.contextMenu.menu
         let rotateRight = try XCTUnwrap(menu.items.firstIndex { $0.title == ShrikeCommand.rotateRight.title })
         let edit = menu.items[rotateRight + 1]
-        XCTAssertTrue(edit.title.hasPrefix("Edit Image"), edit.title)
+        XCTAssertTrue(edit.title.hasPrefix("Edit Photo"), edit.title)
         XCTAssertTrue(viewer.validateMenuItem(edit), "enabled for a normal photo")
         XCTAssertTrue(menu.items[rotateRight + 2].isSeparatorItem, "Edit Image closes the rotate group")
     }
@@ -509,5 +510,31 @@ final class EditToolsTopBarTests: XCTestCase {
         content.editModeController.finalizeExit()
         try await waitFor("inspector returns") { split.isInspectorShown }
         XCTAssertTrue(Prefs.viewerInspectorVisibleWindowed)
+    }
+
+    /// Spec 21b §9: editing always sends the info panel aside (also in a wide window),
+    /// and it returns on exit unless the user opened it again meanwhile.
+    func testInfoPanelStepsAsideWhileEditingEvenInAWideWindow() async throws {
+        let savedPref = Prefs.viewerInspectorVisibleWindowed
+        Prefs.viewerInspectorVisibleWindowed = true
+        defer { Prefs.viewerInspectorVisibleWindowed = savedPref }
+        let viewer = try await makeViewer(size: NSSize(width: 1100, height: 700))
+        defer { viewer.close() }
+        let split = try XCTUnwrap(viewer.splitController)
+        XCTAssertTrue(split.isInspectorShown)
+        let content = viewer.contentRootForTesting
+        content.enterEditMode(image: SaveFlowTests.image(), url: nil, landOn: .crop)
+        try await waitFor("info panel steps aside") { !split.isInspectorShown }
+        XCTAssertTrue(Prefs.viewerInspectorVisibleWindowed, "the pref is untouched")
+        content.editModeController.finalizeExit()
+        try await waitFor("info panel returns") { split.isInspectorShown }
+
+        // The user opens it during the edit: exit leaves it as it is.
+        content.enterEditMode(image: SaveFlowTests.image(), url: nil, landOn: .crop)
+        try await waitFor("steps aside again") { !split.isInspectorShown }
+        split.setInspectorShown(true, animated: false)
+        content.editModeController.finalizeExit()
+        XCTAssertTrue(split.isInspectorShown)
+        XCTAssertFalse(split.inspectorCollapsedForEdit)
     }
 }

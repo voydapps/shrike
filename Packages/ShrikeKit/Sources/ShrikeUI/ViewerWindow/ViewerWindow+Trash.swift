@@ -67,10 +67,9 @@ extension ViewerWindow {
     private func trashFailed(_ removed: [RemovedGroup], error: any Error) async {
         guard let entry = removed.first else { return }
         if case .noTrash? = error as? FileOpsError {
+            let copy = FileActionCopy.noTrashDelete([entry.group])
             let choice = await presentFileAlert(
-                message: "“\(entry.group.displayName)” can't be moved to the Trash.",
-                information: "This volume doesn't have a Trash. Delete it now? You can't undo this.",
-                buttons: [ShrikeAlert.Button("Delete", role: .destructive), .cancel()]
+                message: copy.message, information: copy.information, buttons: copy.buttons
             )
             if choice == 0 {
                 do {
@@ -237,7 +236,7 @@ extension ViewerWindow {
 final class ViewerEmptyStateView: NSView {
 
     static func noMoreImages(in folder: URL) -> String {
-        "No more images in “\(folder.lastPathComponent)”."
+        "No more photos in “\(folder.lastPathComponent)”."
     }
 
     static func folderGone(_ folder: URL) -> String {

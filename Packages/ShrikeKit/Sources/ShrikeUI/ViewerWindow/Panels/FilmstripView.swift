@@ -954,6 +954,12 @@ final class FilmstripView: HUDSurfaceView {
     nonisolated internal static func ioThumbnailForTesting(url: URL, maxPixelSize: Int) -> CGImage? {
         ThumbCell.ioThumbnail(url: url, maxPixelSize: maxPixelSize)
     }
+
+    internal static func fallbackThumbnailForTesting(
+        url: URL, maxPixelSize: Int, decode: @escaping @Sendable (URL, Int) -> CGImage?
+    ) async -> CGImage? {
+        await ThumbCell.fallbackThumbnail(url: url, maxPixelSize: maxPixelSize, decode: decode)
+    }
 }
 
 /// NSScrollView subclass that forwards scrollWheel to the filmstrip's
@@ -1407,7 +1413,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
             // Cancelled (the cell left the strip): no second, uncached read.
             if Task.isCancelled { return }
             if let file = src as? FileImageSource,
-               let thumb = Self.ioThumbnail(url: file.url, maxPixelSize: targetSize) {
+               let thumb = await Self.fallbackThumbnail(url: file.url, maxPixelSize: targetSize) {
                 let w = thumb.width
                 let h = thumb.height
                 await MainActor.run {
@@ -1442,6 +1448,15 @@ private final class ThumbCell: NSView, NSDraggingSource {
     }
 
     var brokenGlyphShownForTesting: Bool { !brokenView.isHidden }
+
+    /// The uncached read, off the main thread (a large TIFF/PNG takes
+    /// hundreds of ms; audit MP-08). `decode` is a seam for tests.
+    static func fallbackThumbnail(
+        url: URL, maxPixelSize: Int,
+        decode: @escaping @Sendable (URL, Int) -> CGImage? = { ioThumbnail(url: $0, maxPixelSize: $1) }
+    ) async -> CGImage? {
+        await Task.detached(priority: .userInitiated) { decode(url, maxPixelSize) }.value
+    }
 
     nonisolated static func ioThumbnail(url: URL, maxPixelSize: Int) -> CGImage? {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }

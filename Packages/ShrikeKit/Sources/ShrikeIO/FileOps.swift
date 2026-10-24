@@ -160,6 +160,25 @@ public struct ReplacedFile: Sendable, Hashable {
 }
 
 /// What a copy or move did, for Undo.
+/// Which file is at a path: inode, size and modification time (lstat). Taken
+/// right after a copy, so Undo can tell the copy from a different file that
+/// now has the same name (audit FS-8).
+public struct FileStamp: Sendable, Hashable {
+    public let inode: UInt64
+    public let size: Int64
+    public let modifiedSeconds: Int
+    public let modifiedNanoseconds: Int
+
+    public init?(of url: URL) {
+        var st = stat()
+        guard lstat(url.path, &st) == 0 else { return nil }
+        inode = UInt64(st.st_ino)
+        size = Int64(st.st_size)
+        modifiedSeconds = Int(st.st_mtimespec.tv_sec)
+        modifiedNanoseconds = Int(st.st_mtimespec.tv_nsec)
+    }
+}
+
 public struct FileOpReceipt: Sendable, Hashable {
     public enum Kind: Sendable, Hashable { case copy, move }
 
@@ -170,6 +189,8 @@ public struct FileOpReceipt: Sendable, Hashable {
         public let result: ImageGroup
         /// Destination files Replace removed to make room.
         public let replaced: [ReplacedFile]
+        /// What each copied file looked like when the copy finished (copy only).
+        public var stamps: [URL: FileStamp] = [:]
     }
 
     public let kind: Kind
@@ -226,6 +247,16 @@ public struct FileConflict: Sendable, Hashable {
     /// Conflicts still waiting after this one ("Do this for the remaining 7
     /// conflicts" — show the checkbox only when > 0).
     public let remainingConflicts: Int
+
+    /// Files Replace would also move to the Trash: every other image,
+    /// sidecar or movie in the destination with the same name stem as a
+    /// clashing file (a RAW next to the JPEG being replaced). The conflict
+    /// alert names them (audit FS-6).
+    public var otherFilesReplaced: [URL] {
+        let all = FileOps.existingGroupFiles(matching: existing, in: destinationFolder)
+        let clashing = Set(existing.map { $0.lastPathComponent.lowercased() })
+        return all.filter { !clashing.contains($0.lastPathComponent.lowercased()) }
+    }
 
     /// The existing file that matches the incoming primary, if any.
     public var existingPrimary: URL? {
@@ -455,7 +486,15 @@ public actor FileOps {
                         if let trashed = try? trashItem(url) {
                             await rekey(url, trashed)
                         } else {
-                            // No Trash here: the copy is a duplicate, so removing it is safe.
+                            // No Trash here, so removing is permanent: only delete the
+                            // very file the copy made (same inode, size and time). A
+                            // different or edited file with that name stays (FS-8).
+                            guard let stamp = item.stamps[url], FileStamp(of: url) == stamp else {
+                                if firstError == nil {
+                                    firstError = .io(url, reason: "It changed after it was copied, so it was left in place.")
+                                }
+                                continue
+                            }
                             do { try FileManager.default.removeItem(at: url) } catch {
                                 throw Self.map(error, url: url)
                             }
@@ -707,9 +746,11 @@ public actor FileOps {
                     }
                 }
                 let map = Dictionary(uniqueKeysWithValues: pairs.map { ($0.from, $0.to) })
+                var stamps: [URL: FileStamp] = [:]
+                if kind == .copy { for pair in pairs { stamps[pair.to] = FileStamp(of: pair.to) } }
                 items.append(.init(source: group,
                                    result: Self.mapGroup(group) { map[$0] ?? $0 },
-                                   replaced: replaced))
+                                   replaced: replaced, stamps: stamps))
             } catch {
                 // Nothing of this group landed: give the replaced files back.
                 _ = try? await putBack(replaced)
@@ -1056,7 +1097,16 @@ public actor FileOps {
         return values?.volumeLocalizedName ?? values?.volumeName ?? "this volume"
     }
 
+    /// Test opt-in for the real Trash. Under XCTest `systemTrash` refuses, so a
+    /// test that forgets the `trashItem:` seam fails loudly instead of putting
+    /// files into the developer's own Trash. Nothing sets this today.
+    nonisolated(unsafe) static var allowSystemTrashInTests = false
+
     @Sendable static func systemTrash(_ url: URL) throws -> URL {
+        if ShrikeDataPaths.isRunningTests && !allowSystemTrashInTests {
+            preconditionFailure("FileOps.systemTrash called under XCTest for \(url.lastPathComponent): "
+                + "pass a fake trash through FileOps(…, trashItem:) so no test touches the real ~/.Trash")
+        }
         var resulting: NSURL?
         try FileManager.default.trashItem(at: url, resultingItemURL: &resulting)
         return (resulting as URL?) ?? url

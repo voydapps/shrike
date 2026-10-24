@@ -17,7 +17,7 @@ final class EditToolbarParticipationTests: XCTestCase {
                                      file: StaticString = #filePath, line: UInt = #line) throws {
         let ids = controller.toolbar.items.map(\.itemIdentifier)
         let secondary = ids.filter { $0 == EditToolbarController.ItemID.saveCopy }
-        let expected = state.hasEdits && !state.requiresCopy
+        let expected = !state.requiresCopy   // greyed until there are edits (audit on-screen L10)
         XCTAssertEqual(secondary.count, expected ? 1 : 0,
             "A hidden child must not leave a native toolbar wrapper or overflow entry", file: file, line: line)
         let primaryIndex = try XCTUnwrap(ids.firstIndex(of: EditToolbarController.ItemID.done), file: file, line: line)
@@ -36,7 +36,7 @@ final class EditToolbarParticipationTests: XCTestCase {
         let secondaryForms = controller.toolbar.items.filter { $0.itemIdentifier == EditToolbarController.ItemID.saveCopy }
             .compactMap(\.menuFormRepresentation)
         XCTAssertEqual(secondaryForms.map(\.title), expected ? ["Save Copy…"] : [], file: file, line: line)
-        for form in secondaryForms { XCTAssertEqual(form.isEnabled, !state.isSaving, file: file, line: line) }
+        for form in secondaryForms { XCTAssertEqual(form.isEnabled, state.saveCopyEnabled, file: file, line: line) }
     }
 
     func testInstalledSecondaryTracksCleanDirtyCopyOnlyAndRepeatedTransitions() throws {
@@ -112,7 +112,7 @@ final class EditToolbarParticipationTests: XCTestCase {
                 let copies = capsule.allSubviewsForTesting.compactMap { $0 as? NSButton }.filter { $0.title == "Save Copy…" }
                 XCTAssertEqual(copies.count, state.requiresCopy && state.hasEdits ? 2 : 1)
                 let visibleCopies = copies.filter { !$0.isHidden }
-                XCTAssertEqual(visibleCopies.count, state.hasEdits ? 1 : 0)
+                XCTAssertEqual(visibleCopies.count, state.requiresCopy ? (state.hasEdits ? 1 : 0) : 1)
                 window.toolbar = controller.toolbar
                 window.contentView?.superview?.layoutSubtreeIfNeeded()
                 try assertParticipation(controller, state: state)

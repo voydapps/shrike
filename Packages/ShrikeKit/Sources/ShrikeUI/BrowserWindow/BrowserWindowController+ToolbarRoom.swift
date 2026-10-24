@@ -73,6 +73,18 @@ public enum BrowserToolbarRoom {
         room >= threeSegmentsFrom ? .automatic : .collapsed
     }
 
+    /// The window's narrowest width for the panes that are showing: the
+    /// content pane's minimum, plus each shown pane at its minimum, plus (for
+    /// each hidden pane) the toolbar room that moves into the content section.
+    /// Both panes shown this is 1022 pt; both hidden, 754 pt. Capped at the
+    /// display's visible width.
+    static func minimumWindowWidth(sidebarShown: Bool, inspectorShown: Bool, visibleWidth: CGFloat? = nil) -> CGFloat {
+        let width = contentMinimumWidth
+            + (sidebarShown ? BrowserWindowController.sidebarMinimumWidth + 8 : sidebarHiddenExtra)
+            + (inspectorShown ? BrowserWindowController.inspectorMinimumWidth : inspectorHiddenExtra)
+        return visibleWidth.map { min(width, $0) } ?? width
+    }
+
     /// The room for the items between the tracking separators.
     static func room(contentWidth: CGFloat, sidebarShown: Bool, inspectorShown: Bool) -> CGFloat {
         contentWidth
@@ -97,6 +109,20 @@ extension BrowserWindowController {
 
     @objc func contentPaneFrameDidChange(_ note: Notification) {
         updateToolbarRoom()
+        updateMinimumWindowWidth()
+    }
+
+    /// A hidden side pane lowers the window's minimum width (audit on-screen
+    /// L17: half-screen tiling on a laptop), a shown one raises it again.
+    /// (AppKit widens the window itself when a pane is shown in a narrow one.)
+    func updateMinimumWindowWidth() {
+        guard let window, splitController.splitViewItems.count == 3 else { return }
+        let items = splitController.splitViewItems
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame.width
+        let width = BrowserToolbarRoom.minimumWindowWidth(sidebarShown: !items[0].isCollapsed,
+                                                          inspectorShown: !items[2].isCollapsed,
+                                                          visibleWidth: visible)
+        if window.minSize.width != width { window.minSize = NSSize(width: width, height: window.minSize.height) }
     }
 
     /// The room above the content pane now.

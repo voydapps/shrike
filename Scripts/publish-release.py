@@ -42,8 +42,9 @@ def require_no_existing_release(repository, tag, run):
         raise RuntimeError('repository lookup did not return the publication repository')
     # The repo `permissions` field is deliberately NOT consulted. The Actions
     # GITHUB_TOKEN reports push=false there even when the job has `contents: write`
-    # (evidence: run 39809462359). Draft visibility comes from the job's declared
-    # permission, and `gh release create` fails closed without write access.
+    # (seen on a hosted run; pinned by test_actions_token_push_false_reaches_one_create
+    # in Scripts/tests/test-release-gate.py). Draft visibility comes from the job's
+    # declared permission, and `gh release create` fails closed without write access.
     page = 1
     while True:
         releases = read(f'repos/{repository}/releases?per_page=100&page={page}')

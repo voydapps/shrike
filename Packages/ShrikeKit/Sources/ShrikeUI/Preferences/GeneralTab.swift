@@ -13,7 +13,7 @@ import ShrikeCore
 struct GeneralTab: View {
 
     /// Spec 27 T1: true for both wheel settings and both fit states.
-    static let wheelHelp = "On a trackpad, a short two-finger scroll moves to the next photo when the photo fits the window and the wheel is set to Changes image."
+    static let wheelHelp = "On a trackpad, a short two-finger scroll moves to the next photo when the photo fits the window and the wheel is set to Changes photo."
 
 
     @EnvironmentObject private var store: PreferencesStore
@@ -68,7 +68,7 @@ struct GeneralTab: View {
             // "Mouse and Trackpad" group.
             Section {
                 Picker("Mouse wheel", selection: store.scrollWheelNavigates) {
-                    Text("Changes image").tag(true)
+                    Text("Changes photo").tag(true)
                     Text("Zooms").tag(false)
                 }
                 Text("Hold ⌘ for the other wheel action. Pinch to zoom. Swipe to change photos.")

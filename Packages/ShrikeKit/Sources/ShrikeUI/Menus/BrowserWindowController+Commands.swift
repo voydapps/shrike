@@ -91,6 +91,10 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
     /// Esc in the search field ends the search; every other
     /// key keeps the field's own handling.
     public func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if control === searchField {
+            if commandSelector == #selector(NSResponder.insertTab(_:)) { return moveFocus(from: textView, backward: false) }
+            if commandSelector == #selector(NSResponder.insertBacktab(_:)) { return moveFocus(from: textView, backward: true) }
+        }
         guard control === searchField, commandSelector == #selector(NSResponder.cancelOperation(_:)) else {
             return false
         }
@@ -122,7 +126,7 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
         splitController.splitViewItems.first?.isCollapsed ?? true
     }
 
-    private var isInspectorCollapsed: Bool {
+    var isInspectorCollapsed: Bool {
         splitController.splitViewItems.last?.isCollapsed ?? true
     }
 

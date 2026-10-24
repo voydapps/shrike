@@ -466,8 +466,10 @@ final class FineRotationWorkflowTests: XCTestCase {
         XCTAssertEqual(toolbar.doneButton.accessibilityLabel(), state.primaryTitle, file: file, line: line)
         XCTAssertEqual(capsule.doneButton.accessibilityLabel(), state.primaryTitle, file: file, line: line)
         XCTAssertEqual(capsule.label.stringValue, state.subtitle, file: file, line: line)
-        XCTAssertEqual(toolbar.saveCopyButton.isHidden, !edited, file: file, line: line)
-        XCTAssertEqual(capsule.saveCopyButton.isHidden, !edited, file: file, line: line)
+        XCTAssertFalse(toolbar.saveCopyButton.isHidden, file: file, line: line)
+        XCTAssertFalse(capsule.saveCopyButton.isHidden, file: file, line: line)
+        XCTAssertEqual(toolbar.saveCopyButton.isEnabled, edited, file: file, line: line)
+        XCTAssertEqual(capsule.saveCopyButton.isEnabled, edited, file: file, line: line)
         XCTAssertEqual(toolbar.resetButton.isEnabled, resetEnabled, file: file, line: line)
         XCTAssertEqual(capsule.resetButton.isEnabled, resetEnabled, file: file, line: line)
         let reset = toolbar.toolbar(toolbar.toolbar, itemForItemIdentifier: EditToolbarController.ItemID.reset,
@@ -573,7 +575,7 @@ final class FineRotationWorkflowTests: XCTestCase {
             panel._resetButton.performClick(nil); await controller.settleForTesting()
             XCTAssertEqual(content.editToolbarController.doneButton.accessibilityLabel(), "Done")
             XCTAssertEqual(viewer.subtitle, "Editing"); XCTAssertFalse(viewer.isDocumentEdited)
-            XCTAssertTrue(content.editToolbarController.saveCopyButton.isHidden)
+            XCTAssertFalse(content.editToolbarController.saveCopyButton.isEnabled)
             if directSave {
                 let saved = await viewer.saveEditedFile(asPanel: false)
                 XCTAssertTrue(saved)

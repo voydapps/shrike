@@ -107,9 +107,26 @@ extension BrowserWindowController {
         updateSubtitle()
     }
 
+    /// "CARD" for /Volumes/CARD/DCIM when /Volumes/CARD is not mounted any more.
+    nonisolated static func goneVolumeName(of url: URL) -> String? {
+        let parts = url.standardizedFileURL.pathComponents
+        guard parts.count >= 3, parts[0] == "/", parts[1] == "Volumes" else { return nil }
+        let root = "/Volumes/" + parts[2]
+        return FileManager.default.fileExists(atPath: root) ? nil : parts[2]
+    }
+
     /// The nearest parent that still exists, found by path (never a tree
     /// walk). Falls back to Home.
     nonisolated static func nearestExistingAncestor(of url: URL) -> URL {
+        // A disk that is gone: its folders have no parent worth showing (the walk
+        // would stop in /Volumes). Go to Pictures, else Home.
+        if goneVolumeName(of: url) != nil {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+            var isDir: ObjCBool = false
+            return FileManager.default.fileExists(atPath: pictures.path, isDirectory: &isDir) && isDir.boolValue
+                ? pictures : home
+        }
         var candidate = url.standardizedFileURL.deletingLastPathComponent()
         let fm = FileManager.default
         while candidate.path != "/" {

@@ -22,6 +22,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import os
 import UniformTypeIdentifiers
 import ShrikeCore
 import ShrikeIO
@@ -99,12 +100,12 @@ extension ExportError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .sourceMissing: return "The source file is no longer available."
-        case .sourceUnreadable: return "Shrike could not decode the source image."
+        case .sourceUnreadable: return "Shrike could not decode the source photo."
         case .recipeApplyFailed: return "The requested edits could not be rendered."
-        case .destinationCreateFailed, .destinationFinalizeFailed: return "The output image could not be fully encoded and validated. The previous destination was kept."
-        case .unwritableFormat: return "This image format cannot be written on this Mac."
+        case .destinationCreateFailed, .destinationFinalizeFailed: return "The output photo could not be fully encoded and validated. The previous destination was kept."
+        case .unwritableFormat: return "This file format cannot be written on this Mac."
         case .inPlaceWriteNotAllowed: return "Save an edited copy to keep the original format, frames and precision safe."
-        case .extensionMismatch: return "The output filename extension does not match the selected image format."
+        case .extensionMismatch: return "The output filename extension does not match the selected file format."
         case .backupFailed(let reason): return "The previous destination could not be backed up; nothing was overwritten. \(reason)"
         case .atomicReplaceFailed(let reason), .ioFailure(let reason): return "The output could not be committed. \(reason)"
         }
@@ -113,6 +114,11 @@ extension ExportError: LocalizedError {
 
 /// Baking + encoding pipeline for the edit save path.
 public actor ImageExporter {
+
+    /// Renders and encodes run here, bounded like the Batch workers.
+    private static let exportLane = DecodeLane(
+        width: max(2, min(ProcessInfo.processInfo.activeProcessorCount - 1, 6)), label: "app.shrike.export")
+
     public enum Checkpoint: Sendable, Equatable { case decoded, rendered, encoded, beforeBackup, beforeCommit }
 
     /// Suffix appended to the stem when the save path redirects a RAW
@@ -230,8 +236,23 @@ public actor ImageExporter {
 
         // 2. Replay the recipe. `renderFinal` is the non-dropping variant
         // — we want a result, not a "maybe dropped" CGImage.
+        // Core Image blocks for hundreds of ms per photo: run it on the export
+        // lane, not on a cooperative thread (audit MP-09).
         let renderer = EditRenderer()
-        let finalImage = await renderer.renderFinal(recipe: recipe, from: originalImage)
+        let effective = EditRecipe.effectiveOperations(operations)
+        let finalImage = try await Self.exportLane.run {
+            try renderer.renderVerified(effectiveOperations: effective, from: originalImage)
+        }
+        // The predicted size is what the recipe asks for. A tool that
+        // handed its input back (it could not render) must not be saved
+        // as if the edit had happened.
+        if let expected = EditRenderer.outputPixelSize(
+            from: CGSize(width: originalImage.width, height: originalImage.height), operations: operations),
+           abs(Int(expected.width) - finalImage.width) > 1 || abs(Int(expected.height) - finalImage.height) > 1 {
+            // (Core Image may add one edge pixel to a rotated sliver; a
+            // dropped resize or rotation is off by far more.)
+            throw ExportError.recipeApplyFailed
+        }
         try await check(.rendered)
         if FileIdentity.sameFile(source, destination), storedImage.bitsPerComponent > finalImage.bitsPerComponent {
             throw ExportError.inPlaceWriteNotAllowed
@@ -241,15 +262,21 @@ public actor ImageExporter {
         let tmpURL = temporaryURL(sameDirectoryAs: destination, format: format)
         defer { try? FileManager.default.removeItem(at: tmpURL) }
 
-        try writeEncoded(
-            image: finalImage,
-            to: tmpURL,
-            format: format,
-            quality: quality,
-            sourceProperties: sourceProperties,
-            preserveEXIF: preserveEXIF,
-            stripGPS: stripGPS
-        )
+        // The property dictionary is read-only from here on and used by one
+        // lane thread.
+        nonisolated(unsafe) let encodeProperties = sourceProperties
+        try await Self.exportLane.run {
+            try Self.writeEncoded(
+                image: finalImage,
+                to: tmpURL,
+                format: format,
+                quality: quality,
+                sourceProperties: encodeProperties,
+                sourceURL: source,
+                preserveEXIF: preserveEXIF,
+                stripGPS: stripGPS
+            )
+        }
         guard let validated = CGImageSourceCreateWithURL(tmpURL as CFURL, nil),
               CGImageSourceGetCount(validated) == 1,
               let dimensions = CGImageSourceCopyPropertiesAtIndex(validated, 0, nil) as? [CFString: Any],
@@ -283,6 +310,17 @@ public actor ImageExporter {
             }
         } catch {
             throw ExportError.atomicReplaceFailed(underlying: "\(error)")
+        }
+
+        // 5b. A different photo was replaced (Save As onto another name,
+        // Batch into a folder with Replace): the victim's backups follow
+        // the victim, not the path. Otherwise "Revert to Original" on the
+        // new file at this path would bring back the replaced photo (FS-2).
+        // Same shape as `FileOps.clearForReplace`, which re-keys to the Trash.
+        if record != nil, let backupStore, !FileIdentity.sameFile(source, destination) {
+            let detached = destination.deletingLastPathComponent()
+                .appendingPathComponent(".shrike-replaced-\(UUID().uuidString)-\(destination.lastPathComponent)")
+            await backupStore.rekey(from: destination, to: detached)
         }
 
         // 6. Keep the user's rating / flag / tags with the file. The file
@@ -349,23 +387,50 @@ public actor ImageExporter {
     /// Construct a temp URL in the same directory as `destination`.
     /// Same-directory is load-bearing — `replaceItemAt` is only atomic
     /// within a filesystem.
+    ///
+    /// The name starts with a dot, like the rotate and restore temps, so a
+    /// crash or force-quit mid-save leaves a hidden file, not a full-size
+    /// junk photo in the folder (audit FS-10). Leftovers of earlier crashes
+    /// (hidden or from older versions) are removed once per folder and run.
     private func temporaryURL(sameDirectoryAs destination: URL, format: ExportFormat) -> URL {
         let dir = destination.deletingLastPathComponent()
+        Self.sweepStaleTemporaries(in: dir)
         let stem = destination.deletingPathExtension().lastPathComponent
         let uuid = UUID().uuidString
         return dir.appendingPathComponent(
-            "\(stem).shrikeedit.\(uuid).\(format.fileExtension).tmp"
+            ".\(stem).shrikeedit.\(uuid).\(format.fileExtension).tmp"
         )
+    }
+
+    private static let sweptFolders = OSAllocatedUnfairLock(initialState: Set<String>())
+
+    /// Deletes `*.shrikeedit.<uuid>.<ext>.tmp` files in `folder` that are
+    /// more than an hour old. Younger ones may belong to a save in progress
+    /// (a Batch writes many into one folder at once).
+    static func sweepStaleTemporaries(in folder: URL, olderThan age: TimeInterval = 3600, now: Date = Date()) {
+        let first = sweptFolders.withLock { $0.insert(folder.path).inserted }
+        guard first else { return }
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: [.contentModificationDateKey],
+            options: []) else { return }
+        for url in entries {
+            let name = url.lastPathComponent
+            guard name.hasSuffix(".tmp"), name.contains(".shrikeedit.") else { continue }
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if let modified, now.timeIntervalSince(modified) > age { try? fm.removeItem(at: url) }
+        }
     }
 
     /// Write `image` to `url` in `format`. Throws the appropriate
     /// `ExportError` case on failure.
-    private func writeEncoded(
+    private static func writeEncoded(
         image: CGImage,
         to url: URL,
         format: ExportFormat,
         quality: Double,
         sourceProperties: [CFString: Any]?,
+        sourceURL: URL,
         preserveEXIF: Bool,
         stripGPS: Bool
     ) throws {
@@ -408,13 +473,27 @@ public actor ImageExporter {
                let gps = sourceProperties[kCGImagePropertyGPSDictionary] as? [CFString: Any] {
                 frameProps[kCGImagePropertyGPSDictionary] = gps
             }
-            // IPTC is typically small and wholly copyable.
+            // IPTC is typically small and wholly copyable. "Remove
+            // location" also removes the place text (city, state, country,
+            // sub-location), not only the coordinates.
             if let iptc = sourceProperties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] {
-                frameProps[kCGImagePropertyIPTCDictionary] = iptc
+                frameProps[kCGImagePropertyIPTCDictionary] =
+                    stripGPS ? ExportMetadata.removingPlaceText(fromIPTC: iptc) : iptc
+            }
+            // Maker notes ({MakerApple} carries the Live Photo link) and ExifAux.
+            for (key, value) in ExportMetadata.extraDictionaries(from: sourceProperties) {
+                frameProps[key] = value
             }
         }
 
-        CGImageDestinationAddImage(dest, image, frameProps as CFDictionary)
+        // The source's XMP (colour label, develop settings, custom
+        // namespaces) rides along and is merged with the dictionaries above.
+        if preserveEXIF, let metadata = ExportMetadata.metadata(from: sourceURL, removeLocation: stripGPS) {
+            frameProps[kCGImageDestinationMergeMetadata] = true
+            CGImageDestinationAddImageAndMetadata(dest, image, metadata, frameProps as CFDictionary)
+        } else {
+            CGImageDestinationAddImage(dest, image, frameProps as CFDictionary)
+        }
         guard CGImageDestinationFinalize(dest) else {
             throw ExportError.destinationFinalizeFailed
         }

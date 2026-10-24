@@ -87,7 +87,7 @@ final class BrowserSmallFeaturesTests: XCTestCase {
         XCTAssertEqual(state.count, 0)
         XCTAssertNil(state.previewURL, "no photo preview without a selection")
         XCTAssertEqual(state.commonName, "Holiday")
-        XCTAssertEqual(state.folderSummary, "3 images")
+        XCTAssertEqual(state.folderSummary, "3 photos")
         XCTAssertNil(state.commonRating)
 
         let urls = browser.contentController.visibleItems.map(\.url)
@@ -239,14 +239,14 @@ final class BrowserSmallFeaturesTests: XCTestCase {
         XCTAssertTrue(content.selectedItems.isEmpty, "the hidden photo is no longer selected")
         XCTAssertEqual(browser.statusTextForTesting, "")
         XCTAssertEqual(browser.inspectorStateForTesting.count, 0)
-        XCTAssertEqual(browser.inspectorStateForTesting.folderSummary, "1 of 2 images")
+        XCTAssertEqual(browser.inspectorStateForTesting.folderSummary, "1 of 2 photos")
 
         browser.clearFilterAndSearch()
         XCTAssertEqual(content.visibleItems.count, 2)
         XCTAssertTrue(content.selectedItems.isEmpty)
         XCTAssertEqual(browser.statusTextForTesting, "")
         XCTAssertNil(browser.inspectorStateForTesting.previewURL)
-        XCTAssertEqual(browser.inspectorStateForTesting.folderSummary, "2 images")
+        XCTAssertEqual(browser.inspectorStateForTesting.folderSummary, "2 photos")
     }
 
     func testAFilterKeepsASelectedPhotoItStillShows() async throws {

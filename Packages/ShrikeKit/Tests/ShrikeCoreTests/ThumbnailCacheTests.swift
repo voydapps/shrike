@@ -548,7 +548,9 @@ private final class GatedSource: ImageSource, @unchecked Sendable {
     func loadCGImage(maxPixelSize: Int?) async throws -> CGImage {
         lock.withLock { decodes += 1 }
         log?.append(id)
-        while !(lock.withLock { isOpen }) { try? await Task.sleep(nanoseconds: 1_000_000) }
+        // A gate that never opens ends the decode after 30 s instead of hanging the run.
+        let openDeadline = Date().addingTimeInterval(30)
+        while !(lock.withLock { isOpen }) && Date() < openDeadline { try? await Task.sleep(nanoseconds: 1_000_000) }
         return Self.image(side: maxPixelSize ?? 64)
     }
 

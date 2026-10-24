@@ -351,6 +351,11 @@ public final class FolderTreeViewController: NSViewController {
 
     /// Test seams.
     var outlineViewForTesting: NSOutlineView { outlineView }
+    var focusView: NSView { outlineView }
+    var onTab: ((Bool) -> Bool)? {
+        get { outlineView.onTab }
+        set { outlineView.onTab = newValue }
+    }
     func cellForTesting(row: Int) -> SidebarRowCell? {
         outlineView.view(atColumn: 0, row: row, makeIfNecessary: true) as? SidebarRowCell
     }
@@ -988,6 +993,8 @@ extension FolderTreeViewController: NSOutlineViewDelegate {
 final class SidebarOutlineView: NSOutlineView {
     var onDelete: (() -> Bool)?
     var onScroll: (() -> Void)?
+    /// Tab / ⇧Tab move to the next pane of the window's focus ring.
+    var onTab: ((Bool) -> Bool)?
 
     override func scrollWheel(with event: NSEvent) {
         onScroll?()
@@ -995,6 +1002,7 @@ final class SidebarOutlineView: NSOutlineView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if BrowserFocusRing.isTab(event), onTab?(event.modifierFlags.contains(.shift)) == true { return }
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
         // 51 = Delete (⌫), 117 = Forward Delete.
         if mods.isEmpty, event.keyCode == 51 || event.keyCode == 117, onDelete?() == true { return }

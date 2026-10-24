@@ -20,6 +20,7 @@
 //            lands. Fullscreen cell size is 72 pt, spacing 8 pt.
 //
 
+import os
 import XCTest
 import CoreGraphics
 import ImageIO
@@ -604,6 +605,17 @@ final class FilmstripViewControllerTests: XCTestCase {
     // than image-dimension: WxH` on the ASL error channel and the
     // downstream `IOSurface creation failed: e00002c2` burst. The clamp
     // inside `ioThumbnail` rewrites N to max(w, h) so ImageIO stays quiet.
+
+    /// Audit MP-08: the uncached fallback decode must not run on the main thread.
+    @MainActor
+    func testFallbackThumbnailDecodesOffTheMainThread() async {
+        let ranOnMain = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+        _ = await FilmstripView.fallbackThumbnailForTesting(url: URL(fileURLWithPath: "/nonexistent.jpg"), maxPixelSize: 64) { _, _ in
+            ranOnMain.withLock { $0 = Thread.isMainThread }
+            return nil
+        }
+        XCTAssertEqual(ranOnMain.withLock { $0 }, false)
+    }
 
     func testIoThumbnail_requestLargerThanSource_clampsSilently() throws {
         // Write a small PNG fixture to a temp file — the ShrikeUITests

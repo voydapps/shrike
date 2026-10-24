@@ -2,7 +2,7 @@
 //  EditExitAlertTests.swift
 //  ShrikeUITests
 //
-//  The edit-mode exit alert. Exactly one Save / Save As…
+//  The edit-mode exit alert. Exactly one Save / Save Copy…
 //  button, Cancel second, Don't Save third.
 //
 
@@ -26,7 +26,7 @@ final class EditExitAlertTests: XCTestCase {
         let c = EditExitModal.content(fileName: "DSC_0042.ORF", writable: false)
         XCTAssertEqual(c.message, "Save changes to “DSC_0042.ORF” as a new file?")
         XCTAssertEqual(c.information, "Shrike can't change this file. It saves a copy next to it.")
-        XCTAssertEqual(c.buttons, ["Save As…", "Cancel", "Don't Save"])
+        XCTAssertEqual(c.buttons, ["Save Copy…", "Cancel", "Don't Save"])
         XCTAssertEqual(c.buttons.filter { $0.hasPrefix("Save") }.count, 1)
         XCTAssertEqual(c.primary, .saveAs)
     }

@@ -23,6 +23,9 @@ public enum ShrikeAlert {
             case destructive
             /// Neither Return nor Esc.
             case normal
+            /// Cancel that is also the default: Return and Esc both fire it
+            /// (for alerts where the other choice changes or deletes files).
+            case safeCancel
         }
         public let title: String
         public let role: Role
@@ -33,6 +36,7 @@ public enum ShrikeAlert {
         }
 
         public static func cancel(_ title: String = "Cancel") -> Button { Button(title, role: .cancel) }
+        public static func safeCancel(_ title: String = "Cancel") -> Button { Button(title, role: .safeCancel) }
     }
 
     /// Builds the alert. `buttons` are in visual order, left to right.
@@ -46,6 +50,7 @@ public enum ShrikeAlert {
         buttons: [Button]
     ) -> NSAlert {
         let alert = NSAlert()
+        var safeCancelButton: NSButton?
         alert.messageText = message
         alert.informativeText = information ?? ""
         alert.alertStyle = style
@@ -62,9 +67,34 @@ public enum ShrikeAlert {
                 button.hasDestructiveAction = true
             case .normal:
                 button.keyEquivalent = ""
+            case .safeCancel:
+                safeCancelButton = button
             }
         }
+        if let safeCancelButton { installSafeCancel(on: alert, button: safeCancelButton) }
         return alert
+    }
+
+    /// Makes `button` the Cancel that Return AND Esc both fire. One button
+    /// holds one key equivalent, so Return sits on the button (also the
+    /// window's default cell) and Esc on an invisible 1 pt twin that clicks it.
+    /// The caller clears the key equivalent of every other button.
+    @MainActor
+    public static func installSafeCancel(on alert: NSAlert, button: NSButton) {
+        button.keyEquivalent = "\r"
+        button.useAccentFill()
+        guard let content = alert.window.contentView else { return }
+        alert.window.defaultButtonCell = button.cell as? NSButtonCell
+        let twin = NSButton(frame: NSRect(x: 0, y: 0, width: 1, height: 1))
+        twin.title = ""
+        twin.keyEquivalent = "\u{1b}"
+        twin.target = button
+        twin.action = #selector(NSControl.performClick(_:))
+        twin.alphaValue = 0
+        twin.refusesFirstResponder = true
+        twin.setAccessibilityElement(false)
+        twin.identifier = NSUserInterfaceItemIdentifier("safeCancelEscTwin")
+        content.addSubview(twin)
     }
 
     /// Maps a response from an alert built by `make` back to the index in

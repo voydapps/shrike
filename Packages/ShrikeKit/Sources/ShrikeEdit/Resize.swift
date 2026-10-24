@@ -166,17 +166,20 @@ public struct ResizeTool: Sendable {
             return image
         }
 
+        // CMYK can't be drawn with an alpha bitmap (the tool used to hand the
+        // input back at its old size). Grayscale stays gray.
+        let rgb = EditColorSpace.workingRGB(image, keepGray: true)
         switch spec.interpolation {
         case .lanczos:
-            return resizeLanczos(image, toWidth: targetW, height: targetH, contexts: contexts) ?? resizeCG(
-                image, toWidth: targetW, height: targetH, interpolation: .high
-            ) ?? image
+            return resizeLanczos(rgb, toWidth: targetW, height: targetH, contexts: contexts) ?? resizeCG(
+                rgb, toWidth: targetW, height: targetH, interpolation: .high
+            ) ?? rgb
         case .bicubic:
-            return resizeCG(image, toWidth: targetW, height: targetH, interpolation: .high) ?? image
+            return resizeCG(rgb, toWidth: targetW, height: targetH, interpolation: .high) ?? rgb
         case .bilinear:
-            return resizeCG(image, toWidth: targetW, height: targetH, interpolation: .default) ?? image
+            return resizeCG(rgb, toWidth: targetW, height: targetH, interpolation: .default) ?? rgb
         case .nearest:
-            return resizeCG(image, toWidth: targetW, height: targetH, interpolation: .none) ?? image
+            return resizeCG(rgb, toWidth: targetW, height: targetH, interpolation: .none) ?? rgb
         }
     }
 

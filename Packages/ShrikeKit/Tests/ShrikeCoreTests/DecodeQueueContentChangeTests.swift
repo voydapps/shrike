@@ -75,6 +75,23 @@ final class DecodeQueueContentChangeTests: XCTestCase {
         await q.purge()
     }
 
+    /// Audit MP-10: a burst of changed files in a big list is not one full
+    /// list scan per file (500 files x 3000 entries took seconds).
+    func testBurstOfChangedFilesInABigListIsFast() async throws {
+        let folder = dir.appendingPathComponent("big", isDirectory: true)
+        let sources = (0..<3000).map { FileImageSource(url: folder.appendingPathComponent(String(format: "IMG_%05d.jpg", $0))) }
+        let q = DecodeQueue(windowRadius: 0)
+        await q.setNavigation(list: sources, currentIndex: 2999)
+        let changed = (1000..<1500).map { sources[$0].url }
+        let start = ContinuousClock.now
+        let evicted = await q.evictIfContentChanged(urls: changed)
+        let d = ContinuousClock.now - start
+        let seconds = Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+        XCTAssertEqual(evicted.count, 500)
+        XCTAssertLessThan(seconds, 1.5, "burst took \(seconds) s")
+        await q.purge()
+    }
+
     func testStampTellsContentFromAttributes() throws {
         let url = try writeJPEG("b.jpg", width: 64)
         let stamp = try XCTUnwrap(FileContentStamp.read(url))

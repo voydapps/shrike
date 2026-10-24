@@ -62,7 +62,7 @@ final class GlassHUDTests: XCTestCase {
         let pill = content.navigationPositionOverlayForTesting
         pill.isHidden = false
         pill.alphaValue = 1
-        content.zoomBadgeForTesting.alphaValue = 1
+        content.zoomBadgeForTesting.isHidden = false; content.zoomBadgeForTesting.alphaValue = 1
         content.toastHost.show("Copied")
         content.toastHost.alphaValue = 1
         content.layoutSubtreeIfNeeded()
@@ -278,7 +278,7 @@ final class GlassHUDTests: XCTestCase {
         ShrikeTokens.increaseContrastOverride = true
         let content = makeContent(.windowed)
         let badge = content.zoomBadgeForTesting
-        badge.alphaValue = 1
+        badge.isHidden = false; badge.alphaValue = 1
         content.layoutSubtreeIfNeeded()
         XCTAssertEqual(badge.fillLayerForTesting?.borderWidth, 1)
         XCTAssertEqual(badge.fillLayerForTesting?.borderColor,
@@ -321,7 +321,7 @@ final class GlassHUDTests: XCTestCase {
         let views = HUDGlass.glassViewsBuiltForTesting
         let windowed = makeContent(.windowed)
         XCTAssertNil(windowed.glassContainerForTesting, "a viewer opens in a window: no container")
-        windowed.zoomBadgeForTesting.alphaValue = 1
+        windowed.zoomBadgeForTesting.isHidden = false; windowed.zoomBadgeForTesting.alphaValue = 1
         windowed.layoutSubtreeIfNeeded()
         XCTAssertEqual(HUDGlass.glassViewsBuiltForTesting, views, "no glass in a window")
 

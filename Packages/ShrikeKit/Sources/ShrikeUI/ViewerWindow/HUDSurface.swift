@@ -210,17 +210,16 @@ public class HUDSurfaceView: NSView {
         didSet { if isHidden != oldValue { revealChanged() } }
     }
 
-    public override var alphaValue: CGFloat {
-        didSet { if (alphaValue > 0) != (oldValue > 0) { revealChanged() } }
-    }
-
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { revealChanged() }
     }
 
-    /// Shown and not faded out.
-    var isRevealed: Bool { !isHidden && alphaValue > 0 }
+    /// Shown (not `isHidden`). The alpha is deliberately ignored: this class must not
+    /// override `alphaValue` (it crashes on views animated with
+    /// `animator()`), so the look is built when a surface is un-hidden or enters a
+    /// window. Surfaces that fade in are un-hidden first, at alpha 0.
+    var isRevealed: Bool { !isHidden }
 
     private func revealChanged() {
         guard isRevealed else { return }

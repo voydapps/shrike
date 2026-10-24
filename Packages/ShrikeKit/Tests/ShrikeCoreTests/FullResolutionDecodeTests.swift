@@ -163,7 +163,11 @@ final class FullResolutionDecodeTests: XCTestCase {
                 return 42
             }
         }
-        while started.value == nil { try await Task.sleep(for: .milliseconds(2)) }
+        let startDeadline = Date().addingTimeInterval(30)
+        while started.value == nil {
+            guard Date() < startDeadline else { release.signal(); return XCTFail("the decode never started") }
+            try await Task.sleep(for: .milliseconds(2))
+        }
         task.cancel()
         let t0 = Date()
         do {
@@ -246,7 +250,11 @@ final class FullResolutionDecodeTests: XCTestCase {
         await queue.setNavigation(list: urls.map { FileImageSource(url: $0) }, currentIndex: 0)
         defer { release.signal() }
         let first = Task { try await queue.loadFullResolution(at: 0) }
-        while !started.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
+        let startDeadline = Date().addingTimeInterval(30)
+        while !started.withLock({ $0 }) {
+            guard Date() < startDeadline else { return XCTFail("the first decode never started") }
+            try await Task.sleep(for: .milliseconds(2))
+        }
         let second = Task { try await queue.loadFullResolution(at: 1) }
         do { _ = try await first.value; XCTFail("the older request must be cancelled") }
         catch is CancellationError {}

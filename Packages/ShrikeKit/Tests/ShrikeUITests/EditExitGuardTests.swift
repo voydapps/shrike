@@ -264,9 +264,52 @@ final class EditExitGuardTests: XCTestCase {
     func testAlertButtonsAndKeysFollowTheSpec() {
         let alert = EditExitModal.makeAlert(EditExitModal.content(fileName: "a.jpg", writable: true))
         XCTAssertEqual(alert.buttons.map(\.title), ["Save", "Cancel", "Don't Save"])
-        XCTAssertEqual(alert.buttons[0].keyEquivalent, "\r", "Save is the default (Return)")
-        XCTAssertEqual(alert.buttons[1].keyEquivalent, "\u{1b}", "Cancel takes Esc")
+        XCTAssertEqual(alert.buttons[0].keyEquivalent, "s", "Save is ⌘S, never Return")
+        XCTAssertEqual(alert.buttons[0].keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(alert.buttons[1].keyEquivalent, "\r", "Cancel is the default (Return)")
+        XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[1].cell)
         XCTAssertEqual(alert.buttons[2].keyEquivalent, "d")
         XCTAssertEqual(alert.buttons[2].keyEquivalentModifierMask, [.command], "Don't Save is ⌘D")
+        let copy = EditExitModal.makeAlert(EditExitModal.content(fileName: "a.ORF", writable: false))
+        XCTAssertEqual(copy.buttons[0].title, "Save Copy…")
+        XCTAssertEqual(copy.buttons[0].keyEquivalent, "S")
+        XCTAssertEqual(copy.buttons[0].keyEquivalentModifierMask, [.command, .shift], "Save Copy… is ⇧⌘S")
     }
+
+    /// Owner decision 2026-10-24: Return and Esc both keep editing; neither can save.
+    func testReturnAndEscBothPressCancel() throws {
+        let content = EditExitModal.content(fileName: "a.jpg", writable: true)
+        let alert = EditExitModal.makeAlert(content)
+        let probe = KeyProbe()
+        let cancel = alert.buttons[1]
+        cancel.target = probe
+        cancel.action = #selector(KeyProbe.hit(_:))
+        let save = alert.buttons[0], dontSave = alert.buttons[2]
+        save.target = probe; save.action = #selector(KeyProbe.wrong(_:))
+        dontSave.target = probe; dontSave.action = #selector(KeyProbe.wrong(_:))
+        let root = try XCTUnwrap(alert.window.contentView)
+        func press(_ chars: String, code: UInt16) throws {
+            let event = try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: alert.window.windowNumber, context: nil,
+                characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code))
+            _ = alert.window.performKeyEquivalent(with: event)
+        }
+        try press("\r", code: 36)
+        XCTAssertEqual(probe.cancelHits, 1, "Return presses Cancel")
+        try press("\u{1b}", code: 53)
+        XCTAssertEqual(probe.cancelHits, 2, "Esc presses Cancel")
+        XCTAssertEqual(probe.wrongHits, 0, "neither key reaches Save or Don't Save")
+        XCTAssertEqual(EditExitModal.choice(for: .alertSecondButtonReturn, content: content), .cancel)
+        let twin = root.subviews.first { $0.identifier?.rawValue == "safeCancelEscTwin" }
+        XCTAssertEqual(twin?.alphaValue, 0, "the Esc twin is invisible")
+        XCTAssertEqual(twin?.frame.size, NSSize(width: 1, height: 1))
+    }
+}
+
+@MainActor
+private final class KeyProbe: NSObject {
+    var cancelHits = 0, wrongHits = 0
+    @objc func hit(_ sender: Any?) { cancelHits += 1 }
+    @objc func wrong(_ sender: Any?) { wrongHits += 1 }
 }

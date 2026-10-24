@@ -64,7 +64,7 @@ struct SlideshowSettings: Equatable, Sendable {
     }
 
     /// "5 s per image".
-    var intervalToast: String { "\(intervalSec) s per image" }
+    var intervalToast: String { "\(intervalSec) s per photo" }
 }
 
 /// Play order over `count` items. `order[position]` is the item shown.
@@ -192,7 +192,7 @@ struct SlideshowScope: Equatable {
     /// Selected images in the Browser (the second row shows from 1).
     var selectedCount: Int
 
-    var allTitle: String { "All \(allCount) visible \(allCount == 1 ? "photo" : "photos") in ‘\(folderName)’" }
+    var allTitle: String { "All \(allCount) visible \(allCount == 1 ? "photo" : "photos") in “\(folderName)”" }
     var selectedTitle: String { "\(selectedCount) selected \(selectedCount == 1 ? "photo" : "photos")" }
     var offersSelection: Bool { selectedCount > 0 }
     /// The "selected" radio is the default from 2 selected up (a set chosen

@@ -171,10 +171,10 @@ final class ComparePaneView: NSView {
     func setReference(_ reference: Bool, canPrevious: Bool, canNext: Bool) {
         self.reference = reference; keep.state = reference ? .on : .off
         keep.toolTip = "Keep this photo while changing candidates"
-        keep.setAccessibilityLabel(reference ? "Keep Photo, Reference" : "Keep Photo")
+        keep.setAccessibilityLabel("Keep Photo")
         previous.isEnabled = !reference && canPrevious; next.isEnabled = !reference && canNext
-        previous.toolTip = reference ? "Unpin to change this photo" : "Previous candidate"
-        next.toolTip = reference ? "Unpin to change this photo" : "Next candidate"
+        previous.toolTip = reference ? "Uncheck Keep Photo to change this photo" : "Previous candidate"
+        next.toolTip = reference ? "Uncheck Keep Photo to change this photo" : "Next candidate"
         refreshActions()
     }
     private func refreshActions() { navigationButtons.isHidden = !(reference || hovered || isFocused) }

@@ -1178,7 +1178,7 @@ final class EditNativeFieldFlowTests: XCTestCase {
         let saved = await viewer.saveEditedFile(asPanel: false)
         XCTAssertFalse(saved)
         XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message,
-                       "The displayed photo no longer matches this edit. Your edits are still open; no file was changed.")
+                       "The photo on screen no longer matches this edit. Your edits are still open. No file was changed.")
         XCTAssertTrue(editor.isActive); XCTAssertTrue(editor.recipe === recipe)
         let retainedOperations = await recipe.snapshot()
         XCTAssertEqual(retainedOperations, operations)

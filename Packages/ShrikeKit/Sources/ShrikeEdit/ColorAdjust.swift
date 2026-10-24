@@ -46,26 +46,29 @@ public struct ColorAdjustTool: Sendable {
 
     /// Apply `params` to `image`. Returns the input unchanged when
     /// `params.isIdentity`.
-    public static func apply(_ params: ColorAdjustParams, to image: CGImage) -> CGImage {
-        if params.isIdentity { return image }
+    public static func apply(_ params: ColorAdjustParams, to input: CGImage) -> CGImage {
+        if params.isIdentity { return input }
+        // CMYK and grayscale can't be rendered RGBA8 (the tool used to hand
+        // the input back unchanged): work in sRGB.
+        let image = EditColorSpace.workingRGB(input, keepGray: false)
         var ci = CIImage(cgImage: image)
 
         if params.brightness != 0 || params.contrast != 0 || params.saturation != 0 {
-            guard let filter = CIFilter(name: "CIColorControls") else { return image }
+            guard let filter = CIFilter(name: "CIColorControls") else { return input }
             filter.setValue(ci, forKey: kCIInputImageKey)
             filter.setValue(params.brightness,           forKey: kCIInputBrightnessKey)
             filter.setValue(1.0 + params.contrast,       forKey: kCIInputContrastKey)
             filter.setValue(1.0 + params.saturation,     forKey: kCIInputSaturationKey)
-            guard let out = filter.outputImage else { return image }
+            guard let out = filter.outputImage else { return input }
             ci = out
         }
 
         let hue = min(max(params.hue ?? 0, hueRange.lowerBound), hueRange.upperBound)
         if hue != 0 {
-            guard let filter = CIFilter(name: "CIHueAdjust") else { return image }
+            guard let filter = CIFilter(name: "CIHueAdjust") else { return input }
             filter.setValue(ci, forKey: kCIInputImageKey)
             filter.setValue(hue * .pi / 180, forKey: kCIInputAngleKey)
-            guard let out = filter.outputImage else { return image }
+            guard let out = filter.outputImage else { return input }
             ci = out
         }
 
@@ -75,6 +78,6 @@ public struct ColorAdjustTool: Sendable {
 
         let colorSpace = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
         return ciContext.createCGImage(ci, from: extent, format: .RGBA8, colorSpace: colorSpace)
-            ?? image
+            ?? input
     }
 }

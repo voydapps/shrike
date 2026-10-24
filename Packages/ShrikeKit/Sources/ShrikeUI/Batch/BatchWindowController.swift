@@ -75,6 +75,8 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
     var presetNameResponder: (() -> String?)?
     /// Answers "Delete the preset “Name”?": true = Delete.
     var deletePresetResponder: ((String) -> Bool)?
+    /// Answers "Change N original photos?": true = Change Originals.
+    var changeOriginalsResponder: ((_ title: String, _ information: String) -> Bool)?
     var dockBadge: (String?) -> Void = { NSApplication.shared.dockTile.badgeLabel = $0 }
     var requestAttention: () -> Void = { _ = NSApplication.shared.requestUserAttention(.informationalRequest) }
     var announce: (String) -> Void
@@ -134,6 +136,14 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
                                             .priority: NSAccessibilityPriorityLevel.high.rawValue])
         }
         super.init(window: window)
+        model.confirmChangeOriginals = { [weak self] title, information in
+            if let responder = self?.changeOriginalsResponder { return responder(title, information) }
+            let choice = await ShrikeAlert.run(
+                message: title, information: information,
+                buttons: [ShrikeAlert.Button(BatchModel.ConfirmCopy.confirm, role: .destructive), .safeCancel()],
+                on: self?.window)
+            return choice == 0
+        }
         self.launcher = launcher
         window.delegate = self
         window.escapeHandler = { [weak self] in self?.escapePressed() }
@@ -207,6 +217,8 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         a.showInFinder = { [weak self] in self?.showInFinder() }
         a.openInShrike = { [weak self] in self?.openResultInShrike() }
         a.done = { [weak self] in self?.close() }
+        a.undoBatch = { [weak self] in self?.undoBatch() }
+        a.canUndoBatch = { [weak self] in self?.canUndoBatch ?? false }
         return a
     }
 
@@ -305,12 +317,37 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
               let launcher, let undo = launcher.undoManager else { return }
         let runner = model.runner
         let toast = launcherToast
-        undo.registerUndo(withTarget: launcher) { _ in
+        let gate = UndoOnce()
+        undoOnce = gate
+        // The gate is the undo's own target (the handler keeps it alive), so
+        // Undo Batch can drop exactly this registration and no other undo of
+        // the launching window.
+        undo.registerUndo(withTarget: gate) { [gate] _ in
             MainActor.assumeIsolated {
+                guard gate.take() else { return }
                 BatchUndo.run(runner: runner, result: result, toast: toast)
             }
         }
         undo.setActionName(name)
+    }
+
+    /// Lets the Done screen's Actions ▸ Undo Batch and Edit ▸ Undo share one undo:
+    /// whichever comes first runs it, the other does nothing.
+    private final class UndoOnce {
+        private var used = false
+        func take() -> Bool { defer { used = true }; return !used }
+        var isAvailable: Bool { !used }
+    }
+    private var undoOnce: UndoOnce?
+
+    var canUndoBatch: Bool { model.undoActionName != nil && undoOnce?.isAvailable == true }
+
+    /// Done screen, Actions ▸ Undo Batch (audit on-screen L6).
+    func undoBatch() {
+        guard canUndoBatch, let result = model.result, let gate = undoOnce, gate.take() else { return }
+        // Edit > Undo would otherwise still offer this batch (audit on-screen L6).
+        launcher?.undoManager?.removeAllActions(withTarget: gate)
+        BatchUndo.run(runner: model.runner, result: result, toast: launcherToast)
     }
 
     // MARK: Done view actions
@@ -343,7 +380,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = [.image, .folder]
         panel.prompt = "Add"
-        panel.message = "Choose images or folders to add to the batch."
+        panel.message = "Choose photos or folders to add to the batch."
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK else { return }
             let urls = panel.urls

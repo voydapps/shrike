@@ -294,7 +294,7 @@ final class EditTransitionTests: XCTestCase {
             (view as? NSTextField).map { [$0.stringValue] } ?? []
                 + view.subviews.flatMap { labels(in: $0) }
         }
-        XCTAssertTrue(labels(in: panel).contains("Same size as the current image."),
+        XCTAssertTrue(labels(in: panel).contains("Same size as the current photo."),
                       "An accepted crop is the current image; Resize must not claim original-file dimensions")
     }
 
@@ -603,7 +603,7 @@ final class EditTransitionTests: XCTestCase {
         EditExitModal.responderForTesting = { content in
             asks += 1
             XCTAssertEqual(content.primary, .save, "Pure Crop preserves PNG precision; it does not require conversion")
-            XCTAssertEqual(content.buttons[0], "Save Changes")
+            XCTAssertEqual(content.buttons[0], "Save")
             XCTAssertFalse(content.information.contains("convert"))
             return .save
         }
@@ -727,7 +727,7 @@ final class EditTransitionTests: XCTestCase {
         var asks = 0, toolAsks = 0
         EditToolTransitionModal.responderForTesting = { _ in toolAsks += 1; return .keep }
         EditExitModal.presenterForTesting = { content, completion in
-            asks += 1; XCTAssertEqual(content.buttons, ["Save Changes", "Cancel", "Discard Changes"])
+            asks += 1; XCTAssertEqual(content.buttons, ["Save", "Cancel", "Don't Save"])
             answer = completion
         }
         viewer.dispatch(.nextImage)

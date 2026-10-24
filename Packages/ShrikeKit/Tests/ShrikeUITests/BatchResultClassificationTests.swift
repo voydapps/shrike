@@ -37,6 +37,19 @@ final class BatchResultClassificationTests: XCTestCase {
         XCTAssertTrue(result([.skipped(.nameExists)]).hasIntentionalSkips)
     }
 
+    /// Workers finish out of order; the Done list follows the queue (audit on-screen L2).
+    func testSkippedRowsFollowTheQueueNotTheFinishOrder() {
+        let urls = (0..<6).map { URL(fileURLWithPath: "/tmp/shrike-order/s\($0).jpg") }
+        let plan = BatchPlan(items: urls.map { ImageGroup(primary: $0) }, rotate: 1, output: .inPlace)
+        let finishOrder = [3, 1, 5, 0, 4, 2]
+        let rows = finishOrder.map {
+            BatchModel.SkippedRow(name: urls[$0].lastPathComponent, reason: "Cancelled.", source: urls[$0])
+        }
+        let stranger = BatchModel.SkippedRow(name: "x.jpg", reason: "?", source: URL(fileURLWithPath: "/tmp/shrike-order/x.jpg"))
+        let sorted = BatchModel.inQueueOrder(rows + [stranger], plan: plan)
+        XCTAssertEqual(sorted.map(\.name), ["s0.jpg", "s1.jpg", "s2.jpg", "s3.jpg", "s4.jpg", "s5.jpg", "x.jpg"])
+    }
+
     func testRetryPlanAgreesWithTheHint() {
         let runner = BatchRunner(fileOps: FileOps(metadata: nil, backups: BackupStore(root: FileManager.default.temporaryDirectory.appendingPathComponent("shrike-classify-\(UUID().uuidString)")), watchers: nil))
         for reason in [BatchSkipReason.cancelled, .unreadable, .diskFull, .nameExists, .cannotRotateLosslessly,

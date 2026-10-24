@@ -77,8 +77,8 @@ final class EditPanelPolish028Tests: XCTestCase {
     func testResizePreviewStrings() {
         let source = CGSize(width: 5184, height: 3456)
         XCTAssertEqual(ResizePanel.previewText(source: source, width: 2592, height: 1728), "New size: 2592 × 1728 px")
-        XCTAssertEqual(ResizePanel.previewText(source: source, width: 5184, height: 3456), "Same size as the current image.")
-        XCTAssertEqual(ResizePanel.previewText(source: source, width: 0, height: 3456), "Same size as the current image.")
+        XCTAssertEqual(ResizePanel.previewText(source: source, width: 5184, height: 3456), "Same size as the current photo.")
+        XCTAssertEqual(ResizePanel.previewText(source: source, width: 0, height: 3456), "Same size as the current photo.")
     }
     func testResizePercentTextDoesNotShareSpaceWithItsSuffixAtEitherChromeSize() throws {
         let saved = Prefs.largerChrome

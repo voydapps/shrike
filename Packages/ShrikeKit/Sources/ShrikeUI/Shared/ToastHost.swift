@@ -144,6 +144,10 @@ public final class ToastHostView: HUDSurfaceView {
     static let progressWidth: CGFloat = 280
     public static let minWidth: CGFloat = 160
     public static let maxWidth: CGFloat = 480
+    /// Longest message: two lines, then "…". The full text stays in the tooltip.
+    static let maxLines = 2
+    /// Room for the text: the pill minus its 12 pt side padding.
+    static let textWidth: CGFloat = maxWidth - 24
     static let fadeIn: TimeInterval = 0.12
     static let fadeOut: TimeInterval = 0.20
     /// Spec 27 N6: black 0.82 fill, 0.5 pt white 0.16 hairline, a tight shadow.
@@ -189,6 +193,7 @@ public final class ToastHostView: HUDSurfaceView {
     private var buttonGap: NSLayoutConstraint?
     private var buttonCollapsed: NSLayoutConstraint?
     private var heightConstraint: NSLayoutConstraint?
+    private var ordinaryHeightConstraints: [NSLayoutConstraint] = []
     private var labelCenterY: NSLayoutConstraint?
     private var labelLeading: NSLayoutConstraint?
     private var ordinaryWidthConstraints: [NSLayoutConstraint] = []
@@ -223,9 +228,11 @@ public final class ToastHostView: HUDSurfaceView {
 
         label.font = ChromeTypography.font(13)
         label.textColor = .labelColor
-        label.lineBreakMode = .byTruncatingMiddle
-        label.maximumNumberOfLines = 1
+        // Spec 21b §5: up to 2 lines, word wrap, the tail is cut (never the middle).
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = Self.maxLines
         label.cell?.truncatesLastVisibleLine = true
+        label.cell?.isScrollable = false
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
@@ -257,7 +264,13 @@ public final class ToastHostView: HUDSurfaceView {
         let collapsed = label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12)
         buttonGap = gap
         buttonCollapsed = collapsed
-        let height = heightAnchor.constraint(equalToConstant: Self.height)
+        // 32 pt for one line; two lines grow the pill (label + 7 pt above and below).
+        let height = heightAnchor.constraint(greaterThanOrEqualToConstant: Self.height)
+        let heightPreferred = heightAnchor.constraint(equalToConstant: Self.height)
+        heightPreferred.priority = .defaultLow
+        let labelTop = label.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 7)
+        let labelBottom = label.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -7)
+        ordinaryHeightConstraints = [height, heightPreferred, labelTop, labelBottom]
         let centerY = label.centerYAnchor.constraint(equalTo: centerYAnchor)
         heightConstraint = height
         labelCenterY = centerY
@@ -286,7 +299,7 @@ public final class ToastHostView: HUDSurfaceView {
         ]
         NSLayoutConstraint.activate(ordinaryWidthConstraints)
         NSLayoutConstraint.activate([
-            height,
+            height, heightPreferred, labelTop, labelBottom,
             leading,
             centerY,
             button.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -410,6 +423,9 @@ public final class ToastHostView: HUDSurfaceView {
             buttonGap?.isActive = false
             buttonCollapsed?.isActive = true
         }
+        // Wrap width = the text room minus the action button, if any.
+        label.preferredMaxLayoutWidth = Self.textWidth
+            - (content.actionTitle == nil ? 0 : button.intrinsicContentSize.width + 8)
 
         configureProgressPresentation(content)
 
@@ -447,7 +463,18 @@ public final class ToastHostView: HUDSurfaceView {
     private func configureProgressPresentation(_ content: ToastContent) {
         let isProgress = content.progress != nil
         NSLayoutConstraint.deactivate(progressConstraints + progressEdgeConstraints + ordinaryWidthConstraints)
-        heightConstraint?.isActive = !isProgress
+        if isProgress { NSLayoutConstraint.deactivate(ordinaryHeightConstraints) }
+        else { NSLayoutConstraint.activate(ordinaryHeightConstraints) }
+        label.maximumNumberOfLines = isProgress ? 1 : Self.maxLines
+        if isProgress {
+            label.lineBreakMode = .byTruncatingMiddle
+        } else {
+            // Word wrap, 2 lines, then the LAST line gets the "…" (never the middle).
+            // (A truncating line-break mode would switch wrapping off.)
+            label.lineBreakMode = .byWordWrapping
+            label.cell?.truncatesLastVisibleLine = true
+            label.cell?.isScrollable = false
+        }
         labelCenterY?.isActive = !isProgress
         labelLeading?.constant = isProgress ? 16 : 12
         buttonCollapsed?.constant = isProgress ? -16 : -12
@@ -578,6 +605,21 @@ public final class ToastHostView: HUDSurfaceView {
         addTrackingArea(area)
         tracking = area
     }
+
+    /// Switching to another app while the pointer rests on the toast sends no
+    /// `mouseExited`; the clock would stay stopped (audit L17). Losing focus resumes it.
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self, name: NSApplication.didResignActiveNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+        guard let window else { return }
+        NotificationCenter.default.addObserver(self, selector: #selector(focusLeft(_:)),
+                                               name: NSApplication.didResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(focusLeft(_:)),
+                                               name: NSWindow.didResignKeyNotification, object: window)
+    }
+
+    @objc private func focusLeft(_ note: Notification) { resumeTimer() }
 
     public override func mouseEntered(with event: NSEvent) { pauseTimer() }
     public override func mouseExited(with event: NSEvent) { resumeTimer() }

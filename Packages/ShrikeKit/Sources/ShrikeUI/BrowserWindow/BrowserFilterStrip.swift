@@ -6,6 +6,21 @@ struct BrowserFilterCondition {
     let title: String
 }
 
+extension BrowserFilterCondition.Key {
+    /// The word VoiceOver says in "Remove … filter".
+    var accessibilityName: String {
+        switch self {
+        case .search: return "search"
+        case .rating: return "rating"
+        case .flag: return "flag"
+        case .kinds: return "kinds"
+        case .formats: return "formats"
+        case .dates: return "date range"
+        case .tags: return "tags"
+        }
+    }
+}
+
 extension BrowserFilter {
     var conditions: [BrowserFilterCondition] {
         var out: [BrowserFilterCondition] = []
@@ -17,7 +32,7 @@ extension BrowserFilter {
         }
         if !formats.isEmpty { out.append(.init(key: .formats, title: "Formats: " + formats.map(\.rawValue).sorted().joined(separator: ", "))) }
         if modifiedFrom != nil || modifiedTo != nil { out.append(.init(key: .dates, title: "Date range")) }
-        if !tags.isEmpty { out.append(.init(key: .tags, title: "Tags: " + tags.sorted().joined(separator: ", "))) }
+        if !tags.isEmpty { out.append(.init(key: .tags, title: "Tags: " + tags.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.joined(separator: ", "))) }
         return out
     }
     func removing(_ key: BrowserFilterCondition.Key) -> BrowserFilter {
@@ -75,7 +90,7 @@ final class BrowserFilterStrip: NSView {
             let button = NSButton(title: condition.title + "  ×", target: nil, action: nil)
             button.bezelStyle = .rounded
             button.font = ChromeTypography.font(12)
-            button.setAccessibilityLabel("Remove \(condition.key) filter: \(condition.title)")
+            button.setAccessibilityLabel("Remove \(condition.key.accessibilityName) filter: \(condition.title)")
             button.toolTip = condition.title
             let action = Action { [weak self] in self?.onChange?(value.removing(condition.key)) }
             actions.append(action); button.target = action; button.action = #selector(Action.run)

@@ -364,6 +364,15 @@ final class TagsPopoverController: NSViewController, NSTokenFieldDelegate, NSPop
     func syncFromSession() {
         for toggle in toggles { toggle.state = session.state(of: toggle.tag0) }
         tokenField.objectValue = session.commonTags
+        placeCaretAfterLastToken()
+    }
+
+    /// Setting `objectValue` while the field is being edited leaves ALL its tokens
+    /// selected, so the next typed tag replaced the colour tag the user had just
+    /// clicked (audit on-screen M1). The insertion point goes after the last token.
+    private func placeCaretAfterLastToken() {
+        guard let editor = tokenField.currentEditor() as? NSTextView else { return }
+        editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
     }
 
     @objc func toggleColor(_ sender: TagColorToggle) {

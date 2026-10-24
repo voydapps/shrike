@@ -541,12 +541,19 @@ public final class ThumbnailItem: NSCollectionViewItem {
     /// The failure text, else (filmstrip strip) the file name.
     private func updateToolTip() {
         guard isViewLoaded else { return }
+        let text: String?
         if isFailed {
-            view.toolTip = "Shrike can't read this file."
+            text = "Shrike can't read this file."
         } else {
             // The full name always (spec 25 §6.3); the layout changes with the window.
-            view.toolTip = shownFileName ?? currentItem?.displayName
+            text = shownFileName ?? currentItem?.displayName
         }
+        guard view.toolTip != text else { return }
+        // Clear first: AppKit then drops a tip that is still on screen for the
+        // old name and builds the new one for this cell's place (audit
+        // on-screen L14: a reused cell kept showing its old file's name).
+        view.toolTip = nil
+        view.toolTip = text
     }
 
     /// The name of the file the pair is showing (spec 27 N5): the RAW's

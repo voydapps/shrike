@@ -25,6 +25,38 @@ final class BackupStoreTests: XCTestCase {
         super.tearDown()
     }
 
+    /// FS-11: Delete All Backups removes every backup copy and nothing else.
+    func test_deleteAll_removesBackupsButNeverTheOriginals() async throws {
+        let a = try tmp.file("a.jpg", "v0")
+        let b = try tmp.file("b.jpg", "other")
+        let store = BackupStore(root: root)
+        _ = try await store.backup(a, reason: .rotate)
+        _ = try await store.backup(a, reason: .rotate)
+        let rec = try await store.backup(b, reason: .rotate)
+        // A folder with no readable record (an orphan) goes too.
+        let orphan = rec.backupURL.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("not-a-record", isDirectory: true)
+        try FileManager.default.createDirectory(at: orphan, withIntermediateDirectories: true)
+        try "x".write(to: orphan.appendingPathComponent("junk"), atomically: true, encoding: .utf8)
+        let fresh = BackupStore(root: root)       // re-reads the disk, orphan included
+        let before = await fresh.totalBytes()
+        XCTAssertGreaterThan(before, 0)
+
+        let report = await fresh.deleteAll()
+        XCTAssertEqual(report.removed, 4)
+        XCTAssertEqual(report.freedBytes, before)
+        let after = await fresh.totalBytes()
+        XCTAssertEqual(after, 0)
+        let remaining = await fresh.allRecords()
+        XCTAssertTrue(remaining.isEmpty)
+        XCTAssertEqual(readString(a), "v0", "the photos themselves are untouched")
+        XCTAssertEqual(readString(b), "other")
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        XCTAssertTrue(left.isEmpty, "no day folders left: \(left)")
+        let again = await BackupStore(root: root).allRecords()
+        XCTAssertTrue(again.isEmpty, "gone from disk, not only from memory")
+    }
+
     func test_defaultRoot_isBundleIDFolderInApplicationSupport() {
         XCTAssertTrue(BackupStore.defaultRoot.path.hasSuffix(
             "Application Support/app.shrike/Backups"))
@@ -356,4 +388,5 @@ final class ClockBox: @unchecked Sendable {
     // @unchecked: test-only; written before each awaited call, never concurrently.
     var value: Date
     init(_ v: Date) { value = v }
+
 }

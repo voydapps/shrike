@@ -11,7 +11,7 @@ back to **ad-hoc** signing and print a warning, so they also work on
 another Mac. The install steps for people are in the main `README.md` and in
 the text file inside the DMG (`Scripts/dmg/How to open Shrike.txt`).
 
-Requirements: macOS 14+, Xcode 26 (Swift 6), `brew install xcodegen`.
+Requirements: macOS 14+, Xcode 26 (Swift 6), `brew install xcodegen` (CI pins 2.45.4, see `Scripts/install-xcodegen.sh`).
 No `sudo`: `/Applications` is writable by admin users.
 
 ## `install-local.sh` — build and install into /Applications

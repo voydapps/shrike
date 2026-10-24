@@ -103,7 +103,7 @@ final class CompareWindowTests: XCTestCase {
         let five = CompareSources.fromBrowser(list: list, selected: [0, 1, 2, 3, 5])
         XCTAssertEqual(five?.shown, [0, 1, 2, 3])
         XCTAssertEqual(five?.truncated, true)
-        XCTAssertEqual(CompareSources.truncatedToast, "Compare shows up to 4 images. Showing the first 4.")
+        XCTAssertEqual(CompareSources.truncatedToast, "Compare shows up to 4 photos. Showing the first 4.")
         XCTAssertEqual(CompareSources.fromViewer(list: list, displayed: 3)?.shown, [3, 4])
         XCTAssertNil(CompareSources.fromViewer(list: Array(list.prefix(1)), displayed: 0))
     }
@@ -353,7 +353,7 @@ final class CompareWindowTests: XCTestCase {
         browser.perform(.compare)
         let window = try XCTUnwrap(CompareWindow.current)
         XCTAssertEqual(names(window), ["a.jpg", "b.jpg", "c.jpg", "d.jpg"])
-        XCTAssertEqual(window.toastsForTesting, ["Compare shows up to 4 images. Showing the first 4."])
+        XCTAssertEqual(window.toastsForTesting, ["Compare shows up to 4 photos. Showing the first 4."])
         window.setContentSize(NSSize(width: 1000, height: 800))
         window.layoutPanes()
         let frames = window.panes.map(\.view.frame)
@@ -683,5 +683,38 @@ final class CompareWindowTests: XCTestCase {
         compare.keyDown(with: Self.esc)
         XCTAssertTrue(compare.isClosedForTesting)
         XCTAssertTrue(viewer.firstResponder === viewer.canvasResponder)
+    }
+
+    /// Audit on-screen M3: with the panes zoomed, → on a pane brings the next photo at the
+    /// SAME zoom (the file size is known only after the info read; the zoom is applied then).
+    func testNextCandidateKeepsTheSharedZoom() async throws {
+        // The third photo has other pixel dimensions than the pane's old one: the old
+        // pane keeps its previous size until the new file's size is read.
+        let groups = [ImageGroup(primary: try writeJPEG("a.jpg", width: 6000, height: 4000)),
+                      ImageGroup(primary: try writeJPEG("b.jpg", width: 6000, height: 4000)),
+                      ImageGroup(primary: try writeJPEG("c.jpg", width: 2400, height: 1600))]
+        let services = ShrikeServices.makeDefault()
+        let window = CompareWindow.open(CompareRequest(list: groups, shown: [0, 1], truncated: false),
+                                        services: services, origin: nil, frame: NSRect(x: 0, y: 0, width: 1200, height: 600))
+        defer { window.close() }
+        let loaded = await waitUntil {
+            window.panes.allSatisfy { $0.view.imageView.image != nil && $0.view.imageView.sourcePixelSize != nil }
+        }
+        XCTAssertTrue(loaded)
+        XCTAssertTrue(window.isLocked)
+        window.focus(0)
+        let lead = window.panes[0].view.imageView
+        lead.setPixelScale(2.0, anchor: nil)
+        XCTAssertEqual(window.panes[1].view.imageView.pixelScale, 2.0, accuracy: 0.01)
+
+        window.panes[1].view.onNext?()
+        XCTAssertEqual(window.panes[1].index, 2)
+        let settled = await waitUntil {
+            let v = window.panes[1].view.imageView
+            return window.panes[1].loadedURL == groups[2].primary && v.sourcePixelSize != nil
+                && abs(v.pixelScale - 2.0) < 0.01
+        }
+        XCTAssertTrue(settled, "pane 2 shows the new photo at \(window.panes[1].view.imageView.pixelScale) (want 2.0)")
+        XCTAssertEqual(lead.pixelScale, 2.0, accuracy: 0.01, "the other pane did not move")
     }
 }

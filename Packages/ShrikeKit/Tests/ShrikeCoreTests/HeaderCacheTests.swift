@@ -33,6 +33,39 @@ final class HeaderCacheTests: XCTestCase {
         XCTAssertEqual(badHit[bad], ImageHeaderInfo())
     }
 
+    /// Audit MP-12: the oldest header rows go when the table passes its cap,
+    /// and recent folders keep only the newest.
+    func testHeaderCacheAndRecentFoldersAreBounded() async throws {
+        let tmp = TempDir("header-cache-prune")
+        defer { tmp.cleanup() }
+        let saved = MetadataStore.maxHeaderRows
+        MetadataStore.maxHeaderRows = 150
+        defer { MetadataStore.maxHeaderRows = saved }
+        let store = try MetadataStore(databaseURL: tmp.url.appendingPathComponent("m.sqlite"),
+                                      writeFileAttributes: { false })
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        func batch(_ range: Range<Int>) -> [URL: (modified: Date, info: ImageHeaderInfo)] {
+            Dictionary(uniqueKeysWithValues: range.map {
+                (tmp.url.appendingPathComponent("p\($0).jpg"), (date, ImageHeaderInfo(pixelWidth: $0, pixelHeight: 1)))
+            })
+        }
+        await store.storeHeaders(batch(0..<120))
+        await store.storeHeaders(batch(120..<240))
+        let counts = try await store.tableCountsForTesting()
+        XCTAssertEqual(counts.headers, 150)
+        let newest = tmp.url.appendingPathComponent("p239.jpg")
+        let kept = await store.cachedHeaders(for: [newest: date])
+        XCTAssertNotNil(kept[newest])
+
+        for i in 0..<(MetadataStore.maxRecentFolderRows + 10) {
+            try await store.addRecentFolder(tmp.url.appendingPathComponent("f\(i)", isDirectory: true))
+        }
+        let after = try await store.tableCountsForTesting()
+        XCTAssertEqual(after.recents, MetadataStore.maxRecentFolderRows)
+        let recent = try await store.recentFolders(limit: 1)
+        XCTAssertEqual(recent.first?.lastPathComponent, "f\(MetadataStore.maxRecentFolderRows + 9)")
+    }
+
     /// A database written by the previous build (v1…v4) opens, keeps its
     /// ratings and gains the header cache.
     func testMigrationV5_fromV4Database() async throws {

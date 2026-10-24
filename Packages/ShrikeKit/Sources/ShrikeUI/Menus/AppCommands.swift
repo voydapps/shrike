@@ -136,6 +136,19 @@ public final class AppCommands: NSObject, NSMenuItemValidation {
         ShortcutsWindowController.shared.toggle()
     }
 
+    /// Help ▸ Shrike Website / Report a Problem…: open the default browser. The app
+    /// itself makes no connection.
+    public static let websiteURL = URL(string: "https://voydapps.github.io/shrike")!
+    public static let issuesURL = URL(string: "https://github.com/voydapps/shrike/issues")!
+    var openURLForTesting: ((URL) -> Void)?
+
+    @objc public func openWebsite(_ sender: Any?) { open(Self.websiteURL) }
+    @objc public func reportProblem(_ sender: Any?) { open(Self.issuesURL) }
+    private func open(_ url: URL) {
+        if let openURLForTesting { openURLForTesting(url); return }
+        NSWorkspace.shared.open(url)
+    }
+
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { true }
 
     // MARK: Panels

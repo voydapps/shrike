@@ -102,6 +102,12 @@ final class ThumbnailMemoryLRU: @unchecked Sendable {
         return nodes.values.contains { $0.key.hasPrefix(keyPrefix) }
     }
 
+    /// Drops least recently used entries until at most `limit` bytes remain.
+    func trim(toBytes limit: Int) {
+        lock.lock(); defer { lock.unlock() }
+        while bytes > limit, let last = tail { remove(last) }
+    }
+
     func removeAll() {
         lock.lock(); defer { lock.unlock() }
         nodes.removeAll()
@@ -152,10 +158,14 @@ final class ThumbnailDiskStore: @unchecked Sendable {
     /// Pending writes beyond this are dropped (it's a cache): a fast scroll
     /// through 10 000 files must not hold 10 000 decoded thumbnails.
     static let maxPendingWrites = 96
+    /// ... and by size: 96 decoded 1024 px thumbnails are ~270 MB held until
+    /// the encoders catch up (audit MP-14). One write is always accepted.
+    static let maxPendingBytes = 32 * 1024 * 1024
 
     let root: URL
     private let queue: OperationQueue
     private let pending = OSAllocatedUnfairLock(initialState: 0)
+    private let pendingBytes = OSAllocatedUnfairLock(initialState: 0)
     private let generation = OSAllocatedUnfairLock(initialState: 0)
     private let resources: ImageResourceBudget
     private let resourceOwner = ImageResourceOwner()
@@ -184,7 +194,11 @@ final class ThumbnailDiskStore: @unchecked Sendable {
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceShouldCache: true,
         ]
-        return CGImageSourceCreateImageAtIndex(src, 0, opts as CFDictionary)
+        guard let image = CGImageSourceCreateImageAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        // A hit counts as use: the size trim deletes the oldest dates first,
+        // so a folder browsed every day is not the first to go (audit MP-11).
+        utimes(url.path, nil)
+        return image
     }
 
     /// Queues an HEIC write of `image` to `url`. Returns false when the
@@ -192,8 +206,16 @@ final class ThumbnailDiskStore: @unchecked Sendable {
     @discardableResult
     func enqueueWrite(_ image: CGImage, to url: URL) -> Bool {
         guard isAvailable else { return false }
+        let cost = ThumbnailMemoryLRU.cost(of: image)
         let accepted = pending.withLock { count -> Bool in
             guard count < Self.maxPendingWrites else { return false }
+            let isFirst = count == 0
+            let fits = pendingBytes.withLock { bytes -> Bool in
+                guard isFirst || bytes + cost <= Self.maxPendingBytes else { return false }
+                bytes += cost
+                return true
+            }
+            guard fits else { return false }
             count += 1
             return true
         }
@@ -207,7 +229,7 @@ final class ThumbnailDiskStore: @unchecked Sendable {
             state.live[url] = state.next
             return state.next
         }
-        queue.addOperation { [pending, generation, targets, byteDelta] in
+        queue.addOperation { [pending, pendingBytes, generation, targets, byteDelta] in
             // BlockOperation may retain its completed closure after a later
             // barrier resumes. Transfer the payload out of that capture so
             // real image ownership and its lease end with the work itself.
@@ -237,6 +259,7 @@ final class ThumbnailDiskStore: @unchecked Sendable {
             }
             // Encode failures and skipped writes leave no entry behind.
             targets.withLock { state in if state.live[url] == token { state.live[url] = nil } }
+            pendingBytes.withLock { $0 -= cost }
             pending.withLock { $0 -= 1 }
         }
         return true
@@ -422,7 +445,9 @@ final class KeyStemMemo: @unchecked Sendable {
         }
     }
 
-    private let limit = 200_000
+    /// Entries each keep a URL alive: 200k was ~30 MB after a huge library
+    /// (audit MP-15); a grid needs far fewer at once.
+    private let limit = 20_000
     private var map: [Key: String] = [:]
     private let lock = NSLock()
 
@@ -430,6 +455,8 @@ final class KeyStemMemo: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return map[key]
     }
+
+    var count: Int { lock.lock(); defer { lock.unlock() }; return map.count }
 
     func set(_ stem: String, for key: Key) {
         lock.lock(); defer { lock.unlock() }

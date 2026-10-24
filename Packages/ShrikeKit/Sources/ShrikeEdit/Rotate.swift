@@ -139,7 +139,8 @@ public struct RotateTool: Sendable {
     /// Produce a new `CGImage` of the source rotated by `radians`,
     /// expanded to the rotated bounding box (corners exposed). Uses
     /// `CoreImage.CIAffineTransform` via the shared `CIContext`.
-    private static func rotated(_ image: CGImage, radians: Double) -> CGImage {
+    private static func rotated(_ source: CGImage, radians: Double) -> CGImage {
+        let image = EditColorSpace.workingRGB(source, keepGray: true)
         let ci = CIImage(cgImage: image)
         let rotatedCI = transformed(ci, radians: radians)
         let extent = rotatedCI.extent

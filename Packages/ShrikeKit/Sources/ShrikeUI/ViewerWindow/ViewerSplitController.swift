@@ -126,6 +126,8 @@ final class ViewerSplitController: NSSplitViewController {
 
     func setInspectorShown(_ shown: Bool, animated: Bool) {
         guard shown != isInspectorShown else { return }
+        // A user's own open or close wins over the edit-mode collapse.
+        inspectorCollapsedForEdit = false
         if shown { inspectorController.materialize() }
         if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             inspectorItem.animator().isCollapsed = !shown
@@ -162,7 +164,20 @@ final class ViewerSplitController: NSSplitViewController {
     /// Edit mode started or ended. On end, an inspector we collapsed returns.
     func editModeChanged(active: Bool) {
         isEditing = active
-        guard !active, inspectorCollapsedForEdit else { return }
+        if active {
+            // Spec 21b §9 (on-screen L16): the tool panel and the info panel together left
+            // the photo about half the window. The info panel steps aside while editing
+            // and comes back on exit unless the user opened it again meanwhile.
+            guard isInspectorShown else { return }
+            inspectorCollapsedForEdit = true
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                inspectorItem.isCollapsed = true
+            }
+            inspectorShown(false)
+            return
+        }
+        guard inspectorCollapsedForEdit else { return }
         inspectorCollapsedForEdit = false
         // The pref was never touched, so it still says "open".
         inspectorItem.isCollapsed = false

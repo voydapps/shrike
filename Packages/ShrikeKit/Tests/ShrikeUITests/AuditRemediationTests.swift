@@ -345,7 +345,15 @@ final class AuditRemediationTests: XCTestCase {
         let victim = root.appendingPathComponent("victim.jpg"); let victimBytes = Data("old victim".utf8)
         try victimBytes.write(to: victim)
         let backups = BackupStore(root: root.appendingPathComponent("backups"))
-        let runner = BatchRunner(fileOps: FileOps(metadata: nil, backups: backups, watchers: nil), backups: backups,
+        // Fake Trash (a temp folder): the real ~/.Trash must stay untouched.
+        let fakeTrash = root.appendingPathComponent("FakeTrash")
+        try FileManager.default.createDirectory(at: fakeTrash, withIntermediateDirectories: true)
+        let fakeOps = FileOps(metadata: nil, backups: backups, watchers: nil, trashItem: { url in
+            let dest = fakeTrash.appendingPathComponent(UUID().uuidString + "-" + url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: dest)
+            return dest
+        })
+        let runner = BatchRunner(fileOps: fakeOps, backups: backups,
             renameCheckpoint: { point, _ in
                 switch point {
                 case .beforeMove: throw CocoaError(.fileWriteNoPermission)

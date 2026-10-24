@@ -203,7 +203,11 @@ final class FileOpsTests: XCTestCase {
         XCTAssertTrue(exists(b.primary))
     }
 
+    /// The one deliberate real-Trash test: it opts in to the production guard
+    /// and puts the file back (and removes it on failure), so nothing stays.
     func testRealSystemTrashRoundTrip() async throws {
+        FileOps.allowSystemTrashInTests = true
+        defer { FileOps.allowSystemTrashInTests = false }
         let name = "shrike-fileops-test-\(UUID().uuidString).jpg"
         let url = try tmp.file(name, "x", in: "real")
         let g = ImageGroup(primary: url)

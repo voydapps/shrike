@@ -122,6 +122,10 @@ public final class BrowserContentViewController: NSViewController {
     var gridScrollViewForTesting: NSScrollView { gridScrollView }
     /// The view that takes the keys in this mode: the grid or the list
     /// (Esc in the search field hands focus back here).
+    /// Tab / ⇧Tab from the photos: the window moves focus to the next pane.
+    var onTab: ((Bool) -> Bool)? {
+        didSet { collectionView.onTab = onTab }
+    }
     var focusView: NSView { mode == .list ? tableView : collectionView }
     /// List ▸ Dimensions for files whose listing has no size (JPEG, PNG):
     /// the header cache first, then a header read off the main thread.
@@ -316,6 +320,7 @@ public final class BrowserContentViewController: NSViewController {
         tableView.target = self
         tableView.doubleAction = #selector(tableDoubleClicked(_:))
         tableView.keyHandler = { [weak self] event in self?.keyHandler?(event) ?? false }
+        tableView.onTab = { [weak self] backward in self?.onTab?(backward) ?? false }
         tableView.style = .inset
         // The columns share the list's width, so Flag and
         // Tags are on screen (they sat past the right edge, with no
@@ -362,7 +367,7 @@ public final class BrowserContentViewController: NSViewController {
         applyHiddenListColumns()
         installHeaderMenu()
         syncTableSortIndicator()
-        tableView.setAccessibilityLabel("Image list")
+        tableView.setAccessibilityLabel("Photo list")
 
         listScrollView.documentView = tableView
         listScrollView.hasVerticalScroller = true
@@ -707,8 +712,11 @@ public final class BrowserContentViewController: NSViewController {
     /// anchor, and scrolls the first selected item into view.
     private func restoreSelection(_ urls: [URL], anchor: URL?, scrollToFirst: Bool = true) {
         let groups = visibleItems.map(\.group)
-        let indices = urls.compactMap { FolderScanner.index(of: $0, in: groups) }.sorted()
-        let anchorIndex = anchor.flatMap { FolderScanner.index(of: $0, in: groups) }
+        // One lookup table for the whole selection (audit MP-02).
+        let lookup = GroupLookup(groups)
+        let find: (URL) -> Int? = { lookup.index(of: $0, in: groups, caseInsensitiveFallback: true) }
+        let indices = urls.compactMap(find).sorted()
+        let anchorIndex = anchor.flatMap(find)
             .flatMap { indices.contains($0) ? $0 : nil }
         // The new view gets its size first, so the scroll lands.
         if scrollToFirst, !indices.isEmpty, view.window != nil { view.layoutSubtreeIfNeeded() }
@@ -869,8 +877,9 @@ public final class BrowserContentViewController: NSViewController {
         restoreSelection(selected, anchor: anchor, scrollToFirst: false)
         if mode != .list, let keyRange {
             let groups = visibleItems.map(\.group)
-            if let anchor = FolderScanner.index(of: keyRange.anchor, in: groups),
-               let lead = FolderScanner.index(of: keyRange.lead, in: groups),
+            let lookup = GroupLookup(groups)
+            if let anchor = lookup.index(of: keyRange.anchor, in: groups, caseInsensitiveFallback: true),
+               let lead = lookup.index(of: keyRange.lead, in: groups, caseInsensitiveFallback: true),
                collectionView.selectionIndexPaths.contains(IndexPath(item: anchor, section: 0)),
                collectionView.selectionIndexPaths.contains(IndexPath(item: lead, section: 0)) {
                 collectionView.restoreAnchor(IndexPath(item: anchor, section: 0), lead: IndexPath(item: lead, section: 0))
@@ -884,8 +893,16 @@ public final class BrowserContentViewController: NSViewController {
     /// "Folder gone": the listed folder was deleted, moved or its
     /// disk was disconnected. Cleared by the next `setItems`.
     private var folderLoadingState: URL?
-    private var folderReadErrorState: (folder: URL, reason: String, retry: () -> Void)?
+    private var folderReadErrorState: (folder: URL, reason: String, retry: () -> Void, openPrivacy: (() -> Void)?)?
     private var folderGoneState: (folder: URL, action: () -> Void)?
+
+    /// Names the disk when the folder was on one that is no longer there (audit L11).
+    static func folderGoneSubtitle(for folder: URL) -> String {
+        if let disk = BrowserWindowController.goneVolumeName(of: folder) {
+            return "“\(disk)” was disconnected."
+        }
+        return "It may have been moved, or its disk was disconnected."
+    }
 
     func showFolderGone(_ folder: URL, goToEnclosingFolder: @escaping () -> Void) {
         listDimensionsTask?.cancel()
@@ -903,9 +920,11 @@ public final class BrowserContentViewController: NSViewController {
         updateEmptyState()
     }
 
-    func showFolderReadError(_ folder: URL, reason: String, retry: @escaping () -> Void) {
+    /// `openPrivacy` is set for a permission error: the button that opens the right System Settings pane.
+    func showFolderReadError(_ folder: URL, reason: String, retry: @escaping () -> Void,
+                             openPrivacy: (() -> Void)? = nil) {
         setItems([])
-        folderReadErrorState = (folder, reason, retry)
+        folderReadErrorState = (folder, reason, retry, openPrivacy)
         updateEmptyState()
     }
 
@@ -1276,7 +1295,7 @@ public final class BrowserContentViewController: NSViewController {
             emptyStateView.configure(
                 symbol: "questionmark.folder",
                 title: "“\(gone.folder.lastPathComponent)” is no longer available.",
-                subtitle: "It may have been moved, or its disk was disconnected.",
+                subtitle: Self.folderGoneSubtitle(for: gone.folder),
                 buttonTitle: "Go to Enclosing Folder",
                 action: gone.action
             )
@@ -1289,7 +1308,11 @@ public final class BrowserContentViewController: NSViewController {
             emptyStateView.configure(symbol: "exclamationmark.triangle",
                 title: "Couldn't open “\(failure.folder.lastPathComponent)”.",
                 subtitle: failure.reason, buttonTitle: "Retry", action: failure.retry)
-            emptyStateView.setSecondary(onChooseAnotherFolder)
+            if let openPrivacy = failure.openPrivacy {
+                emptyStateView.setSecondary(openPrivacy, title: "Open Privacy Settings")
+            } else {
+                emptyStateView.setSecondary(onChooseAnotherFolder)
+            }
             emptyStateView.isHidden = false
         } else if allItems.isEmpty {
             // Nothing here adds files,
@@ -1297,7 +1320,7 @@ public final class BrowserContentViewController: NSViewController {
             let name = emptyFolder?.name ?? ""
             emptyStateView.configure(
                 symbol: "photo.on.rectangle",
-                title: name.isEmpty ? "No images in this folder." : "No images in “\(name)”.",
+                title: name.isEmpty ? "No photos in this folder." : "No photos in “\(name)”.",
                 subtitle: Self.emptyFolderSubtitle(subfolders: emptyFolder?.subfolders ?? 0,
                                                    inSidebar: emptyFolder?.inSidebar ?? false),
                 buttonTitle: nil,
@@ -1311,7 +1334,7 @@ public final class BrowserContentViewController: NSViewController {
             let searching = !filter.searchTerm.isEmpty
             let filtering = !filter.popoverPartIsEmpty
             let actionTitle = searching ? (filtering ? "Clear Search and Filters" : "Clear Search") : "Clear Filters"
-            emptyStateView.configure(symbol: nil, title: "No Matching Photos", subtitle: searching && !filtering ? "No file names match ‘\(filter.searchTerm)’." : "No photos match these search and filter settings.",
+            emptyStateView.configure(symbol: nil, title: "No Matching Photos", subtitle: searching && !filtering ? "No file names match “\(filter.searchTerm)”." : "No photos match these search and filter settings.",
                                      buttonTitle: actionTitle,
                                      action: { [weak self] in self?.onClearFilter?() })
             emptyStateView.isHidden = false
@@ -1358,7 +1381,9 @@ public final class BrowserContentViewController: NSViewController {
     @discardableResult
     public func select(urls: [URL]) -> Bool {
         let groups = visibleItems.map(\.group)
-        let indices = urls.compactMap { FolderScanner.index(of: $0, in: groups) }
+        let lookup = GroupLookup(groups)
+        let find: (URL) -> Int? = { lookup.index(of: $0, in: groups, caseInsensitiveFallback: true) }
+        let indices = urls.compactMap(find)
         let carried = carriedKeyRange
         carriedKeyRange = nil
         guard !indices.isEmpty else { return false }
@@ -1366,8 +1391,8 @@ public final class BrowserContentViewController: NSViewController {
         case .grid, .filmstrip:
             collectionView.selectionIndexPaths = Set(indices.map { IndexPath(item: $0, section: 0) })
             if let carried,
-               let anchor = FolderScanner.index(of: carried.anchor, in: groups),
-               let lead = FolderScanner.index(of: carried.lead, in: groups) {
+               let anchor = find(carried.anchor),
+               let lead = find(carried.lead) {
                 collectionView.restoreAnchor(IndexPath(item: anchor, section: 0),
                                              lead: IndexPath(item: lead, section: 0))
             }
@@ -2148,7 +2173,12 @@ final class BrowserEmptyState: NSView {
         self.action = action
     }
 
-    func setSecondary(_ action: (() -> Void)?) { secondaryAction = action; secondary.isHidden = action == nil }
+    func setSecondary(_ action: (() -> Void)?, title: String = "Choose Another Folder…") {
+        secondaryAction = action
+        secondary.title = title
+        secondary.isHidden = action == nil
+    }
+    var secondaryTitle: String? { secondary.isHidden ? nil : secondary.title }
     @objc private func secondaryPressed() { secondaryAction?() }
 
     var titleText: String { title.stringValue }

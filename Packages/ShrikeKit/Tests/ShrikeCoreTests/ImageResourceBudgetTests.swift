@@ -12,6 +12,13 @@ final class ImageResourceBudgetTests: XCTestCase {
         while b.snapshot().pendingWaiterCount != count, Date() < deadline { try await Task.sleep(for: .milliseconds(2)) }
         XCTAssertEqual(b.snapshot().pendingWaiterCount, count)
     }
+    /// Audit MP-05: the production cap must not sit below the thumbnail
+    /// decode slots (each thumbnail job holds one reservation).
+    func testDefaultDiscretionaryLimitCoversThumbnailDecodeSlots() {
+        let cap = ImageResourceBudget.Configuration().maximumDiscretionaryWorkCount
+        XCTAssertGreaterThanOrEqual(cap, ThumbnailCache.defaultMaxConcurrentDecodes)
+    }
+
     func testWeightedAdmissionCancellationAndRelease() async throws {
         let b = budget(), owner = ImageResourceOwner()
         let a = try await b.reserve(bytes: 45, owner: owner, category: .batchWork, priority: .batch, policy: .bounded)
@@ -185,7 +192,11 @@ final class ImageResourceBudgetTests: XCTestCase {
                 started.withLock { $0 = true }; release.wait(); return 1
             }
         }
-        while !started.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(2)) }
+        let startDeadline = Date().addingTimeInterval(30)
+        while !started.withLock({ $0 }) {
+            guard Date() < startDeadline else { release.signal(); return XCTFail("the gated work never started") }
+            try await Task.sleep(for: .milliseconds(2))
+        }
         task.cancel()
         do { _ = try await task.value; XCTFail("cancelled wait must throw") } catch is CancellationError {}
         XCTAssertEqual(b.snapshot().reservedEstimatedBytes, 80)

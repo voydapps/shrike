@@ -27,7 +27,7 @@ public enum CompareSources {
     public static let maxPanes = 4
 
     /// "Compare shows up to 4 images. Showing the first 4.".
-    public static let truncatedToast = "Compare shows up to 4 images. Showing the first 4."
+    public static let truncatedToast = "Compare shows up to 4 photos. Showing the first 4."
 
     /// Browser: 2–4 selected = those; 1 = it and the next; over 4 = the
     /// first 4. `selected` are indices into `list` (the visible items).

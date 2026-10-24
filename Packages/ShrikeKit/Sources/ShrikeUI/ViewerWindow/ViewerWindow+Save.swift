@@ -32,22 +32,26 @@ final class FileVersionStep {
 
 /// Copy for
 enum SaveCopy {
-    static func saved(_ name: String) -> String { "Saved ‘\(name)’. Original backup available." }
-    static func savedCopy(_ name: String) -> String { "Saved copy ‘\(name)’. Original unchanged." }
-    static func saveUndone(_ name: String) -> String { "Save undone. “\(name)” is back to how it was." }
-    static func reverted(_ name: String) -> String { "Reverted “\(name)” to the original." }
-    static func revertUndone(_ name: String) -> String { "“\(name)” is back to how it was before the revert." }
-    static func saveFailed(_ name: String) -> String { "Couldn't save “\(name)”." }
-    static func undoFailed(_ name: String) -> String { "Couldn't undo — the kept copy of “\(name)” is gone." }
+    static func saved(_ name: String) -> String { "Saved “\(FileNameFit.short(name))”. Original backup available." }
+    static func savedCopy(_ name: String) -> String { "Saved copy “\(FileNameFit.short(name))”. Original unchanged." }
+    static func saveUndone(_ name: String) -> String { "Save undone. “\(FileNameFit.short(name))” is back to how it was." }
+    static func reverted(_ name: String) -> String { "Reverted “\(FileNameFit.short(name))” to the original." }
+    static func revertUndone(_ name: String) -> String { "“\(FileNameFit.short(name))” is back to how it was before the revert." }
+    static func saveFailed(_ name: String) -> String { "Couldn't save “\(FileNameFit.short(name))”." }
+    static func undoFailed(_ name: String) -> String { "Couldn't undo — the kept copy of “\(FileNameFit.short(name))” is gone." }
+
+    /// FS-7: the file changed on disk while it was open in edit mode.
+    static func changedOnDiskTitle(_ name: String) -> String { "“\(name)” changed while you were editing it." }
+    static let changedOnDiskMessage = "Another app changed this file after you started editing. Saving applies your edits to the new version, not to the picture you edited."
 
     /// A5 title / message.
     static func backupFailedTitle(_ name: String) -> String { "Shrike didn't save “\(name)”." }
     static func backupFailedMessage(volume: String?) -> String {
         if let volume {
             return "It couldn't keep a copy of the original. There isn't enough space on “\(volume)”. "
-                + "Free up space, or use Save As."
+                + "Free up space, or use Save Copy…"
         }
-        return "Shrike couldn't keep an original backup, so this file was not changed. Save a copy to keep your edits."
+        return "Shrike couldn't keep an original backup, so this file was not changed. Use Save Copy… to keep your edits."
     }
 
     /// A4.
@@ -55,7 +59,7 @@ enum SaveCopy {
     static func revertMessage(_ date: Date) -> String {
         let day = DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .none)
         let time = DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
-        return "The file goes back to how it was on \(day) at \(time), before Shrike first changed it. "
+        return "The file goes back to the version Shrike backed up on \(day) at \(time). "
             + "You can undo this."
     }
 
@@ -80,6 +84,9 @@ extension ViewerWindow {
         await resolveUnsavedEdits(reason: .appQuit)
     }
 
+    static let quitWaitsForSave = "Finishing the save. Shrike quits when it is done."
+    static var quitSaveWaitLimit: TimeInterval = 120
+
     /// Leaves edit mode through the exit alert when there are changes.
     /// True when the caller may go on: nothing changed,
     /// saved, or Don't Save. False on Cancel or a failed save.
@@ -87,7 +94,19 @@ extension ViewerWindow {
         let editor = contentRoot.editModeController
         guard !didTearDown else { return false }
         guard editor.isActive else { return true }
-        guard !editor.isTransitioning, !editor.isSaving else { return false }
+        if editor.isTransitioning || editor.isSaving {
+            // COR-7: ⌘Q during a save used to cancel the quit without a word. For a quit,
+            // say so and wait for the save to end; the exit flow (or the quit) goes on after.
+            guard reason == .appQuit else { return false }
+            contentRoot.toast(ToastContent(Self.quitWaitsForSave))
+            let deadline = Date().addingTimeInterval(Self.quitSaveWaitLimit)
+            while editor.isTransitioning || editor.isSaving, Date() < deadline, !didTearDown {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard !didTearDown else { return false }
+            guard editor.isActive else { return true }   // the save ended edit mode
+            guard !editor.isTransitioning, !editor.isSaving else { return false }
+        }
         if isVisible { makeKeyAndOrderFront(nil) }
         var departure: EditModeController.DepartureToken?
         let outcome = await withCheckedContinuation { (continuation: CheckedContinuation<EditExitOutcome, Never>) in
@@ -170,6 +189,15 @@ extension ViewerWindow {
         let operations = await recipe.snapshot()
         guard acceptsEditSave(recipe: recipe, source: source, item: item) else { return false }
         if !asPanel, operations.isEmpty { ctrl.finalizeExit(); return true }
+        // Another program changed the file while it was open in edit mode: the
+        // edits were drawn on the old picture. Ask before they land on the new one.
+        if let stamp = ctrl.sourceStamp, FileStamp(of: source) != stamp {
+            let answer = await presentFileAlert(
+                message: SaveCopy.changedOnDiskTitle(source.lastPathComponent),
+                information: SaveCopy.changedOnDiskMessage,
+                buttons: [.cancel(), ShrikeAlert.Button("Save Anyway")])
+            guard answer == 1, acceptsEditSave(recipe: recipe, source: source, item: item) else { return false }
+        }
         let capability = await Task.detached(priority: .userInitiated) {
             ImageExporter.capability(for: source, operations: operations)
         }.value
@@ -209,7 +237,7 @@ extension ViewerWindow {
               controller.recipe === recipe, controller.sourceURL == source,
               editSourceMatchesDisplayed(source, item: item) else {
             if !didTearDown {
-                contentRoot.toast(ToastContent("The displayed photo no longer matches this edit. Your edits are still open; no file was changed.", kind: .error))
+                contentRoot.toast(ToastContent("The photo on screen no longer matches this edit. Your edits are still open. No file was changed.", kind: .error))
             }
             return false
         }

@@ -28,6 +28,8 @@ struct BatchViewActions {
     var showInFinder: () -> Void = {}
     var openInShrike: () -> Void = {}
     var done: () -> Void = {}
+    var undoBatch: () -> Void = {}
+    var canUndoBatch: () -> Bool = { false }
 }
 
 /// Tokens… popover groups.
@@ -39,6 +41,35 @@ public enum BatchTokens {
         ("File", ["{name}", "{ext}", "{rating}"]),
         ("Camera", ["{camera}", "{lens}", "{iso}", "{aperture}", "{shutter}", "{focal}"]),
     ]
+}
+
+extension BatchTokens {
+    /// What a field means, with a sample value (audit on-screen L7: chips had no meaning).
+    /// The sample is fixed text, not read from the first photo.
+    public static func hint(_ token: String) -> String {
+        switch token {
+        case "{yyyy}": return "Year the photo was taken, like 2021"
+        case "{MM}": return "Month the photo was taken, like 06"
+        case "{dd}": return "Day the photo was taken, like 14"
+        case "{yyyy-MM-dd}": return "Date the photo was taken, like 2021-06-14"
+        case "{HH-mm-ss}": return "Time the photo was taken, like 07-57-12"
+        case "{date:yyyyMMdd}": return "Date the photo was taken, like 20210614"
+        case "{filedate:yyyy-MM-dd}": return "Date the file was last changed, like 2021-06-14"
+        case "{counter}": return "A number that counts up, like 1, 2, 3"
+        case "{counter:000}": return "A counter with 3 digits, like 001, 002"
+        case "{counter:0000}": return "A counter with 4 digits, like 0001, 0002"
+        case "{name}": return "The file name without its ending, like IMG_4219"
+        case "{ext}": return "The file ending, like jpg"
+        case "{rating}": return "The star rating, 0 to 5"
+        case "{camera}": return "Camera model, like Canon EOS 60D"
+        case "{lens}": return "Lens model, like EF-S24mm f/2.8 STM"
+        case "{iso}": return "ISO speed, like 100"
+        case "{aperture}": return "Aperture, like f10"
+        case "{shutter}": return "Shutter time, like 1-400"
+        case "{focal}": return "Focal length, like 24mm"
+        default: return "Add this field to the name"
+        }
+    }
 }
 
 struct BatchRootView: View {
@@ -203,8 +234,8 @@ struct BatchFormView: View {
                                 .stroke(Color(nsColor: .systemRed), lineWidth: 2)
                                 .opacity(model.templateError == nil ? 0 : 1)
                         )
-                    Button("Tokens…") { showsTokens.toggle() }
-                        .help("Insert a name token")
+                    Button("Insert Field…") { showsTokens.toggle() }
+                        .help("Insert a part of the photo's data into the name")
                         .popover(isPresented: $showsTokens, arrowEdge: .bottom) {
                             BatchTokenPopover { token in
                                 inserter.insert(token) { model.form.template += $0 }
@@ -303,6 +334,12 @@ struct BatchFormView: View {
             .fixedSize()
             .accessibilityLabel("Preset")
             .disabled(model.reviewingRemaining)
+            if let line = model.unreadableLine, model.validationLine == nil {
+                Text(line)
+                    .foregroundStyle(Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 8)
+            }
             if let line = model.validationLine {
                 Text(line)
                     .foregroundStyle(model.templateError == nil ? Color.secondary : Color(nsColor: .systemRed))
@@ -319,7 +356,7 @@ struct BatchFormView: View {
                 if BatchReturnPolicy.returnShouldOnlyCommitField(event: event, firstResponder: window?.firstResponder) {
                     window?.makeFirstResponder(nil)   // Return commits the value; the next Return runs
                 } else {
-                    model.run()
+                    model.requestRun()
                 }
             }
                 .keyboardShortcut(.defaultAction)
@@ -329,7 +366,7 @@ struct BatchFormView: View {
                 // Return is the real default button; ⌘Return keeps working
                 // (a button holds one shortcut, so a hidden twin carries it).
                 .background(
-                    Button("") { if model.canRun { model.run() } }
+                    Button("") { if model.canRun { model.requestRun() } }
                         .keyboardShortcut(.return, modifiers: .command)
                         .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
                 )
@@ -417,8 +454,8 @@ struct BatchQueuePane: View {
                 Button(action: actions.addItems) { Image(systemName: "plus") }
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
-                    .help("Add Images…")
-                    .accessibilityLabel("Add Images")
+                    .help("Add Photos…")
+                    .accessibilityLabel("Add Photos")
                 Button { model.removeSelected() } label: { Image(systemName: "minus") }
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
@@ -546,7 +583,7 @@ struct BatchTokenPopover: View {
                                 .font(.system(size: 11, design: .monospaced))
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
-                                .help("Insert \(token)")
+                                .help("Insert \(token): \(BatchTokens.hint(token))")
                         }
                     }
                 }
@@ -695,6 +732,7 @@ struct BatchDoneView: View {
                     Button("Copy Log", action: actions.copyLog)
                     Button("Show Completed Files", action: actions.showInFinder).disabled(model.doneURLs.isEmpty)
                     Button("Open Completed in Shrike", action: actions.openInShrike).disabled(model.doneFolders.isEmpty)
+                    Button("Undo Batch", action: actions.undoBatch).disabled(!actions.canUndoBatch())
                     Button("Run Another Batch") { model.runAnother() }
                 }
                 Spacer()
@@ -726,29 +764,47 @@ struct BatchDoneView: View {
             titleRow(icon: model.result?.doneCount == 0 ? "xmark.circle" : "exclamationmark.triangle",
                      color: Color(nsColor: .secondaryLabelColor), text: model.resultTitle + "\n" + model.summary)
             folderLink
-            List(selection: $model.selectedResultRows) {
+            List {
                 ForEach(model.skippedRows, id: \.source) { row in
-                HStack(spacing: 8) {
-                    Text(row.name)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 8)
-                    Text(row.reason)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                .accessibilityElement(children: .combine)
-                .tag(row.source)
+                    skipRow(row)
                 }
             }
             .listStyle(.inset(alternatesRowBackgrounds: model.skippedRows.count > 8))
             .frame(minHeight: 100, maxHeight: 320)
             if model.hasIntentionalSkips {
-                Text("Select intentional skips to include them in Review Remaining.").font(.caption).foregroundStyle(.secondary)
+                Text("Tick the skips you chose to include them in Review Remaining.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.leading, BatchLayout.doneHintInset)
             }
         }
         .batchColumn()
+    }
+
+    /// One skipped or failed photo. A skip the user chose to make has a
+    /// checkbox (ticked = included in Review Remaining); the other rows keep
+    /// the same left inset so the names stay in one column.
+    @ViewBuilder private func skipRow(_ row: BatchModel.SkippedRow) -> some View {
+        HStack(spacing: 8) {
+            if row.isIntentionalSkip {
+                BatchCheckbox(fileName: row.name, isOn: Binding(
+                    get: { model.selectedResultRows.contains(row.source) },
+                    set: { on in
+                        if on { model.selectedResultRows.insert(row.source) }
+                        else { model.selectedResultRows.remove(row.source) }
+                    }))
+                    .help("Tick to include this photo in Review Remaining.")
+            } else {
+                Text(row.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.leading, model.hasIntentionalSkips ? BatchLayout.doneCheckboxInset : 0)
+            }
+            Spacer(minLength: 8)
+            Text(row.reason)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
     }
 
     /// The icon slot and the title; the title starts 30 pt in, so it lines
@@ -812,4 +868,9 @@ enum BatchLayout {
     static let doneIconGap: CGFloat = 8
     /// Leading space of the queue heading: the row names start here.
     static let queueHeadingInset: CGFloat = 16
+    /// Done view: width of a skip row's checkbox box and its gap to the
+    /// name, kept as a left inset on rows without one.
+    static let doneCheckboxInset: CGFloat = 22
+    /// The hint under the skip list lines up with the checkboxes' left edge.
+    static let doneHintInset: CGFloat = 16
 }

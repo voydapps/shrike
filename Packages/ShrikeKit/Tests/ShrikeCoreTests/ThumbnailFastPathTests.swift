@@ -122,6 +122,9 @@ final class ThumbnailFastPathTests: XCTestCase {
     /// ImageIO thumbnail call vs the fast path forced on. Decides which
     /// formats go into `fastThumbnailTypes`.
     func testTiming_oldVsFast_perFormat() throws {
+        guard ProcessInfo.processInfo.environment["SHRIKE_BENCH"] != nil else {
+            throw XCTSkip("print-only benchmark; set SHRIKE_BENCH=1 to run it")
+        }
         let tmp = TempDir("fast-thumb-timing")
         defer { tmp.cleanup() }
         let image = pattern(width: 4000, height: 3000)

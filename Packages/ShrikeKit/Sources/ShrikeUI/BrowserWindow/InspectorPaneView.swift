@@ -41,6 +41,8 @@ public struct InspectorState: Sendable, Equatable {
     /// Tags shared by every item in the selection — displayed as the
     /// "common" set; the difference against union is rendered dim.
     public var tagsCommon: [String]
+    /// How many of the selected items carry each tag (the "Mixed" state of tags).
+    public var tagCounts: [String: Int] = [:]
     /// Selected file size in bytes, when common.
     public var commonFileSize: Int64?
     /// 2+ selected: the sizes added up, the number the status bar shows.
@@ -140,6 +142,9 @@ public struct InspectorState: Sendable, Equatable {
 
         let unionSet = items.reduce(into: Set<String>()) { $0.formUnion($1.tags) }
         s.tagsUnion = unionSet.sorted()
+        s.tagCounts = items.reduce(into: [String: Int]()) { counts, item in
+            for tag in Set(item.tags) { counts[tag, default: 0] += 1 }
+        }
         if items.isEmpty {
             s.tagsCommon = []
         } else {
@@ -179,6 +184,9 @@ public final class InspectorPaneController: NSViewController {
         set { stateBox.panelLookups = newValue }
     }
 
+    /// Tab / ⇧Tab on the pane itself (set by the Browser: the Tab ring).
+    var onTab: ((Bool) -> Bool)?
+
     public override func loadView() {
         let host = NSHostingView(rootView: InspectorRoot(
             state: stateBox,
@@ -200,7 +208,8 @@ public final class InspectorPaneController: NSViewController {
         host.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // The pane starts below the toolbar (the window's safe area): no
         // photo or row sits under the toolbar controls.
-        let root = NSView()
+        let root = InspectorFocusRootView()
+        root.onTab = { [weak self] backward in self?.onTab?(backward) ?? false }
         root.addSubview(host)
         NSLayoutConstraint.activate([
             host.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
@@ -383,7 +392,7 @@ struct PreviewSection: View {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color.black.opacity(0.4))
                 if let url = state.previewURL {
-                    PreviewImageView(url: url, lookups: panelLookups?())
+                    PreviewImageView(url: url, lookups: panelLookups?(), isMultiple: state.count > 1)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else {
@@ -434,12 +443,16 @@ struct PreviewSection: View {
 private struct PreviewImageView: NSViewRepresentable {
     let url: URL
     let lookups: InspectorPreviewImageView.Lookups?
+    /// Several photos are selected: this is only the first one.
+    let isMultiple: Bool
     func makeNSView(context: Context) -> InspectorPreviewImageView {
         let v = InspectorPreviewImageView()
+        v.isMultiple = isMultiple
         v.show(url, lookups: lookups)
         return v
     }
     func updateNSView(_ nsView: InspectorPreviewImageView, context: Context) {
+        nsView.isMultiple = isMultiple
         nsView.show(url, lookups: lookups)
     }
 }
@@ -527,6 +540,28 @@ final class InspectorPreviewImageView: NSImageView {
             stack.centerXAnchor.constraint(equalTo: centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
+
+    /// Several photos are selected and the first one can't be read: the box
+    /// shows a neutral stack of photos, not a warning about one file that
+    /// is not the selection's subject (audit on-screen L13).
+    var isMultiple = false {
+        didSet { if isMultiple != oldValue { applyBrokenLook() } }
+    }
+
+    /// "Can't preview" is written under the glyph (tests).
+    var showsBrokenText: Bool { !brokenLabel.isHidden }
+
+    private func applyBrokenLook() {
+        if isMultiple {
+            brokenGlyph.image = NSImage(systemSymbolName: "photo.on.rectangle.angled", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 32, weight: .light))
+            brokenGlyph.contentTintColor = .secondaryLabelColor
+        } else {
+            brokenGlyph.image = Badges.brokenFileGlyph(pointSize: 32)
+            brokenGlyph.contentTintColor = Badges.brokenFileTint
+        }
+        brokenLabel.isHidden = isMultiple
     }
 
     private let brokenGlyph = NSImageView()
@@ -758,7 +793,8 @@ private struct RatingSection: View {
             InspectorSectionHeader("Rating & Flag")
 
             HStack(spacing: 4) {
-                ForEach(1...5, id: \.self) { i in
+                HStack(spacing: 4) {
+                    ForEach(1...5, id: \.self) { i in
                     let fill = (state.commonRating ?? 0) >= i
                     Button {
                         onRate(i)
@@ -769,6 +805,18 @@ private struct RatingSection: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Rate \(i) star\(i == 1 ? "" : "s")")
+                }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Rating")
+                .accessibilityValue((state.commonRating ?? 0) == 0 ? "No stars" : "\((state.commonRating ?? 0)) of 5 stars")
+                .accessibilityAdjustableAction { direction in
+                    let now = (state.commonRating ?? 0)
+                    switch direction {
+                    case .increment: onRate(min(5, now + 1))
+                    case .decrement: onRate(max(0, now - 1))
+                    @unknown default: break
+                    }
                 }
                 Button {
                     onRate(0)
@@ -808,6 +856,13 @@ private struct RatingSection: View {
 
 private struct TagsSection: View {
     let state: InspectorState
+
+    /// A tag that only some of the selected photos have reads "keeper (1 of 23)",
+    /// as the rating row reads "Mixed".
+    static func chipLabel(_ tag: String, state: InspectorState) -> String {
+        guard state.count > 1, !state.tagsCommon.contains(tag), let n = state.tagCounts[tag] else { return tag }
+        return "\(tag) (\(n) of \(state.count.formatted(.number)))"
+    }
     let onRemoveTag: (String) -> Void
     let onAddTag: () -> Void
     let registerAnchor: (NSView) -> Void
@@ -820,7 +875,7 @@ private struct TagsSection: View {
             FlowLayoutContainer {
                 ForEach(state.tagsUnion, id: \.self) { tag in
                     TagChip(
-                        label: tag,
+                        label: Self.chipLabel(tag, state: state),
                         emphasized: state.tagsCommon.contains(tag)
                     ) {
                         onRemoveTag(tag)
@@ -897,5 +952,34 @@ private struct FlowLayoutContainer<Content: View>: View {
         VStack(alignment: .leading) {
             content
         }
+    }
+}
+
+
+/// The info panel's root. SwiftUI rows are not key views unless full keyboard access is
+/// on, so the Tab ring would skip the panel. The pane itself takes focus (a focus ring
+/// around it, a name for VoiceOver); Tab and ⇧Tab move on, Escape goes back to the photos.
+final class InspectorFocusRootView: NSView {
+    var onTab: ((Bool) -> Bool)?
+
+    override var acceptsFirstResponder: Bool { true }
+    override var canBecomeKeyView: Bool { true }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() { NSBezierPath(rect: bounds).fill() }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Info panel")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func keyDown(with event: NSEvent) {
+        if BrowserFocusRing.isTab(event), onTab?(event.modifierFlags.contains(.shift)) == true { return }
+        super.keyDown(with: event)
     }
 }

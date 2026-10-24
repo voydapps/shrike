@@ -547,6 +547,9 @@ public final class BrowserWindowController: NSWindowController {
         contentController.delegate = self
         contentController.destinationSlotsProvider = { [weak self] in self?.transfers.slots }
         contentController.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
+        contentController.onTab = { [weak self] backward in self?.moveFocus(from: self?.window?.firstResponder, backward: backward) ?? false }
+        inspectorController.onTab = { [weak self] backward in self?.moveFocus(from: self?.window?.firstResponder, backward: backward) ?? false }
+        treeController.onTab = { [weak self] backward in self?.moveFocus(from: self?.window?.firstResponder, backward: backward) ?? false }
         contentController.onSortProgress = { [weak self] text in self?.sortProgressText = text }
         contentController.onClearFilter = { [weak self] in self?.clearFilterAndSearch() }
         contentController.onChooseAnotherFolder = { [weak self] in self?.chooseAnotherFolder() }
@@ -673,6 +676,29 @@ public final class BrowserWindowController: NSWindowController {
         window?.contentView?.layoutSubtreeIfNeeded()
     }
 
+    /// The panes Tab visits, in order: photos, search, sidebar, info panel (then the
+    /// photos again). A pane that is hidden or collapsed is left out.
+    func focusRing() -> [NSView] {
+        var ring: [NSView] = [contentController.focusView]
+        if searchField.window != nil, !searchField.isHidden { ring.append(searchField) }
+        let items = splitController.splitViewItems
+        if items.count >= 3 {
+            if !items[0].isCollapsed, treeController.view.window != nil { ring.append(treeController.focusView) }
+            if !items[items.count - 1].isCollapsed,
+               let target = BrowserFocusRing.firstKeyView(in: inspectorController.view) { ring.append(target) }
+        }
+        return ring
+    }
+
+    /// Moves keyboard focus to the next (or previous) pane. False when there is nowhere to go.
+    @discardableResult
+    func moveFocus(from current: NSResponder?, backward: Bool) -> Bool {
+        guard let window, window.attachedSheet == nil,
+              let target = BrowserFocusRing.next(from: current, in: focusRing(), backward: backward),
+              target !== current else { return false }
+        return window.makeFirstResponder(target)
+    }
+
     private func setupFirstResponder() {
         window?.initialFirstResponder = contentController.focusView
     }
@@ -698,6 +724,8 @@ public final class BrowserWindowController: NSWindowController {
         popoverController.onChange = { [weak self] newFilter in
             self?.applyFilter(newFilter)
         }
+        popoverController.loadViewIfNeeded()
+        feedFilterPopoverTags(to: popoverController)
         let popover = NSPopover()
         popover.contentViewController = popoverController
         popover.behavior = .transient
@@ -714,6 +742,16 @@ public final class BrowserWindowController: NSWindowController {
             let anchor = NSRect(x: host.bounds.maxX - 40, y: host.bounds.maxY - 8, width: 1, height: 1)
             popover.show(relativeTo: anchor, of: host, preferredEdge: .minY)
         }
+    }
+
+    /// Gives the open Filter popover the folder's tags (spec 21b §3). Tags are read
+    /// with the saved marks; until that ends the control says "Reading Tags…".
+    func feedFilterPopoverTags(to target: BrowserFilterPopover? = nil) {
+        // The open popover is not stored yet while `showFilterPopover` builds it, so
+        // that call passes its controller (the tag row stayed on "No Tags" without it).
+        guard let popover = target ?? filterPopover?.contentViewController as? BrowserFilterPopover else { return }
+        popover.setTagSource(contentController.allItems.flatMap(\.finderTags),
+                             reading: contentController.isHydratingMarks)
     }
 
     @objc func thumbSizeChanged(_ sender: NSSlider) {
@@ -954,6 +992,7 @@ public final class BrowserWindowController: NSWindowController {
             guard !Task.isCancelled, self?.acceptsFolderRequest(generation, folder: std) == true else { return }
             self?.contentController.applyHydrated(hydrated)
             self?.contentController.isHydratingMarks = false
+            self?.feedFilterPopoverTags()
             if self?.subtitleLoadingTask == nil { self?.updateSubtitle() }
             self?.refreshSelectionInfo()
             self?.onHydratedForTesting?()
@@ -964,6 +1003,13 @@ public final class BrowserWindowController: NSWindowController {
 
     func acceptsFolderRequest(_ generation: UInt64, folder: URL) -> Bool {
         !browserDidClose && folderRequestGeneration == generation && currentFolder == folder
+    }
+
+    /// Opens System Settings on Privacy & Security, Files and Folders.
+    static func openPrivacySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func showFolderReadError(_ error: any Error, folder: URL) {
@@ -977,16 +1023,18 @@ public final class BrowserWindowController: NSWindowController {
             showFolderGone(folder)
         } else {
             let reason: String
+            var openPrivacy: (() -> Void)?
             if case FolderScannerError.permissionDenied = error {
-                reason = "Shrike doesn't have permission to read this folder. Check the folder's permissions or privacy access, then retry."
+                openPrivacy = { Self.openPrivacySettings() }
+                reason = "Shrike doesn't have permission to read this folder. Allow access in System Settings, under Privacy & Security, Files and Folders, then retry."
             } else if case FolderScannerError.unreadable(_, let detail) = error {
                 reason = detail
             } else {
                 reason = error.localizedDescription
             }
-            contentController.showFolderReadError(folder, reason: reason) { [weak self] in
+            contentController.showFolderReadError(folder, reason: reason, retry: { [weak self] in
                 self?.navigate(to: folder, updateHistory: false)
-            }
+            }, openPrivacy: openPrivacy)
             refreshSelectionInfo()
             updateSubtitle()
         }
@@ -1249,17 +1297,17 @@ public final class BrowserWindowController: NSWindowController {
     private func handleTrashFailures(_ failures: [(group: ImageGroup, error: FileOpsError)], next: URL?) async {
         let noTrash = failures.filter { if case .noTrash = $0.error { return true } else { return false } }
         if let first = noTrash.first {
-            let title = noTrash.count == 1
-                ? "“\(first.group.displayName)” can't be moved to the Trash."
-                : "\(noTrash.count) items can't be moved to the Trash."
+            _ = first
+            let copy = FileActionCopy.noTrashDelete(noTrash.map(\.group))
+            let title = copy.message
             let choice: Int?
             if let responder = alertResponderForTesting {
                 choice = responder(title)
             } else {
                 choice = await ShrikeAlert.run(
                     message: title,
-                    information: "This volume doesn't have a Trash. Delete it now? You can't undo this.",
-                    buttons: [ShrikeAlert.Button("Delete", role: .destructive), .cancel()],
+                    information: copy.information,
+                    buttons: copy.buttons,
                     on: window
                 )
             }
@@ -1583,6 +1631,13 @@ public final class BrowserWindowController: NSWindowController {
     func handleKeySnapshot(_ snap: KeyEventSnapshot) -> Bool {
         // Esc while a copy / move shows its progress: stop the rest.
         if chordPrefix == nil, snap.key == "\u{1b}", transfers.cancelRunning() { return true }
+        // Home / End select the first / last photo (audit on-screen L1; the keys did nothing).
+        if chordPrefix == nil, !snap.isKeyUp, snap.keyCode == 115 || snap.keyCode == 119,
+           snap.flags.intersection([.command, .control, .option, .shift]).isEmpty {
+            let count = contentController.visibleItems.count
+            contentController.moveSelection(snap.keyCode == 115 ? -count : count)
+            return true
+        }
         var resolved = BrowserKeyMap.action(for: snap, preset: ShortcutTable.livePreset, chordPrefix: chordPrefix)
         // A key that doesn't continue the chord cancels it and is handled
         // normally.
@@ -1923,8 +1978,10 @@ extension BrowserWindowController: NSToolbarDelegate, NSToolbarItemValidation {
     }
 
     private func makeViewModeGroup(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItemGroup {
-        let images = BrowserToolbarLayout.viewModeSymbols.map {
-            NSImage(systemSymbolName: $0, accessibilityDescription: nil) ?? NSImage()
+        // Each segment needs its own VoiceOver name (the Filmstrip one had none).
+        let names = ["Grid view", "Filmstrip view", "List view"]
+        let images = zip(BrowserToolbarLayout.viewModeSymbols, names).map {
+            NSImage(systemSymbolName: $0, accessibilityDescription: $1) ?? NSImage()
         }
         let group = NSToolbarItemGroup(
             itemIdentifier: identifier, images: images, selectionMode: .selectOne,
@@ -2023,6 +2080,12 @@ extension BrowserWindowController: NSToolbarDelegate, NSToolbarItemValidation {
         }
         if item.itemIdentifier == BrowserToolbarID.openInViewer {
             return !contentController.selectedItems.isEmpty
+        }
+        if item.itemIdentifier == BrowserToolbarID.inspector, let tip = item.toolTip {
+            // The help text names what the click does now (like the viewer's).
+            let want = isInspectorCollapsed ? "Show Inspector" : "Hide Inspector"
+            let other = isInspectorCollapsed ? "Hide Inspector" : "Show Inspector"
+            if tip.contains(other) { item.toolTip = tip.replacingOccurrences(of: other, with: want) }
         }
         return true
     }

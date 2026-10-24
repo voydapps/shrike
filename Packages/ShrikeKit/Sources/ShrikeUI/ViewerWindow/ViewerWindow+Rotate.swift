@@ -32,15 +32,15 @@ struct PendingOrientation: Equatable {
 
 enum RotateCopy {
     static let viewOnlyRotate =
-        "Rotated for viewing only. This file type can't be rotated without re-encoding, so the file wasn't changed."
+        "Rotated for viewing only. This file type can't be rotated without re-encoding, so the file is unchanged."
     static let viewOnlyFlip =
-        "Flipped for viewing only. This file type can't be flipped without re-encoding, so the file wasn't changed."
+        "Flipped for viewing only. This file type can't be flipped without re-encoding, so the file is unchanged."
     /// Browser selection with some view-only types (they are skipped).
     static let browserSkipped =
         "Some files weren't rotated. Their file type can't be rotated without re-encoding."
     static let browserSkippedFlip =
         "Some files weren't flipped. Their file type can't be flipped without re-encoding."
-    static func failed(_ name: String) -> String { "Couldn't rotate “\(name)”. The file wasn't changed." }
+    static func failed(_ name: String) -> String { "Couldn't rotate “\(FileNameFit.short(name))”. The file wasn't changed." }
 
     static func announcement(_ op: OrientationOp) -> String {
         switch op {

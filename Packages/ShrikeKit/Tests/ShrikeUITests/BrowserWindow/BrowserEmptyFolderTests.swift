@@ -3,7 +3,7 @@
 //  ShrikeUITests
 //
 //  The copy for a folder with no images.
-//  Icon photo.on.rectangle, "No images in “<folder>”.", "Subfolders are
+//  Icon photo.on.rectangle, "No photos in “<folder>”.", "Subfolders are
 //  in the sidebar." only when the folder has subfolders, no button, and
 //  no drop hint. Temp folders, offscreen windows.
 //
@@ -60,12 +60,12 @@ final class BrowserEmptyFolderTests: XCTestCase {
         var checked = false
         browser.onSubfolderCheckForTesting = { checked = true }
         let shown = await waitUntil {
-            browser.contentController.emptyStateForTesting?.titleText == "No images in “Scans”."
+            browser.contentController.emptyStateForTesting?.titleText == "No photos in “Scans”."
         }
         XCTAssertTrue(shown, "title \(String(describing: browser.contentController.emptyStateForTesting?.titleText))")
         _ = await waitUntil { checked }
         let state = try XCTUnwrap(browser.contentController.emptyStateForTesting)
-        XCTAssertEqual(state.titleText, "No images in “Scans”.")
+        XCTAssertEqual(state.titleText, "No photos in “Scans”.")
         XCTAssertNil(state.subtitleText, "no subfolders: no message")
         XCTAssertNil(state.buttonTitle, "no button")
         XCTAssertTrue(state.symbolShown, "photo.on.rectangle icon")
@@ -141,7 +141,7 @@ final class BrowserEmptyFolderTests: XCTestCase {
         }
         XCTAssertTrue(shown, "message \(String(describing: browser.contentController.emptyStateForTesting?.subtitleText))")
         let state = try XCTUnwrap(browser.contentController.emptyStateForTesting)
-        XCTAssertEqual(state.titleText, "No images in “Trips”.")
+        XCTAssertEqual(state.titleText, "No photos in “Trips”.")
         XCTAssertNil(state.buttonTitle)
         XCTAssertFalse(state.titleText.contains("Drop"), "no false drop hint")
     }

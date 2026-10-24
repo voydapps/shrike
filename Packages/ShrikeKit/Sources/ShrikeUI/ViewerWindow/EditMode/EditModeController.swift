@@ -27,6 +27,7 @@
 import AppKit
 import ShrikeCore
 import ShrikeEdit
+import ShrikeIO
 
 /// How the user is trying to leave edit mode. Drives the modal copy
 /// and — for `.windowClose` / `.appQuit` — whether a Cancel should
@@ -74,6 +75,9 @@ public final class EditModeController {
     /// Nil until a tool is picked.
     public private(set) var currentTool: EditTool?
     public private(set) var sourceURL: URL?
+    /// Size, time and inode of the source when edit mode started: Save asks
+    /// first if another program changed the file since (audit FS-7).
+    private(set) var sourceStamp: FileStamp?
     public private(set) var originalImage: CGImage?
 
     /// The live recipe. `nil` until `enter(…)`; reset on exit.
@@ -535,6 +539,7 @@ public final class EditModeController {
         originalLease = loadedOriginalLease ?? resources.retain(image: image, owner: resourceOwner, category: .editOriginal)
         loadedOriginalLease = nil
         sourceURL = url
+        sourceStamp = url.flatMap { FileStamp(of: $0) }
         sourcePixelSize = CGSize(width: image.width, height: image.height)
         currentPixelSize = sourcePixelSize
         cropOverlay.imagePixelSize = sourcePixelSize
@@ -803,6 +808,7 @@ public final class EditModeController {
         operationCount = 0
         undoneCount = 0
         sourceURL = nil
+        sourceStamp = nil
         sourcePixelSize = .zero
         fineRotationSegment = nil
         fineRotationSegments.removeAll(keepingCapacity: false)
@@ -1684,15 +1690,35 @@ public final class EditModeController {
     /// discard-while-rendering race). Nil in the app.
     var renderOverrideForTesting: ((EditRecipe, CGImage, RenderQualityHint) async -> CGImage?)?
 
+    /// What a render needs. A draft works on a copy shrunk to the draft size,
+    /// so it must not reserve the full-resolution working set (audit MP-07:
+    /// ~480 MB per slider tick on a 24 MP photo, which stalled every other
+    /// job and wiped the thumbnails).
+    static func workingSetEstimate(for original: CGImage, hint: RenderQualityHint, draftLongEdge: Int,
+                                   outputSize: CGSize) -> ImageWorkingSetEstimate? {
+        var width = original.width, height = original.height
+        var output = outputSize
+        if hint == .draft, max(width, height) > draftLongEdge, draftLongEdge > 0 {
+            let scale = Double(draftLongEdge) / Double(max(width, height))
+            width = max(1, Int((Double(width) * scale).rounded()))
+            height = max(1, Int((Double(height) * scale).rounded()))
+            // A draft's result is as small as its input.
+            let outScale = min(1, Double(draftLongEdge) / max(1, max(output.width, output.height)))
+            output = CGSize(width: output.width * outScale, height: output.height * outScale)
+        }
+        return try? ImageWorkingSetEstimate(width: width, height: height,
+            bitsPerComponent: original.bitsPerComponent, floatingPoint: original.bitmapInfo.contains(.floatComponents),
+            outputWidth: max(1, Int(output.width)), outputHeight: max(1, Int(output.height)))
+    }
+
     private func render(_ recipe: EditRecipe, _ original: CGImage,
                         _ hint: RenderQualityHint) async -> (image: CGImage, lease: ImageResourceLease)? {
         if let override = renderOverrideForTesting {
             let image = await override(recipe, original, hint)
             return image.map { ($0, resources.retain(image: $0, owner: resourceOwner, category: .editPreview)) }
         }
-        guard let estimate = try? ImageWorkingSetEstimate(width: original.width, height: original.height,
-            bitsPerComponent: original.bitsPerComponent, floatingPoint: original.bitmapInfo.contains(.floatComponents),
-            outputWidth: max(1, Int(currentPixelSize.width)), outputHeight: max(1, Int(currentPixelSize.height))) else { return nil }
+        guard let estimate = Self.workingSetEstimate(for: original, hint: hint, draftLongEdge: renderer.draftLongEdge,
+                                                     outputSize: currentPixelSize) else { return nil }
         guard let reservation = try? await resources.reserve(bytes: estimate.totalBytes, owner: resourceOwner,
             category: .editPreview, priority: .visible, policy: .oneOversizedOperation) else { return nil }
         defer { reservation.release() }

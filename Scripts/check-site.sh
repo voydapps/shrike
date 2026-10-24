@@ -1,6 +1,6 @@
 #!/bin/bash
 # Checks the website in site/ before it is published. Bash, plus node for the changelog page check.
-# Runs in CI (.github/workflows/pages.yml) and by hand.
+# Runs in CI (ci.yml and pages.yml) and by hand.
 set -u
 cd "$(dirname "$0")/.."
 fail=0

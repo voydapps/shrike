@@ -97,7 +97,9 @@ final class SaveAsAccessory: NSView {
 
         let formatRow = Self.row("Format:", formatPopUp)
         qualityRow = Self.row("Quality:", qualitySlider, qualityField)
-        let stack = NSStackView(views: [messageLabel, formatRow, qualityRow, keepMetadata, removeLocation])
+        // The checkboxes sit in the controls' column (audit on-screen L8: they touched the panel edge).
+        let stack = NSStackView(views: [messageLabel, formatRow, qualityRow,
+                                        Self.row("", keepMetadata), Self.row("", removeLocation)])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12

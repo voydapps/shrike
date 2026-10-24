@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.2.28 - 2026-10-24
+
+### New
+- Settings > Editing has Delete All Backups…, to clear the saved originals in one step. It asks first, and Cancel is the safe choice.
+- Shrike asks before it saves over a photo that another app changed while you were editing.
+- Home and End jump to the first and last photo in the grid.
+- The Tab key now moves through the photos, the search box, the sidebar and the info panel, and back with Shift-Tab.
+
+### Faster
+- Adding files to a big folder no longer freezes the window.
+- Select All is fast, even in a big folder.
+- Thumbnails load faster.
+- Shrike gives memory back when you close a window, and uses less memory while you edit.
+
+### Changed
+- Batch asks before it changes your original photos, also when the output is the same folder. It never overwrites a photo without telling you.
+- Edits to CMYK and black-and-white photos are now applied. Shrike tells you it converted the photo, and saves a copy.
+- Batch renames that shift or swap names now work, even when a new name is the name of another photo in the batch.
+- Backups of photos on an unplugged disk, or on iCloud and not yet downloaded, are kept.
+- Saving keeps your colour labels, Lightroom settings and camera notes.
+- Remove Location also removes the place names.
+- The Replace question in Copy and Move names the extra RAW and sidecar files that go to the Trash too.
+- The word "photo" is used everywhere. Buttons say "Save Copy…" and "Don't Save". When you leave an edited photo, Cancel is the safe default.
+- The delete dialog has a clearer title, and Cancel is the default.
+- Messages can use two lines, and long file names are shortened.
+- The cards in a narrow viewer fit the window, and the buttons stack when there is little room.
+- Compare uses clearer words, and its options are in View > Compare Options.
+- While you edit, the info panel steps aside. It comes back when you finish, unless you opened it yourself.
+- The viewer title bar is a soft, see-through band.
+- Rating items in the menu read as words, such as Rate 3 Stars.
+- In the Browser, the window can be narrower when the side panes are hidden.
+- In the info panel, mixed tags show how many photos have each tag.
+- Reduce Motion is respected in the full-screen animation.
+
+### Fixed
+- Revert brings back the right photo, even after a photo was replaced.
+- Undo Copy never deletes a different file with the same name.
+- If you type a tag after you click a colour tag, the colour tag stays.
+- The viewer toolbar updates as you move with the keyboard.
+- In Compare, a photo you bring in with the right arrow key gets the same zoom as the others.
+- A folder change during a slow move to another photo is no longer lost.
+- A photo that was skipped on purpose can be selected in Batch's done screen. Batch rows are listed in order, and Undo Batch is one of the done actions.
+- The tag filter has a Tags row, also when you open it from the toolbar. It says so when there are no tags.
+- Quitting during a save waits for the save and says so.
+- The zoom label only shows when you zoom. The page counter is gone.
+- The info panel for a selection whose first photo cannot be read shows a neutral stack, not "Can't preview".
+- In the editor, the photo fits above the note about saving, and the buttons keep their size.
+- VoiceOver reads the info panel, the rating and the tag chips with clear names.
+
 ## 0.2.27 - 2026-10-23
 
 ### Changed

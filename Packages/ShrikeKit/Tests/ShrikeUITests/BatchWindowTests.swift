@@ -125,6 +125,33 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertEqual(model.phase, .done)
     }
 
+    /// The "can't be read" line counts the whole queue, not only the preview's first 200 rows.
+    func testUnreadableLineCountsPastThePreviewLimit() async throws {
+        let good = try jpeg("good.jpg", in: "many")
+        let folder = good.deletingLastPathComponent()
+        var urls = [good]
+        for i in 1..<(BatchModel.previewLimit + 5) {
+            let url = folder.appendingPathComponent(String(format: "p%03d.jpg", i))
+            try FileManager.default.copyItem(at: good, to: url)
+            urls.append(url)
+        }
+        // Three unreadable files after row 200.
+        for i in 0..<3 {
+            let url = folder.appendingPathComponent("zz-broken\(i).jpg")
+            try Data().write(to: url)
+            urls.append(url)
+        }
+        let model = makeModel()
+        var form = BatchForm(); form.convertOn = false; form.resizeOn = false
+        form.rotateOn = true; form.outputFolder = nil
+        model.form = form
+        model.add(groups(urls))
+        await model.waitForPreview()
+        XCTAssertGreaterThan(model.queue.count, BatchModel.previewLimit)
+        XCTAssertEqual(model.unreadableCount, 3)
+        XCTAssertEqual(model.unreadableLine, "3 photos can't be read and will be skipped.")
+    }
+
     func testReviewRemainingPreservesNoncontiguousNamesWhileRunAnotherStartsFresh() async throws {
         let urls = try [jpeg("GPS.jpg"), jpeg("Coast.jpg"), jpeg("Gardener.jpg")]
         let sourceBytes = try urls.map { try Data(contentsOf: $0) }
@@ -317,7 +344,7 @@ final class BatchWindowTests: XCTestCase {
         model.form.resizeOn = false
         model.form.rotateOn = true
         model.form.rotation = .right
-        XCTAssertEqual(model.inPlaceText, "Changes original files in place; recovery data is kept when available")
+        XCTAssertEqual(model.inPlaceText, "Changes the original files. Undo works while Shrike still has the backup.")
         XCTAssertTrue(model.consequenceSummary.hasPrefix("Rotate 4 original files."))
         let previewed = await waitUntil { model.isPreviewCurrent }
         XCTAssertTrue(previewed)
@@ -327,7 +354,8 @@ final class BatchWindowTests: XCTestCase {
         for url in jpegs { XCTAssertEqual(orientation(url), 6, "\(url.lastPathComponent): EXIF rewrite") }
         XCTAssertEqual(try Data(contentsOf: webpFile), webpBefore)
         XCTAssertEqual(model.skippedRows, [BatchModel.SkippedRow(
-            name: "R4.webp", reason: "This file type can't be rotated without re-encoding — skipped.", source: webpFile)])
+            name: "R4.webp", reason: "This file type can't be rotated without re-encoding — skipped.", source: webpFile,
+            isIntentionalSkip: true)])
         XCTAssertEqual(model.summary, "3 completed · 1 skipped")
         XCTAssertEqual(model.undoActionName, "Batch Rotate")
     }
@@ -366,6 +394,42 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertEqual(names(in: "trip"), originals)
     }
 
+    /// Done screen, Actions > Undo Batch: Edit > Undo must stop offering the same
+    /// batch (audit on-screen L6) and leave the window's other undos alone.
+    func testUndoBatchFromTheDoneScreenDropsOnlyItsOwnUndo() async throws {
+        let originals = ["A.jpg", "B.jpg"]
+        for name in originals { try jpeg(name, in: "trip2") }
+        let folder = dir.appendingPathComponent("trip2", isDirectory: true)
+        var services = ShrikeServices.makeDefault()
+        services.backupStore = nil
+        let browser = BrowserWindowController(services: services, initialFolder: folder)
+        defer { browser.close() }
+        let content = browser.contentController
+        let listed = await waitUntil { content.visibleItems.count == 2 }
+        XCTAssertTrue(listed)
+        let undo = try XCTUnwrap(browser.window?.undoManager)
+        final class Other { var ran = false }
+        let other = Other()
+        undo.registerUndo(withTarget: other) { $0.ran = true }
+        undo.setActionName("Other Change")
+
+        XCTAssertTrue(content.select(urls: content.visibleItems.map(\.url)))
+        browser.renameSelection()
+        let batch = try XCTUnwrap(BatchWindowController.current)
+        batch.model.form.template = "Trip_{counter:000}"
+        try await runAndWait(batch.model)
+        XCTAssertEqual(undo.undoActionName, "Batch Rename")
+        XCTAssertTrue(batch.canUndoBatch)
+
+        batch.undoBatch()
+        await BatchUndo.lastTask?.value
+        XCTAssertEqual(names(in: "trip2"), originals)
+        XCTAssertFalse(batch.canUndoBatch)
+        XCTAssertEqual(undo.undoActionName, "Other Change", "the batch's own undo is gone, the other stays")
+        undo.undo()
+        XCTAssertTrue(other.ran)
+    }
+
     // MARK: Entry points
 
     func testBrowserBatchTakesSelectionOrWholeFolder() async throws {
@@ -383,7 +447,7 @@ final class BatchWindowTests: XCTestCase {
         let first = try XCTUnwrap(BatchWindowController.current)
         XCTAssertEqual(first.model.queue.map(\.name), ["a.jpg", "b.jpg", "c.jpg"], "nothing selected: the folder")
         XCTAssertEqual(first.model.scopeDescription, "Visible in folder")
-        XCTAssertEqual(first.window?.title, "Batch — 3 images")
+        XCTAssertEqual(first.window?.title, "Batch — 3 photos")
         XCTAssertFalse(first.model.form.renameOn)
         first.close()
         XCTAssertNil(BatchWindowController.current)
@@ -419,7 +483,7 @@ final class BatchWindowTests: XCTestCase {
         BatchWindowController.open(groups: groups([b, c]), services: services, launcher: viewer)
         XCTAssertTrue(BatchWindowController.current === batch, "one window")
         XCTAssertEqual(batch.model.queue.map(\.id), [a, b, c])
-        XCTAssertEqual(batch.window?.title, "Batch — 3 images")
+        XCTAssertEqual(batch.window?.title, "Batch — 3 photos")
 
         let window = try XCTUnwrap(batch.window)
         XCTAssertEqual(window.contentMinSize, NSSize(width: 760, height: 520))
@@ -448,7 +512,7 @@ final class BatchWindowTests: XCTestCase {
         model.selection = [model.queue[0].id, model.queue[1].id]
         model.removeSelected()
         XCTAssertEqual(model.queue.count, 203)
-        XCTAssertEqual(model.title, "Batch — 203 images")
+        XCTAssertEqual(model.title, "Batch — 203 photos")
     }
 
     func testClashRowIsMarkedAndKeepBothRenames() async throws {
@@ -471,7 +535,7 @@ final class BatchWindowTests: XCTestCase {
 
     func testValidationLinesDisableRun() async throws {
         let model = makeModel()
-        XCTAssertEqual(model.validationLine, "Add images to the queue.")
+        XCTAssertEqual(model.validationLine, "Add photos to the queue.")
         XCTAssertFalse(model.canRun)
 
         model.add(groups([try jpeg("a.jpg")]))
@@ -487,8 +551,8 @@ final class BatchWindowTests: XCTestCase {
 
         model.form.renameOn = true
         model.form.template = "{foo}_{counter}"
-        XCTAssertEqual(model.templateError, "Unknown token {foo}.")
-        XCTAssertEqual(model.validationLine, "Unknown token {foo}.")
+        XCTAssertEqual(model.templateError, "Unknown name part {foo}. Choose one from Insert Field…")
+        XCTAssertEqual(model.validationLine, "Unknown name part {foo}. Choose one from Insert Field…")
         XCTAssertFalse(model.canRun)
 
         model.form.template = "{name"
@@ -736,7 +800,7 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertTrue(hidden)
         XCTAssertEqual(asked?.0, "Stop the batch?")
         XCTAssertTrue(asked?.1.hasPrefix("Completed: ") ?? false, asked?.1 ?? "")
-        XCTAssertTrue(asked?.1.contains(" of 24 images.") ?? false, asked?.1 ?? "")
+        XCTAssertTrue(asked?.1.contains(" of 24 photos.") ?? false, asked?.1 ?? "")
         XCTAssertTrue(asked?.1.hasSuffix("Completed changes are kept; no new photos are started.") ?? false, asked?.1 ?? "")
         XCTAssertTrue(badges.last??.hasSuffix("%") ?? false, "Dock badge: \(badges)")
 
@@ -772,10 +836,10 @@ final class BatchWindowTests: XCTestCase {
 
     func testVoiceOverAndBadgeStrings() {
         XCTAssertEqual(BatchModel.Copy.progress(17, 42), "17 of 42")
-        XCTAssertEqual(BatchModel.Copy.stopAlertInfo(17, 42), "Completed: 17 of 42 images. Completed changes are kept; no new photos are started.")
+        XCTAssertEqual(BatchModel.Copy.stopAlertInfo(17, 42), "Completed: 17 of 42 photos. Completed changes are kept; no new photos are started.")
         XCTAssertEqual(BatchWindowController.badge(completed: 17, total: 42), "40%")
-        XCTAssertEqual(BatchModel.Copy.title(42), "Batch — 42 images")
-        XCTAssertEqual(BatchModel.Copy.title(1), "Batch — 1 image")
+        XCTAssertEqual(BatchModel.Copy.title(42), "Batch — 42 photos")
+        XCTAssertEqual(BatchModel.Copy.title(1), "Batch — 1 photo")
         XCTAssertEqual(BatchModel.Copy.runButton(42), "Run 42 Photos")
         XCTAssertEqual(BatchModel.eta(completed: 10, total: 20, elapsed: .seconds(10)), "about 10 s left")
         XCTAssertEqual(BatchModel.eta(completed: 1, total: 20, elapsed: .seconds(10)), "about 4 min left")

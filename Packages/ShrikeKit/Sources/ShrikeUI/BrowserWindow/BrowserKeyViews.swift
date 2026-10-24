@@ -62,7 +62,11 @@ final class BrowserCollectionView: NSCollectionView {
     /// Double-click on an item.
     var onDoubleClick: ((IndexPath) -> Void)?
 
+    /// Tab / ⇧Tab leave the grid for the next pane (the window's focus ring).
+    var onTab: ((Bool) -> Bool)?
+
     override func keyDown(with event: NSEvent) {
+        if BrowserFocusRing.isTab(event), onTab?(event.modifierFlags.contains(.shift)) == true { return }
         if keyHandler?(event) == true { return }
         if let step = Self.shiftArrow(event), extendSelection(by: step) { return }
         super.keyDown(with: event)
@@ -476,9 +480,47 @@ final class BrowserTableView: NSTableView {
 
     /// Returns true when the Browser key map consumed the event.
     var keyHandler: ((NSEvent) -> Bool)?
+    /// Tab / ⇧Tab leave the list for the next pane (the window's focus ring).
+    var onTab: ((Bool) -> Bool)?
 
     override func keyDown(with event: NSEvent) {
+        if BrowserFocusRing.isTab(event), onTab?(event.modifierFlags.contains(.shift)) == true { return }
         if keyHandler?(event) == true { return }
         super.keyDown(with: event)
+    }
+}
+
+/// Tab order of the Browser (audit on-screen M6): photos → search → sidebar → info
+/// panel → photos. Tab used to stay in the grid for ever, so the sidebar, the
+/// search field and the info panel could not be reached from the keyboard.
+@MainActor
+enum BrowserFocusRing {
+    /// A plain Tab or ⇧Tab (no ⌘ ⌃ ⌥).
+    static func isTab(_ event: NSEvent) -> Bool {
+        event.keyCode == 48 && event.modifierFlags.intersection([.command, .control, .option]).isEmpty
+    }
+
+    /// The pane after (or before) `current`, wrapping. `current` may be inside one of the
+    /// entries (the field editor of the search field, a row of the sidebar).
+    static func next(from current: NSResponder?, in ring: [NSView], backward: Bool) -> NSView? {
+        guard !ring.isEmpty else { return nil }
+        let index = ring.firstIndex { entry in
+            guard let view = current as? NSView else { return false }
+            return view === entry || view.isDescendant(of: entry)
+        } ?? ring.firstIndex { entry in
+            // The field editor is an NSTextView whose delegate is the search field.
+            (current as? NSTextView)?.delegate === entry
+        }
+        guard let index else { return ring.first }
+        return ring[(index + (backward ? ring.count - 1 : 1)) % ring.count]
+    }
+
+    /// The first view inside `root` a keyboard user can land on.
+    static func firstKeyView(in root: NSView) -> NSView? {
+        if root.canBecomeKeyView, !root.isHidden { return root }
+        for sub in root.subviews where !sub.isHidden {
+            if let hit = firstKeyView(in: sub) { return hit }
+        }
+        return nil
     }
 }

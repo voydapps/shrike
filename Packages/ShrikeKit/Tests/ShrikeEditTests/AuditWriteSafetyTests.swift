@@ -3,7 +3,7 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import ShrikeCore
-import ShrikeIO
+@testable import ShrikeIO
 @testable import ShrikeEdit
 
 final class AuditWriteSafetyTests: XCTestCase {
@@ -68,7 +68,14 @@ final class AuditWriteSafetyTests: XCTestCase {
             let sourceBytes = try Data(contentsOf: source), victimBytes = Data("the original replace victim".utf8)
             try victimBytes.write(to: victim)
             let backups = BackupStore(root: tmp.url.appendingPathComponent("backups"))
-            let ops = FileOps(metadata: nil, backups: backups, watchers: nil)
+            // Fake Trash inside the temp folder: the real ~/.Trash must stay untouched.
+            let fakeTrash = tmp.url.appendingPathComponent("FakeTrash")
+            try FileManager.default.createDirectory(at: fakeTrash, withIntermediateDirectories: true)
+            let ops = FileOps(metadata: nil, backups: backups, watchers: nil, trashItem: { url in
+                let dest = fakeTrash.appendingPathComponent(UUID().uuidString + "-" + url.lastPathComponent)
+                try FileManager.default.moveItem(at: url, to: dest)
+                return dest
+            })
             let runner = BatchRunner(fileOps: ops, backups: backups, renameCheckpoint: { point, _ in
                 switch point {
                 case .beforeMove: throw CocoaError(.fileWriteNoPermission)

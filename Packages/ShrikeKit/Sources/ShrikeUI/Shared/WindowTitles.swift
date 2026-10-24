@@ -20,8 +20,8 @@ public enum WindowTitles {
     public static func viewerSubtitle(index: Int, total: Int, pixelSize: CGSize?) -> String {
         // "43 of 180 · 6000 × 4000"; one item shows
         // only the size; an unknown size shows only the position.
-        guard total > 0 else { return "No images" }
-        let position = "\(index + 1) of \(total)"
+        guard total > 0 else { return "No photos" }
+        let position = "\((index + 1).formatted(.number)) of \(total.formatted(.number))"
         guard let size = pixelSize, size.width > 0, size.height > 0 else { return position }
         let pixels = "\(Int(size.width)) × \(Int(size.height))"
         return total == 1 ? pixels : "\(position) · \(pixels)"
@@ -29,9 +29,9 @@ public enum WindowTitles {
 
     /// "252 images", "1 image", or "47 of 252 images" when filtered.
     public static func browserSubtitle(visible: Int, total: Int) -> String {
-        let noun = total == 1 ? "image" : "images"
-        if visible == total { return "\(total) \(noun)" }
-        return "\(visible) of \(total) \(noun)"
+        let noun = total == 1 ? "photo" : "photos"
+        if visible == total { return "\(total.formatted(.number)) \(noun)" }
+        return "\(visible.formatted(.number)) of \(total.formatted(.number)) \(noun)"
     }
 
     /// Pixel size from the file header, orientation applied (no decode).

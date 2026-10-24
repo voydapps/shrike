@@ -125,7 +125,7 @@ final class BrowserRequestTests: XCTestCase {
         browser.contentController.emptyStateForTesting?.button.performClick(nil)
         try await until { await gate.count() == 3 }
         await gate.finish(2, [])
-        try await until { browser.contentController.emptyStateForTesting?.titleText.hasPrefix("No images") == true }
+        try await until { browser.contentController.emptyStateForTesting?.titleText.hasPrefix("No photos") == true }
         XCTAssertNil(browser.contentController.emptyStateForTesting?.buttonTitle)
         browser.reloadCurrentFolder()
         try await until { await gate.count() == 4 }

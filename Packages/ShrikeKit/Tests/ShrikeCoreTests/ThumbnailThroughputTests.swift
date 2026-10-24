@@ -111,6 +111,9 @@ final class ThumbnailThroughputTests: XCTestCase {
     }
 
     func testThroughput_12MPJPEGs_coldAndWarm() async throws {
+        guard ProcessInfo.processInfo.environment["SHRIKE_BENCH"] != nil else {
+            throw XCTSkip("print-only benchmark; set SHRIKE_BENCH=1 to run it")
+        }
         let n = Int(ProcessInfo.processInfo.environment["SHRIKE_THUMB_BENCH_N"] ?? "") ?? 96
         let formats = (ProcessInfo.processInfo.environment["SHRIKE_THUMB_BENCH_FORMATS"] ?? "jpeg")
             .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }

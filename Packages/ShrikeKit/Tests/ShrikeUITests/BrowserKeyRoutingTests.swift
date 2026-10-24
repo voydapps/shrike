@@ -91,9 +91,9 @@ final class BrowserKeyRoutingTests: XCTestCase {
 
     func testTooltipFormatUsesPresetKey() {
         XCTAssertEqual(LiveTooltips.text(.previousImage, context: .viewer, preset: .macNative),
-                       "Previous Image  ·  ←")
+                       "Previous Photo  ·  ←")
         XCTAssertEqual(LiveTooltips.text(.resetEdits, context: .editMode, preset: .macNative),
-                       "Reset Edits")
+                       "Reset All Edits")
         // ⌫ trashes in the Mac preset; FastStone's first trash key is ⌦.
         XCTAssertNotEqual(LiveTooltips.text(.moveToTrash, context: .viewer, preset: .macNative),
                           LiveTooltips.text(.moveToTrash, context: .viewer, preset: .fastStoneCompat))

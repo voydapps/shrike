@@ -276,7 +276,7 @@ final class SlideshowController: NSObject, NSWindowDelegate {
                 guard let self, generation == self.showGeneration, !self.ended else { return }
                 // The failed identity is explicit; no preceding photo remains.
                 self.front?.setImage(nil, sourceID: nil); self.back?.setImage(nil, sourceID: nil)
-                self.toast("Can’t open ‘\(url.lastPathComponent)’. Continuing after the interval.")
+                self.toast("Can’t open “\(url.lastPathComponent)”. Continuing after the interval.")
                 self.didShow(item: item, url: url)
                 return
             }
@@ -291,6 +291,12 @@ final class SlideshowController: NSObject, NSWindowDelegate {
         shownIndex = item
         shownHistory.append(item)
         if !isPaused { scheduleAdvance() }
+    }
+
+    /// COR-6: a second `present` (→ pressed during the 480 ms dissolve) installs its own
+    /// mask on the same layer. The first one's completion must not remove THAT mask.
+    static func removeDissolveMask(_ mask: CALayer, from layer: CALayer) {
+        if layer.mask === mask { layer.mask = nil }
     }
 
     private func present(_ entry: DecodedImage, animated: Bool) async {
@@ -323,7 +329,7 @@ final class SlideshowController: NSObject, NSWindowDelegate {
                 mask.add(animation, forKey: "dissolve")
                 CATransaction.commit()
             }
-            layer.mask = nil
+            Self.removeDissolveMask(mask, from: layer)
         } else if transition != .cut {
             await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
                 NSAnimationContext.runAnimationGroup({ ctx in
@@ -607,7 +613,7 @@ final class SlideshowControlBar: HUDSurfaceView {
         loopButton.target = self; loopButton.action = #selector(loopClicked)
         intervalPopup.addItems(withTitles: Self.intervals.map { "\($0) s" })
         intervalPopup.target = self; intervalPopup.action = #selector(intervalChosen)
-        intervalPopup.setAccessibilityLabel("Seconds per image")
+        intervalPopup.setAccessibilityLabel("Seconds per photo")
         transitionPopup.addItems(withTitles: SlideshowTransition.allCases.map(\.title))
         transitionPopup.target = self; transitionPopup.action = #selector(transitionChosen)
         transitionPopup.setAccessibilityLabel("Transition")

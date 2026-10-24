@@ -122,7 +122,7 @@ final class SlideshowSheet: NSObject, NSTextFieldDelegate {
         intervalField.target = self
         intervalField.action = #selector(fieldChanged)
         intervalField.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        intervalField.setAccessibilityLabel("Seconds per image")
+        intervalField.setAccessibilityLabel("Seconds per photo")
         let intervalRow = NSStackView(views: [intervalField, stepper, NSTextField(labelWithString: "seconds")])
         intervalRow.spacing = 4
 
@@ -137,7 +137,7 @@ final class SlideshowSheet: NSObject, NSTextFieldDelegate {
         var rows: [[NSView]] = [[label("Show:"), allRadio]]
         if scope.offersSelection { rows.append([NSGridCell.emptyContentView, selectedRadio]) }
         rows += [
-            [label("Each image:"), intervalRow],
+            [label("Each photo:"), intervalRow],
             [label("Transition:"), transitionPopup],
             [label("Order:"), orderPopup],
             [label("Fit:"), fitPopup],

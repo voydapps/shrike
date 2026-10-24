@@ -12,6 +12,7 @@
 
 import AppKit
 import Foundation
+import ShrikeIO
 
 // MARK: - Toolbar item identifiers
 
@@ -107,6 +108,19 @@ public final class BrowserFilterPopover: NSViewController {
     let flagPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private(set) var kindBoxes: [BrowserFilterKind: NSButton] = [:]
     let clearButton = NSButton(title: "Clear Filters", target: nil, action: nil)
+    /// "Tags": a pull-down that closes on each pick (spec 21b §3). Items: the tags
+    /// found in the folder, colour tags first.
+    let tagPopup = NSPopUpButton(frame: .zero, pullsDown: true)
+    /// The tags of the folder and whether they are still being read. The window
+    /// controller feeds these; the popover never reads files itself.
+    public private(set) var tagOptions: [FinderTag] = []
+    public private(set) var isReadingTags = false
+
+    public func setTagSource(_ options: [FinderTag], reading: Bool) {
+        tagOptions = options
+        isReadingTags = reading
+        refreshTagPopup()
+    }
 
     public init(filter: BrowserFilter) {
         self.filter = filter
@@ -143,6 +157,10 @@ public final class BrowserFilterPopover: NSViewController {
         flagPopup.action = #selector(flagChanged(_:))
         flagPopup.setAccessibilityLabel("Flag")
 
+        tagPopup.target = self
+        tagPopup.action = #selector(tagPicked(_:))
+        tagPopup.setAccessibilityLabel("Tags")
+
         var kindRows: [NSStackView] = []
         let kinds = BrowserFilterKind.allCases
         for (i, kind) in kinds.enumerated() {
@@ -169,7 +187,8 @@ public final class BrowserFilterPopover: NSViewController {
         clearRow.arrangedSubviews[0].setContentHuggingPriority(.init(1), for: .horizontal)
 
         let stack = NSStackView(views: [
-            row([label("Rating"), ratingPopup]), row([label("Flag"), flagPopup]), kindStack, clearRow,
+            row([label("Rating"), ratingPopup]), row([label("Flag"), flagPopup]), kindStack,
+            row([label("Tags"), tagPopup]), clearRow,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -180,6 +199,7 @@ public final class BrowserFilterPopover: NSViewController {
         clearRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * pad).isActive = true
         ratingPopup.widthAnchor.constraint(equalToConstant: Self.width - 2 * pad - 44 - 8).isActive = true
         flagPopup.widthAnchor.constraint(equalTo: ratingPopup.widthAnchor).isActive = true
+        tagPopup.widthAnchor.constraint(equalTo: ratingPopup.widthAnchor).isActive = true
 
         let root = NSView()
         root.addSubview(stack)
@@ -209,6 +229,82 @@ public final class BrowserFilterPopover: NSViewController {
             box.state = filter.excludedKinds.contains(kind) ? .off : .on
         }
         clearButton.isEnabled = !filter.popoverPartIsEmpty
+        refreshTagPopup()
+    }
+
+    /// Finder order for colour tags, then the other tags A–Z.
+    static func orderedTags(_ tags: [FinderTag]) -> [FinderTag] {
+        var seen = Set<String>()
+        let unique = tags.filter { seen.insert($0.name.lowercased()).inserted }
+        let coloured = FinderTagColor.finderMenuOrder.flatMap { color in
+            unique.filter { $0.color == color }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+        let rest = unique.filter { !FinderTagColor.finderMenuOrder.contains($0.color) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return coloured + rest
+    }
+
+    /// The title of the closed control: Any Tag · the tag · "2 Tags".
+    var tagTitle: String {
+        if isReadingTags && filter.tags.isEmpty { return "Reading Tags…" }
+        switch filter.tags.count {
+        case 0: return tagOptions.isEmpty ? "No Tags in This Folder" : "Any Tag"
+        case 1: return filter.tags.first ?? ""
+        default: return "\(filter.tags.count) Tags"
+        }
+    }
+
+    /// Rebuilds the menu. Item 0 is the pull-down's title (never listed).
+    func refreshTagPopup() {
+        guard isViewLoaded else { return }
+        let menu = tagPopup.menu ?? NSMenu()
+        menu.removeAllItems()
+        menu.addItem(withTitle: tagTitle, action: nil, keyEquivalent: "")
+        let usable = !isReadingTags || !filter.tags.isEmpty
+        tagPopup.isEnabled = usable && (!tagOptions.isEmpty || !filter.tags.isEmpty)
+        if tagPopup.isEnabled {
+            let any = menu.addItem(withTitle: "Any Tag", action: #selector(tagPicked(_:)), keyEquivalent: "")
+            any.target = self
+            any.state = filter.tags.isEmpty ? .on : .off
+            menu.addItem(.separator())
+            // A chosen tag the folder no longer has stays listed, so it can be unticked.
+            var options = Self.orderedTags(tagOptions)
+            for name in filter.tags.sorted() where !options.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                options.append(FinderTag(name: name))
+            }
+            for tag in options {
+                let item = menu.addItem(withTitle: tag.name, action: #selector(tagPicked(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = tag.name
+                item.state = filter.tags.contains(tag.name) ? .on : .off
+                if let dot = Self.dotImage(for: tag.color) { item.image = dot }
+            }
+        }
+        tagPopup.menu = menu
+        tagPopup.setAccessibilityValue(tagTitle)
+    }
+
+    private static func dotImage(for color: FinderTagColor) -> NSImage? {
+        guard let fill = color.nsColor else { return nil }
+        let image = NSImage(size: NSSize(width: 10, height: 10), flipped: false) { rect in
+            fill.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5)).fill()
+            return true
+        }
+        image.accessibilityDescription = nil
+        return image
+    }
+
+    @objc func tagPicked(_ sender: Any?) {
+        let item: NSMenuItem?
+        if let popup = sender as? NSPopUpButton { item = popup.selectedItem } else { item = sender as? NSMenuItem }
+        guard let item, item !== tagPopup.menu?.items.first else { return }
+        if let name = item.representedObject as? String {
+            if filter.tags.contains(name) { filter.tags.remove(name) } else { filter.tags.insert(name) }
+        } else {
+            filter.tags = []   // "Any Tag"
+        }
+        changed()
     }
 
     private func changed() {

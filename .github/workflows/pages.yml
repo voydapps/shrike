@@ -1,9 +1,9 @@
 name: Pages
 
+# No push trigger (audit 2026-10-24 M1): a push to main used to publish the site
+# before the release it names existed. Release.yml starts this workflow after a
+# successful publish; by hand, run it with workflow_dispatch on main.
 on:
-  push:
-    branches: [main]
-    paths: ['site/**', 'CHANGELOG.md', 'Scripts/check-site.sh', 'Scripts/make-changelog-page.mjs', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -24,6 +24,16 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The page names a version in data-release-version; that release must exist.
+      - name: The release named on the page exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(grep -o 'data-release-version="[0-9.]*"' site/index.html | head -1 | sed 's/.*="//; s/"//')
+          test -n "$version" || { echo '::error::no data-release-version in site/index.html'; exit 1; }
+          gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null || { echo "::error::release v$version does not exist yet; the site must not name it"; exit 1; }
       # Also runs the changelog page check (node is on the runner).
       - run: bash Scripts/check-site.sh
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0

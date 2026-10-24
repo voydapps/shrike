@@ -360,6 +360,26 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         readInfo(pane, url: url)
     }
 
+    /// The pane differs from the zoom the other panes share.
+    private func needsLockedViewRefresh(_ pane: ComparePane) -> Bool {
+        guard isLocked, let leader = lockLeader(excluding: pane) else { return false }
+        if case .bestFit = leader.view.imageView.contentMode { return false }
+        return abs(leader.view.imageView.pixelScale - pane.view.imageView.pixelScale) > 0.005
+    }
+
+    private func lockLeader(excluding pane: ComparePane) -> ComparePane? {
+        if let focused = focusedPane, focused !== pane, focused.view.imageView.image != nil { return focused }
+        return panes.first { $0 !== pane && $0.view.imageView.image != nil }
+    }
+
+    /// Copies the shared zoom and position onto `pane` without echoing back to the others.
+    func applyLockedView(to pane: ComparePane) {
+        guard isLocked, let leader = lockLeader(excluding: pane), !isSyncing else { return }
+        isSyncing = true
+        defer { isSyncing = false }
+        copyView(from: leader, to: pane)
+    }
+
     private func present(_ entry: DecodedImage, in pane: ComparePane, url: URL, edge: Int) {
         let view = pane.view.imageView
         isApplyingImage = true
@@ -392,7 +412,13 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
                 pane.record = merged[url] ?? record
             }
             if let size = self.drawnSize(of: pane), pane.loadedURL == url {
+                let hadSize = pane.view.imageView.sourcePixelSize != nil
                 pane.view.imageView.sourcePixelSize = size
+                // A new candidate that arrived while the other panes are zoomed was
+                // placed before its file size was known, so its "pixel" scale was in
+                // texture units and the photo came up too small (audit M3). Now that
+                // the size is known, take the shared zoom and position again.
+                if !hadSize || self.needsLockedViewRefresh(pane) { self.applyLockedView(to: pane) }
                 self.requestFullResolutionIfNeeded(pane)
             }
             self.updateFooter(pane)
@@ -549,7 +575,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         referenceGeneration &+= 1
         referencePane = referencePane === pane ? nil : pane
         for candidate in panes { updateFooter(candidate) }
-        Culling.announce(referencePane == nil ? "Reference released" : "Photo kept as reference")
+        Culling.announce(referencePane == nil ? "Photo no longer kept" : "Photo kept")
     }
     @objc func keepFocusedPhoto(_ sender: Any?) { if let pane = focusedPane { toggleReference(pane) } }
     private func stepPane(_ pane: ComparePane?, delta: Int) {
@@ -571,7 +597,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
             moved = true
             load(pane)
         }
-        if !moved { if focusedPane === referencePane { toast(ToastContent("Unpin to change this photo")) } else { NSSound.beep() } }
+        if !moved { if focusedPane === referencePane { toast(ToastContent("Uncheck Keep Photo to change this photo.")) } else { NSSound.beep() } }
     }
 
     /// Wheel or swipe navigation moves that pane (and focuses it). The
@@ -953,15 +979,15 @@ extension CompareWindow {
 
     private func trashFailed(_ removed: RemovedGroup, place: CompareTrashPlace?, error: any Error) async {
         if case .noTrash? = error as? FileOpsError {
-            let message = "“\(removed.group.displayName)” can't be moved to the Trash."
+            let copy = FileActionCopy.noTrashDelete([removed.group])
+            let message = copy.message
             let choice: Int?
             if let responder = alertResponderForTesting {
                 choice = responder(message)
             } else {
                 choice = await ShrikeAlert.run(
                     message: message,
-                    information: "This volume doesn't have a Trash. Delete it now? You can't undo this.",
-                    buttons: [ShrikeAlert.Button("Delete", role: .destructive), .cancel()], on: self)
+                    information: copy.information, buttons: copy.buttons, on: self)
             }
             if choice == 0 {
                 do {

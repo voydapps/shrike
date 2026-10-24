@@ -72,7 +72,7 @@ extension ViewerWindow {
                 let view = self.contentRoot.imageView
                 // Actual/zoom detail and viewport refetches serve the current
                 // photo. Only detail no longer needed at stable Fit is optional.
-                if view.isAtFit, !view.isZoomAnimating {
+                if view.isAtFit || (self.isParkedForBrowser && !self.isVisible), !view.isZoomAnimating {
                     self.cancelFullResolution()
                     view.dropFullResolution()
                 }

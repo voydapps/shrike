@@ -28,6 +28,12 @@ struct EditChromeState: Equatable {
     var isAwaitingDestination = false
     var isTransitioning = false
     var acceptsInput: Bool { !isSaving && !isTransitioning }
+    /// The secondary "Save Copy…" has its own place from the start (greyed
+    /// until there is something to save), so the buttons never shift when
+    /// the first edit is made (audit on-screen L10). When the primary already
+    /// is "Save Copy…" there is no secondary at all.
+    var showsSaveCopy: Bool { !requiresCopy }
+    var saveCopyEnabled: Bool { hasEdits && acceptsInput }
     var savePolicy = "Changes will replace this file. An original backup is kept."
     var primaryTitle: String { (isSaving && !isAwaitingDestination) ? "Saving…" : (!(hasEdits || hasPendingToolEdits) ? "Done" : (requiresCopy ? "Save Copy…" : "Save Changes")) }
 
@@ -437,9 +443,10 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         doneItem?.paletteLabel = newState.primaryTitle
         doneItem?.menuFormRepresentation?.title = newState.primaryTitle
         doneItem?.menuFormRepresentation?.isEnabled = newState.acceptsInput
-        saveCopyButton.isHidden = newState.requiresCopy || !newState.hasEdits
+        saveCopyButton.isHidden = !newState.showsSaveCopy
+        saveCopyButton.isEnabled = newState.saveCopyEnabled
         syncSaveCopyParticipation()
-        saveCopyMenuItem?.isEnabled = newState.acceptsInput
+        saveCopyMenuItem?.isEnabled = newState.saveCopyEnabled
         toolPicker.isEnabled = newState.acceptsInput
         resetButton.isEnabled = (newState.hasEdits || newState.canUndo) && newState.acceptsInput
         toolPicker.show(tool: newState.tool)
@@ -460,11 +467,27 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         }
     }
 
+    /// The primary button keeps the width of its longest title, so "Done" turning
+    /// into "Save Changes" does not move the buttons beside it (audit on-screen L10).
+    private var widestPrimaryWidth: CGFloat?
+    private func widestPrimaryTitleWidth() -> CGFloat {
+        if let widestPrimaryWidth { return widestPrimaryWidth }
+        let current = chromeState.primaryTitle
+        var widest: CGFloat = 0
+        for title in ["Done", "Save Changes", "Save Copy…", "Saving…"] {
+            doneButton.setAccentTitle(title)
+            widest = max(widest, doneButton.intrinsicContentSize.width)
+        }
+        doneButton.setAccentTitle(current)
+        if widest.isFinite, widest > 0 { widestPrimaryWidth = widest }
+        return widest
+    }
+
     /// AppKit's glass custom view can retain its first content-size constraint
     /// after an attributed title changes. Supply the current native measurement
     /// before the toolbar calculates item widths; height remains native.
     private func updatePrimaryTitleMinimumWidth() {
-        let width = doneButton.intrinsicContentSize.width
+        let width = widestPrimaryTitleWidth()
         guard width.isFinite, width > 0 else { return }
         if let constraint = primaryTitleMinimumWidth {
             if abs(constraint.constant - width) > 0.01 { constraint.constant = width }
@@ -484,7 +507,7 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         defer { syncingSaveCopyItem = false }
         let items = toolbar.items
         let index = items.firstIndex { $0.itemIdentifier == ItemID.saveCopy }
-        if chromeState.hasEdits && !chromeState.requiresCopy {
+        if chromeState.showsSaveCopy {
             if index == nil, let primary = items.firstIndex(where: { $0.itemIdentifier == ItemID.done }) {
                 toolbar.insertItem(withItemIdentifier: ItemID.saveCopy, at: primary)
             }
@@ -496,7 +519,7 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
     // MARK: NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        Self.itemOrder.filter { $0 != ItemID.saveCopy || (chromeState.hasEdits && !chromeState.requiresCopy) }
+        Self.itemOrder.filter { $0 != ItemID.saveCopy || chromeState.showsSaveCopy }
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { Self.itemOrder }
 
@@ -518,7 +541,7 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         case ItemID.saveCopy:
             let item = viewItem(itemIdentifier, saveCopyButton, label: "Save Copy…", menuTitle: "Save Copy…", action: #selector(saveCopyClicked))
             saveCopyMenuItem = item.menuFormRepresentation
-            saveCopyMenuItem?.isEnabled = chromeState.acceptsInput
+            saveCopyMenuItem?.isEnabled = chromeState.saveCopyEnabled
             return item
         case ItemID.done:
             // The button carries the accent fill itself (`useAccentFill`).
@@ -709,8 +732,9 @@ final class EditCapsuleView: HUDSurfaceView {
         chromeState = newState
         doneButton.setAccessibilityLabel(newState.primaryTitle)
         doneButton.toolTip = newState.savePolicy
-        saveCopyButton.isHidden = newState.requiresCopy || !newState.hasEdits
+        saveCopyButton.isHidden = !newState.showsSaveCopy
         for control in [cancelButton, resetButton, saveCopyButton, doneButton] { control.isEnabled = newState.acceptsInput }
+        saveCopyButton.isEnabled = newState.saveCopyEnabled
         doneButton.setAccentTitle(newState.primaryTitle)
         toolPicker.isEnabled = newState.acceptsInput
         label.stringValue = newState.subtitle

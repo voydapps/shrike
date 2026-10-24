@@ -153,24 +153,24 @@ final class SlideshowTests: XCTestCase {
 
     func testScopeTitles() {
         let s = SlideshowScope(allCount: 180, folderName: "Italy 2026", selectedCount: 12)
-        XCTAssertEqual(s.allTitle, "All 180 visible photos in ‘Italy 2026’")
+        XCTAssertEqual(s.allTitle, "All 180 visible photos in “Italy 2026”")
         XCTAssertEqual(s.selectedTitle, "12 selected photos")
         XCTAssertTrue(s.offersSelection)
         let one = SlideshowScope(allCount: 5, folderName: "x", selectedCount: 1)
-        XCTAssertEqual(one.allTitle, "All 5 visible photos in ‘x’")
+        XCTAssertEqual(one.allTitle, "All 5 visible photos in “x”")
         XCTAssertEqual(one.selectedTitle, "1 selected photo")
         XCTAssertTrue(one.offersSelection, "offered from 1")
         XCTAssertFalse(one.defaultsToSelection, "but not the default")
         XCTAssertTrue(s.defaultsToSelection)
         XCTAssertFalse(SlideshowScope(allCount: 5, folderName: "x", selectedCount: 0).offersSelection)
         let only = SlideshowScope(allCount: 1, folderName: "F", selectedCount: 1)
-        XCTAssertEqual(only.allTitle, "All 1 visible photo in ‘F’")
+        XCTAssertEqual(only.allTitle, "All 1 visible photo in “F”")
         XCTAssertEqual(only.selectedTitle, "1 selected photo")
         let empty = SlideshowScope(allCount: 0, folderName: "F", selectedCount: 0)
-        XCTAssertEqual(empty.allTitle, "All 0 visible photos in ‘F’")
+        XCTAssertEqual(empty.allTitle, "All 0 visible photos in “F”")
         XCTAssertEqual(empty.selectedTitle, "0 selected photos")
         let two = SlideshowScope(allCount: 2, folderName: "F", selectedCount: 2)
-        XCTAssertEqual(two.allTitle, "All 2 visible photos in ‘F’")
+        XCTAssertEqual(two.allTitle, "All 2 visible photos in “F”")
         XCTAssertEqual(two.selectedTitle, "2 selected photos")
     }
 
@@ -244,7 +244,7 @@ final class SlideshowTests: XCTestCase {
         show.handle(.intervalUp)
         XCTAssertEqual(show.settings.intervalSec, 60, "clamped at 60")
         show.handle(.intervalDown)
-        XCTAssertEqual(show.toastsForTesting.last, "59 s per image")
+        XCTAssertEqual(show.toastsForTesting.last, "59 s per photo")
         show.handle(.togglePause)
         XCTAssertTrue(show.isPaused)
         show.handle(.toggleLoop)
@@ -255,5 +255,20 @@ final class SlideshowTests: XCTestCase {
         show.handle(.exit)
         XCTAssertEqual(origin.ended?.group, list[3])
         XCTAssertEqual(origin.ended?.finished, false)
+    }
+}
+
+/// COR-6: the first dissolve's end must not take away the second dissolve's mask.
+@MainActor
+final class DissolveMaskTests: XCTestCase {
+    func testOnlyTheOwnMaskIsRemoved() {
+        let layer = CALayer()
+        let first = CALayer(), second = CALayer()
+        layer.mask = first
+        layer.mask = second            // a second present replaced it
+        SlideshowController.removeDissolveMask(first, from: layer)
+        XCTAssertTrue(layer.mask === second, "the newer dissolve keeps its mask")
+        SlideshowController.removeDissolveMask(second, from: layer)
+        XCTAssertNil(layer.mask)
     }
 }

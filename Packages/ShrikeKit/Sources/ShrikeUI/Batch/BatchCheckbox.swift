@@ -15,10 +15,19 @@ import SwiftUI
 struct BatchCheckbox: NSViewRepresentable {
     let title: String
     @Binding var isOn: Bool
+    /// A file name: shown as it is, shortened in the middle when the row is narrow.
+    var isFileName = false
 
     init(_ title: String.LocalizationValue, isOn: Binding<Bool>) {
         self.title = String(localized: title)
         self._isOn = isOn
+    }
+
+    /// A checkbox titled with `fileName` exactly as written (Done view skip rows).
+    init(fileName: String, isOn: Binding<Bool>) {
+        self.title = fileName
+        self._isOn = isOn
+        self.isFileName = true
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(isOn: $isOn) }
@@ -31,6 +40,11 @@ struct BatchCheckbox: NSViewRepresentable {
         for axis in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
             button.setContentHuggingPriority(.required, for: axis)
             button.setContentCompressionResistancePriority(.required, for: axis)
+        }
+        if isFileName {
+            button.lineBreakMode = .byTruncatingMiddle
+            button.setContentCompressionResistancePriority(.init(250), for: .horizontal)
+            button.setContentHuggingPriority(.init(250), for: .horizontal)
         }
         return button
     }

@@ -20,7 +20,7 @@ final class ZoomBadgeView: HUDSurfaceView {
         wantsLayer = true
         glassShape = .capsule
 
-        label.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: ChromeTypography.size(12), weight: .regular)
         label.textColor = .white
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
@@ -36,6 +36,7 @@ final class ZoomBadgeView: HUDSurfaceView {
 
     /// `z` is the pixel scale (1.0 = one image pixel per screen pixel).
     func setZoom(_ z: Double) {
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: ChromeTypography.size(12), weight: .regular)
         label.stringValue = "\(Int((z * 100).rounded())) %"
     }
 
@@ -87,6 +88,11 @@ final class ErrorOverlayView: NSView {
     static let headingFontSize: CGFloat = 15
     static let bodyFontSize: CGFloat = 13
     static let bodyWidth: CGFloat = cardWidth - 48
+    static let minimumCardWidth: CGFloat = 208
+    /// Below this card width the two buttons stack, each full width.
+    static let stackButtonsBelow: CGFloat = 300
+    private var buttonStack: NSStackView?
+    private var buttonStackFullWidth: [NSLayoutConstraint] = []
 
     private let title = NSTextField(labelWithString: "Can't open")
     private let body = NSTextField(wrappingLabelWithString: ErrorOverlayView.message)
@@ -137,6 +143,7 @@ final class ErrorOverlayView: NSView {
         body.cell?.isScrollable = false
         body.cell?.usesSingleLineMode = false
         body.setContentCompressionResistancePriority(.required, for: .vertical)
+        body.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         body.translatesAutoresizingMaskIntoConstraints = false
 
         for button in [nextButton, revealButton] {
@@ -169,10 +176,26 @@ final class ErrorOverlayView: NSView {
         container.setAccessibilityLabel("Can't open. \(Self.message)")
         container.setAccessibilityChildren([nextButton, revealButton])
 
+        // Spec 21b §6: the card is min(420, canvas − 32) wide (never below 208).
+        let nominalWidth = container.widthAnchor.constraint(equalToConstant: Self.cardWidth)
+        // Below windowSizeStayPut (500): a card must never grow the WINDOW.
+        nominalWidth.priority = NSLayoutConstraint.Priority(rawValue: 490)
+        let cardLeft = container.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 16)
+        let cardRight = container.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -16)
+        cardLeft.priority = NSLayoutConstraint.Priority(rawValue: 495); cardRight.priority = cardLeft.priority
+        buttonStack = buttons
+        buttonStackFullWidth = [
+            buttons.widthAnchor.constraint(equalTo: container.widthAnchor, constant: -48),
+            nextButton.widthAnchor.constraint(equalTo: buttons.widthAnchor),
+            revealButton.widthAnchor.constraint(equalTo: buttons.widthAnchor),
+        ]
         NSLayoutConstraint.activate([
             container.centerXAnchor.constraint(equalTo: centerXAnchor),
             container.centerYAnchor.constraint(equalTo: centerYAnchor),
-            container.widthAnchor.constraint(equalToConstant: Self.cardWidth),
+            container.widthAnchor.constraint(lessThanOrEqualToConstant: Self.cardWidth),
+            container.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minimumCardWidth),
+            nominalWidth,
+            cardLeft, cardRight,
             icon.topAnchor.constraint(equalTo: container.topAnchor, constant: 24),
             icon.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             icon.widthAnchor.constraint(equalToConstant: 40),
@@ -182,7 +205,6 @@ final class ErrorOverlayView: NSView {
             body.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
             body.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
             body.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
-            body.widthAnchor.constraint(equalToConstant: Self.bodyWidth),
             buttons.topAnchor.constraint(equalTo: body.bottomAnchor, constant: 12),
             buttons.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             buttons.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -20),
@@ -194,6 +216,29 @@ final class ErrorOverlayView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// The body wraps at the card's real text width; narrow cards stack the buttons.
+    override func layout() {
+        super.layout()
+        let textWidth = max(0, container.bounds.width - 48)
+        if abs(body.preferredMaxLayoutWidth - textWidth) > 0.5, textWidth > 0 {
+            body.preferredMaxLayoutWidth = textWidth
+            needsLayout = true
+        }
+        if let stack = buttonStack, container.bounds.width > 0 {
+            let narrow = container.bounds.width < Self.stackButtonsBelow
+            let wanted: NSUserInterfaceLayoutOrientation = narrow ? .vertical : .horizontal
+            if stack.orientation != wanted {
+                stack.orientation = wanted
+                stack.alignment = narrow ? .leading : .centerY
+                if narrow { NSLayoutConstraint.activate(buttonStackFullWidth) }
+                else { NSLayoutConstraint.deactivate(buttonStackFullWidth) }
+                needsLayout = true
+            }
+        }
+    }
+
+    var buttonsAreStackedForTesting: Bool { layoutSubtreeIfNeeded(); return buttonStack?.orientation == .vertical }
 
     /// Only the card takes clicks; the rest of the overlay lets them through.
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -231,45 +276,6 @@ final class ErrorOverlayView: NSView {
         body.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: Self.bodyWidth, height: 10_000)).height ?? 0
     }
     var bodyForTesting: NSTextField { body }
-}
-
-// MARK: - Page indicator
-
-@MainActor
-final class PageIndicatorView: HUDSurfaceView {
-
-    private let label = NSTextField(labelWithString: "")
-
-    init() {
-        super.init(frame: .zero)
-        wantsLayer = true
-        glassShape = .capsule
-
-        label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        label.textColor = .white
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            label.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    func show(text: String) {
-        label.stringValue = text
-        alphaValue = 1
-    }
-
-    func hideAnimated() {
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.2
-            animator().alphaValue = 0
-        }
-    }
 }
 
 // MARK: - Live Photo badge

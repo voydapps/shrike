@@ -1142,7 +1142,7 @@ final class NavigationPositionOverlayViewTests: XCTestCase {
         XCTAssertEqual(
             harness.calls.first,
             NSLocalizedString(
-                "Loading image",
+                "Loading photo",
                 comment: "VoiceOver announcement for viewer loading hairline"
             ),
             "announcement string"
@@ -1189,7 +1189,7 @@ final class NavigationPositionOverlayViewTests: XCTestCase {
     }
 
     /// `completeHairline` cancels any pending VO announcement task —
-    /// a deferred "Loading image" must not fire after the image is
+    /// a deferred "Loading photo" must not fire after the image is
     /// already painted.
     func testVoiceOver_CompleteHairlineCancelsPendingAnnouncement() {
         let (overlay, harness) = makeOverlayWithVOHarness()
@@ -1216,7 +1216,7 @@ final class NavigationPositionOverlayViewTests: XCTestCase {
     }
 
     /// `flashError` cancels any pending VO announcement — error has its
-    /// own accessibility beat and "Loading image" is misleading mid-error.
+    /// own accessibility beat and "Loading photo" is misleading mid-error.
     func testVoiceOver_FlashErrorCancelsPendingAnnouncement() {
         let (overlay, harness) = makeOverlayWithVOHarness()
 

@@ -470,7 +470,7 @@ public actor BackupStore {
             var orphanedOriginals: [BackupRecord] = []
             for recs in (index ?? [:]).values {
                 guard let first = recs.first else { continue }
-                let fileExists = FileManager.default.fileExists(atPath: first.originalPath)
+                let fileExists = Self.originalMayStillExist(atPath: first.originalPath)
                 for (i, rec) in recs.enumerated() where rec.createdAt < graceCutoff {
                     if i == 0 {
                         // Never the original of a file that still exists.
@@ -496,6 +496,36 @@ public actor BackupStore {
         return report
     }
 
+    /// FS-11: deletes EVERY backup copy in the store (the user's "Delete All Backups…").
+    /// Only files inside the backup root go; the photos the backups were made from are
+    /// never touched. After this, Revert to Original and Undo of a save have nothing to
+    /// restore from. Returns how many backups and bytes went.
+    @discardableResult
+    public func deleteAll() -> (removed: Int, freedBytes: Int64) {
+        prepare()
+        var removed = 0
+        var freed: Int64 = 0
+        for recs in Array((index ?? [:]).values) {
+            for rec in recs {
+                let size = Self.size(of: rec)
+                if delete(rec) { removed += 1; freed += size }
+            }
+        }
+        let fm = FileManager.default
+        var stillThere: [(entry: URL, day: Date?)] = []
+        for orphan in orphans {
+            let size = Self.directorySize(orphan.entry)
+            if (try? fm.removeItem(at: orphan.entry)) != nil {
+                removed += 1; freed += size
+                Self.removeIfEmpty(orphan.entry.deletingLastPathComponent())
+            } else {
+                stillThere.append(orphan)
+            }
+        }
+        orphans = stillThere
+        return (removed, freed)
+    }
+
     /// Retention pass only: delete records older than `days` days, except
     /// the original (oldest record) of a file that still exists. Returns
     /// how many were removed. `days < 0` keeps everything.
@@ -512,7 +542,7 @@ public actor BackupStore {
         var freed: Int64 = 0
         for recs in (index ?? [:]).values {
             guard let first = recs.first else { continue }
-            let fileExists = FileManager.default.fileExists(atPath: first.originalPath)
+            let fileExists = Self.originalMayStillExist(atPath: first.originalPath)
             for (i, rec) in recs.enumerated() where rec.createdAt < cutoff {
                 if i == 0 && fileExists { continue }
                 let size = Self.size(of: rec)
@@ -529,6 +559,28 @@ public actor BackupStore {
             return true
         }
         return (removed, freed)
+    }
+
+    /// Whether the file a chain belongs to may still exist, so its original
+    /// must be kept. False only when the file is truly gone: its folder (or
+    /// volume) is present and the file is not there. A photo on an unplugged
+    /// disk or network share (`/Volumes/<name>` not mounted), and an iCloud
+    /// Drive file that macOS evicted (only `.<name>.icloud` is left), count
+    /// as existing, so a reap while the disk is away never deletes the
+    /// original that Revert to Original needs later (audit FS-3).
+    static func originalMayStillExist(atPath path: String) -> Bool {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: path) { return true }
+        let url = URL(fileURLWithPath: path)
+        let folder = url.deletingLastPathComponent()
+        let placeholder = folder.appendingPathComponent(".\(url.lastPathComponent).icloud")
+        if fm.fileExists(atPath: placeholder.path) { return true }
+        let parts = folder.pathComponents   // ["/", "Volumes", "Disk", ...]
+        if parts.count >= 3, parts[1] == "Volumes" {
+            let mount = "/Volumes/" + parts[2]
+            if !fm.fileExists(atPath: mount) { return true }   // not mounted
+        }
+        return false
     }
 
     // MARK: - Index

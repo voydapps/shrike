@@ -352,6 +352,31 @@ public actor MetadataStore {
                     arguments: [key, mtime, info.dateCaptured?.timeIntervalSince1970,
                                 info.pixelWidth, info.pixelHeight])
             }
+            // A big scan is the moment the table can have grown: keep it bounded.
+            if rows.count >= 100 { try Self.pruneHeaderCache(db, keeping: Self.maxHeaderRows) }
+        }
+    }
+
+    /// Most rows `header_cache` keeps (about 100 bytes each, so ~10 MB).
+    /// The oldest written go first (audit MP-12).
+    nonisolated(unsafe) static var maxHeaderRows = 100_000
+    /// Most folders `recent_folders` keeps; the menus show far fewer.
+    static let maxRecentFolderRows = 200
+
+    static func pruneHeaderCache(_ db: Database, keeping limit: Int) throws {
+        let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM header_cache") ?? 0
+        guard count > limit else { return }
+        try db.execute(sql: """
+            DELETE FROM header_cache WHERE rowid IN
+              (SELECT rowid FROM header_cache ORDER BY rowid LIMIT ?)
+            """, arguments: [count - limit])
+    }
+
+    /// Test seam: rows currently in `header_cache` / `recent_folders`.
+    func tableCountsForTesting() async throws -> (headers: Int, recents: Int) {
+        try await readOnlyAccess { db in
+            (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM header_cache") ?? 0,
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM recent_folders") ?? 0)
         }
     }
 
@@ -560,6 +585,10 @@ public actor MetadataStore {
                      "ON CONFLICT(path) DO UPDATE SET last_opened = excluded.last_opened",
                 arguments: [path, now]
             )
+            try db.execute(sql: """
+                DELETE FROM recent_folders WHERE path NOT IN
+                  (SELECT path FROM recent_folders ORDER BY last_opened DESC LIMIT ?)
+                """, arguments: [Self.maxRecentFolderRows])
         }
     }
 

@@ -39,7 +39,7 @@ final class EditPrimaryTitleSizingTests: XCTestCase {
         let visible = controller.toolbar.visibleItems?.map(\.itemIdentifier) ?? []
         XCTAssertTrue(visible.contains(EditToolbarController.ItemID.done), "Primary stays visible while lower-priority items may overflow", file: file, line: line)
         let secondary = controller.toolbar.items.filter { $0.itemIdentifier == EditToolbarController.ItemID.saveCopy }
-        XCTAssertEqual(secondary.count, state.hasEdits && !state.requiresCopy ? 1 : 0, file: file, line: line)
+        XCTAssertEqual(secondary.count, state.requiresCopy ? 0 : 1, file: file, line: line)
         XCTAssertEqual(button.keyEquivalent, "\r", file: file, line: line)
         XCTAssertEqual(button.isEnabled, !state.isSaving, file: file, line: line)
     }
@@ -61,10 +61,8 @@ final class EditPrimaryTitleSizingTests: XCTestCase {
                     try assertComplete(controller, state: state)
                     widths.append(controller.doneButton.bounds.width)
                 }
-                XCTAssertGreaterThan(widths[1], widths[0], "Save Changes expands beyond Done")
-                XCTAssertLessThan(widths[2], widths[1], "Save Copy releases unused title width")
-                XCTAssertLessThan(widths[3], widths[2], "Saving uses its current title width")
-                XCTAssertLessThan(widths[4], widths[3], "Returning to Done releases saved title width")
+                // One width for every title: the buttons beside it never move (audit on-screen L10).
+                for w in widths { XCTAssertEqual(w, widths[0], accuracy: 0.5, "the primary keeps its longest title's width") }
                 XCTAssertEqual(widths[4], widths[0], accuracy: 0.5)
             }
         }

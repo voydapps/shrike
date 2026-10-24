@@ -8,6 +8,7 @@
 //
 
 import XCTest
+import os
 @testable import ShrikeCore
 
 final class ShrikeDefaultsTests: XCTestCase {
@@ -115,14 +116,14 @@ final class ShrikeDefaultsTests: XCTestCase {
 
     func testTheStorePostsDidChangeAfterEveryChange() {
         let store = makeTestDefaults()
-        var posts = 0
+        let posts = OSAllocatedUnfairLock(initialState: 0)   // the observer may run on any thread
         let token = NotificationCenter.default.addObserver(
-            forName: UserDefaults.didChangeNotification, object: store, queue: nil) { _ in posts += 1 }
+            forName: UserDefaults.didChangeNotification, object: store, queue: nil) { _ in posts.withLock { $0 += 1 } }
         defer { NotificationCenter.default.removeObserver(token) }
         store.set(1, forKey: "shrike.tests.n")
         store.set(true, forKey: "shrike.tests.n")
         store.removeObject(forKey: "shrike.tests.n")
-        XCTAssertEqual(posts, 3)
+        XCTAssertEqual(posts.withLock { $0 }, 3)
     }
 
     func testScratchSuitesStartEmptyAndStayApart() {

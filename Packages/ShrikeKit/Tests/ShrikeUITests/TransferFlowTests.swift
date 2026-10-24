@@ -243,6 +243,15 @@ final class TransferFlowTests: XCTestCase {
         XCTAssertEqual(FileTransferCopy.applyToRemaining(2), "Do this for the remaining 2 conflicts")
     }
 
+    /// FS-6: the Replace alert names the RAW / sidecar it also trashes.
+    func testConflictMessageNamesTheOtherFilesReplace_trashes() {
+        XCTAssertEqual(FileTransferCopy.conflictMessage(alsoReplacing: []), FileTransferCopy.conflictMessage)
+        let one = FileTransferCopy.conflictMessage(alsoReplacing: ["IMG_1.CR3"])
+        XCTAssertTrue(one.contains("“IMG_1.CR3”") && one.contains("it belongs"), one)
+        let many = FileTransferCopy.conflictMessage(alsoReplacing: ["a.CR3", "a.xmp", "a.mov", "a.dng", "a.arw", "a.nef"])
+        XCTAssertTrue(many.contains("and 2 more") && many.contains("they belong"), many)
+    }
+
     func testCopyLines() {
         let one = [ImageGroup(primary: URL(fileURLWithPath: "/p/DSC_0042.jpg"))]
         let three = (1...3).map { ImageGroup(primary: URL(fileURLWithPath: "/p/\($0).jpg")) }

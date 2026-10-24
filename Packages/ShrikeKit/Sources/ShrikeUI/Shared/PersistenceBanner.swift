@@ -5,8 +5,8 @@ import ShrikeCore
 @MainActor
 final class PersistenceBanner: NSStackView {
     private let store: MetadataStore
-    private let message = NSTextField(wrappingLabelWithString: "Ratings storage is unavailable. New ratings and flags use temporary storage for this session.")
-    private let retry = NSButton(title: "Retry Storage", target: nil, action: nil)
+    private let message = NSTextField(wrappingLabelWithString: "Ratings can't be saved right now. Ratings you add may be lost when you quit.")
+    private let retry = NSButton(title: "Retry", target: nil, action: nil)
     private let details = NSButton(title: "Details…", target: nil, action: nil)
     private var task: Task<Void, Never>?
     var onRecovered: (() -> Void)?
@@ -39,7 +39,7 @@ final class PersistenceBanner: NSStackView {
                 NotificationCenter.default.post(name: Notification.Name("shrike.metadataPersistenceChanged"), object: nil)
                 Culling.announce("Ratings storage restored. \(recovered.metadataCount) photo records and \(recovered.recentFolderCount) recent folders restored.")
             } catch { if !Task.isCancelled { self?.showError(error.localizedDescription) } }
-            self?.retry.title = "Retry Storage"; self?.retry.isEnabled = true; self?.task = nil
+            self?.retry.title = "Retry"; self?.retry.isEnabled = true; self?.task = nil
         }
     }
     @objc private func showDetails() {

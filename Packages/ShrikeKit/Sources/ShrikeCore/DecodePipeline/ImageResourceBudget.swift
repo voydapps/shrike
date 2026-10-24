@@ -94,6 +94,17 @@ public final class ImagePressureObservation: Sendable {
 /// One process-wide accounting/admission authority. This bounds managed
 /// discretionary payloads, not Metal drawables or total process footprint.
 public final class ImageResourceBudget: Sendable {
+    /// How many discretionary jobs may run at once. At least as many as the
+    /// thumbnail decode slots: every thumbnail job holds one reservation, so
+    /// a lower cap silently throttled them (measured 2026-10-24, audit MP-05:
+    /// cap 3 with 4 slots 53/s vs 69/s; cap 6 with 8 slots 99/s vs 119/s).
+    /// On macOS 14 decodes run on the cooperative pool, so one core stays free.
+    public static var defaultDiscretionaryWorkLimit: Int {
+        let cores = ProcessInfo.processInfo.activeProcessorCount
+        if #available(macOS 15.0, *) { return max(2, min(cores, 8)) }
+        return max(2, min(cores - 1, 6))
+    }
+
     public struct Configuration: Sendable {
         public var normalBudget: Int
         public var warningMultiplier: Double
@@ -102,7 +113,7 @@ public final class ImageResourceBudget: Sendable {
         public var monitorSystemPressure: Bool
         public init(normalBudget: Int? = nil, physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory,
                     warningMultiplier: Double = 0.5, criticalMultiplier: Double = 0.25,
-                    maximumDiscretionaryWorkCount: Int = max(2, min(ProcessInfo.processInfo.activeProcessorCount - 1, 6)),
+                    maximumDiscretionaryWorkCount: Int = ImageResourceBudget.defaultDiscretionaryWorkLimit,
                     monitorSystemPressure: Bool = false) {
             self.normalBudget = max(1, normalBudget ?? min(640 << 20, max(192 << 20, Int(clamping: physicalMemory / 8))))
             self.warningMultiplier = warningMultiplier.isFinite ? min(1, max(0.01, warningMultiplier)) : 0.5

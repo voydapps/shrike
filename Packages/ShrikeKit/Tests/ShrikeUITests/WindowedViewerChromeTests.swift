@@ -113,7 +113,7 @@ final class WindowedViewerChromeTests: XCTestCase {
         XCTAssertEqual(WindowTitles.viewerSubtitle(index: 0, total: 1, pixelSize: CGSize(width: 6000, height: 4000)),
                        "6000 × 4000")
         XCTAssertEqual(WindowTitles.viewerSubtitle(index: 42, total: 180, pixelSize: nil), "43 of 180")
-        XCTAssertEqual(WindowTitles.viewerSubtitle(index: 0, total: 0, pixelSize: nil), "No images")
+        XCTAssertEqual(WindowTitles.viewerSubtitle(index: 0, total: 0, pixelSize: nil), "No photos")
     }
 
     // Command-I opens the system inspector. Its view is built on

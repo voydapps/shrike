@@ -221,7 +221,7 @@ final class TrashFlowTests: XCTestCase {
         await viewer.waitForPendingTrash()
         XCTAssertTrue(viewer.groups.isEmpty)
         XCTAssertTrue(viewer.isShowingEmptyState)
-        XCTAssertEqual(viewer.emptyStateView?.title, "No more images in “Italy 2026”.")
+        XCTAssertEqual(viewer.emptyStateView?.title, "No more photos in “Italy 2026”.")
         // The empty state hides the pill, filmstrip, histogram, badge.
         let empty = viewer.contentRootForTesting.emptyStateChromeHiddenForTesting
         XCTAssertTrue(empty.pill && empty.filmstrip && empty.histogram && empty.badge)
@@ -246,7 +246,7 @@ final class TrashFlowTests: XCTestCase {
         viewer.dispatch(.deleteToTrash)
         XCTAssertEqual(viewer.groups.count, 1)
         await viewer.waitForPendingTrash()
-        XCTAssertEqual(asked, "“a.jpg” can't be moved to the Trash.")
+        XCTAssertEqual(asked, "Delete “a.jpg” now?")
         XCTAssertEqual(viewer.groups.map(\.primary.lastPathComponent), ["a.jpg", "b.jpg"])
         XCTAssertTrue(FileManager.default.fileExists(atPath: urls[0].path))
     }

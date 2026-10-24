@@ -101,6 +101,13 @@ public struct BatchPlan: Sendable {
     /// What to do when an output name is already used on disk. Clashes
     /// between items of the same batch always get Finder " 2" suffixes.
     public var onConflict: ConflictAnswer.Action
+    /// The user confirmed that a photo whose output file is the photo
+    /// itself (output folder = its own folder, same name and format) may be
+    /// re-encoded in place. Without it such a name is a clash like any
+    /// other and gets a Finder " 2" suffix, so no original is overwritten
+    /// by accident. Only the photo's own file qualifies, never another
+    /// queued photo.
+    public var overwritesOriginals: Bool = false
 
     public init(items: [ImageGroup], convert: ConvertOptions? = nil, resize: ResizeOptions? = nil,
                 rotate: Int? = nil, rename: RenameTemplate? = nil, recipe: [EditOperation]? = nil,
@@ -196,6 +203,8 @@ public struct BatchPreviewRow: Sendable, Hashable {
     public let nameClash: Bool
     /// Known before running (e.g. rotate on WebP, unreadable file).
     public let skip: BatchSkipReason?
+    /// The output file is the original itself (runs only with `overwritesOriginals`).
+    public var overwritesOriginal: Bool = false
 }
 
 public enum BatchItemOutcome: Sendable {
@@ -322,6 +331,29 @@ public struct BatchRunner: Sendable {
         return Self.resolve(plan, items: items).map(\.row)
     }
 
+    /// How many photos of the plan Shrike can't read (their header won't
+    /// open). All of them are checked, not only the preview's first 200: a
+    /// header read is cheap and the run skips every one.
+    public func unreadableCount(in plan: BatchPlan) -> Int {
+        plan.items.reduce(0) { Task.isCancelled || Header($1.primary) != nil ? $0 : $0 + 1 }
+    }
+
+    /// How many photos would be re-encoded over their own file if the user
+    /// confirms (`overwritesOriginals`): the output folder is the photo's
+    /// folder and the output keeps its name and format. The Batch window
+    /// shows the in-place wording and asks before running when this is > 0.
+    public func originalsOverwritten(by plan: BatchPlan) -> Int {
+        groupsOverwritten(by: plan).count
+    }
+
+    /// The photos behind `originalsOverwritten(by:)`.
+    public func groupsOverwritten(by plan: BatchPlan) -> [ImageGroup] {
+        guard plan.reencodes, case .folder = plan.output else { return [] }
+        var confirmed = plan
+        confirmed.overwritesOriginals = true
+        return Self.resolve(confirmed, items: plan.items).filter(\.row.overwritesOriginal).map(\.row.source)
+    }
+
     /// Continue only unfinished items/phases. Receipt history follows the
     /// retry so Undo still reverses a rotate committed in the earlier run.
     public func retryPlan(for result: BatchResult, original: BatchPlan, includingIntentionalSkips: Bool = false,
@@ -432,7 +464,7 @@ public struct BatchRunner: Sendable {
         var claimed = Set<String>()
         var out: [Resolved] = []
         out.reserveCapacity(items.count)
-        let sources = Set(items.flatMap { $0.allURLs.map { CanonicalPath.of($0) } })
+        let sources = Set(items.flatMap { $0.allURLs.map { CanonicalPath.key($0) } })
 
         for (i, group) in items.enumerated() {
             let src = group.primary
@@ -465,26 +497,37 @@ public struct BatchRunner: Sendable {
             var dest = folder.appendingPathComponent(name)
             var clash = false
             var replaceTarget: URL?
+            var overwritesOriginal = false
             let unchanged = inPlace && name == src.lastPathComponent
             if !unchanged {
-                let key = CanonicalPath.of(dest)
-                let onDisk = FileManager.default.fileExists(atPath: dest.path) && !sources.contains(key)
+                let key = CanonicalPath.key(dest)
+                // Writing into a folder, a queued photo's file is free only
+                // when it is this item's own file and the user confirmed it.
+                // Any other queued file is a name in use, like all others.
+                overwritesOriginal = !inPlace && key == CanonicalPath.key(src)
+                let allowed = overwritesOriginal && plan.overwritesOriginals
+                let isSource = sources.contains(key)
+                let onDisk = FileManager.default.fileExists(atPath: dest.path) && !(inPlace && isSource) && !allowed
                 if claimed.contains(key) || onDisk {
                     clash = true
-                    if claimed.contains(key) || plan.onConflict == .keepBoth {
+                    // Replace must never trash a photo of this batch.
+                    let protected = isSource && !inPlace
+                    if claimed.contains(key) || plan.onConflict == .keepBoth || (protected && plan.onConflict == .replace) {
                         let isTaken: (URL) -> Bool = { url in
-                            claimed.contains(CanonicalPath.of(url))
-                                || (FileManager.default.fileExists(atPath: url.path) && !sources.contains(CanonicalPath.of(url)))
+                            let k = CanonicalPath.key(url)
+                            return claimed.contains(k)
+                                || (FileManager.default.fileExists(atPath: url.path) && !(inPlace && sources.contains(k)))
                         }
                         name = FileOps.freeNames(for: [name], stem: stem, in: folder, isTaken: isTaken)[0]
                         dest = folder.appendingPathComponent(name)
+                        overwritesOriginal = false
                     } else if plan.onConflict == .skip {
                         if skip == nil { skip = .nameExists }
                     } else {
                         replaceTarget = dest
                     }
                 }
-                claimed.insert(CanonicalPath.of(dest))
+                claimed.insert(CanonicalPath.key(dest))
             }
 
             var size: CGSize?
@@ -496,7 +539,8 @@ public struct BatchRunner: Sendable {
             }
             out.append(Resolved(
                 row: BatchPreviewRow(source: group, outputName: name, destination: dest,
-                                     outputSize: size, nameClash: clash, skip: skip),
+                                     outputSize: size, nameClash: clash, skip: skip,
+                                     overwritesOriginal: overwritesOriginal && skip == nil),
                 replaceTarget: skip == nil ? replaceTarget : nil,
                 format: format,
                 pixelCount: header.map { Int($0.displaySize.width * $0.displaySize.height) } ?? 0))
@@ -540,8 +584,9 @@ public struct BatchRunner: Sendable {
         // Renames alone run in order (they're quick and names depend on
         // earlier items); everything else runs on the worker pool.
         if !plan.reencodes && plan.quarters == 0 {
+            let staged = await stageBlockers(resolved, result: &result)
             for r in resolved {
-                let item = Self.recordingResolution(await renameItem(r, plan: plan, result: &result), resolved: r, plan: plan)
+                let item = Self.recordingResolution(await renameItem(r, plan: plan, result: &result, staged: staged[r.row.source]), resolved: r, plan: plan)
                 result.items.append(item)
                 emit(BatchProgress(completed: result.items.count, total: total,
                                    currentName: r.row.source.primary.lastPathComponent, item: item, result: nil))
@@ -550,6 +595,7 @@ public struct BatchRunner: Sendable {
         }
 
         let postRename = plan.rename != nil && (!plan.reencodes || { if case .inPlace = plan.output { return true }; return false }())
+        var notDone = 0   // running count: re-filtering every item was O(n^2) (audit MP-13)
         try await withThrowingTaskGroup(of: (BatchItemResult, Change).self) { group in
             var next = 0
             func startNext() {
@@ -571,12 +617,13 @@ public struct BatchRunner: Sendable {
             for _ in 0..<Self.workerCount { startNext() }
             while let (item, change) = try await group.next() {
                 result.items.append(item)
+                if !item.isDone { notDone += 1 }
                 switch change {
                 case .none: break
                 case .rotated(let rotation): result.rotations.append(rotation)
                 case .replaced(let record): result.replacedOriginals.append(record)
                 }
-                let settled = postRename ? result.items.filter { !$0.isDone }.count : result.items.count
+                let settled = postRename ? notDone : result.items.count
                 emit(BatchProgress(completed: settled, total: total,
                     currentName: item.source.primary.lastPathComponent, item: item, result: nil, phase: plan.reencodes ? .export : .rotate))
                 if !Task.isCancelled { startNext() }
@@ -592,10 +639,13 @@ public struct BatchRunner: Sendable {
         if postRename {
             var renamed = BatchResult()
             var settled = result.items.filter { !$0.isDone }.count
+            var doneIndex: [ImageGroup: Int] = [:]
+            for (i, item) in result.items.enumerated() where item.isDone && doneIndex[item.source] == nil { doneIndex[item.source] = i }
+            let staged = await stageBlockers(resolved.filter { doneIndex[$0.row.source] != nil }, result: &renamed)
             for r in resolved {
-                guard let index = result.items.firstIndex(where: { $0.source == r.row.source && $0.isDone }) else { continue }
+                guard let index = doneIndex[r.row.source] else { continue }
                 let prior = result.items[index]
-                let next = await renameItem(r, plan: plan, result: &renamed)
+                let next = await renameItem(r, plan: plan, result: &renamed, staged: staged[r.row.source])
                 result.items[index] = Self.recordingResolution(BatchItemResult(source: next.source, outcome: next.outcome,
                     completedPhases: Array(Set(prior.completedPhases + next.completedPhases)), finalURL: next.finalURL,
                     destinationURL: r.row.destination, failurePhase: next.isDone ? nil : .rename,
@@ -616,7 +666,86 @@ public struct BatchRunner: Sendable {
         case replaced(BackupRecord)
     }
 
-    private func renameItem(_ r: Resolved, plan: BatchPlan, result: inout BatchResult) async -> BatchItemResult {
+    /// A photo that was moved aside could not be put back under its name.
+    struct StagedRenameError: LocalizedError, Sendable {
+        let tempName: String
+        let underlying: String
+        var errorDescription: String? {
+            "The rename did not finish and the photo could not get its old name back. It is now called “\(tempName)”. \(underlying)"
+        }
+    }
+
+    /// Names a rename of `r` would give to the files of its group.
+    private static func targetKeys(of r: Resolved) -> [String] {
+        let group = r.row.source
+        let oldStem = stem(of: group)
+        let newStem = (r.row.outputName as NSString).deletingPathExtension
+        return group.allURLs.map { url in
+            let name = url.lastPathComponent
+            let lower = name.lowercased(), lowerStem = oldStem.lowercased()
+            let renamed = lower.hasPrefix(lowerStem + ".") || lower == lowerStem
+                ? newStem + String(name.dropFirst(oldStem.count))
+                : (((name as NSString).pathExtension.isEmpty) ? newStem : newStem + "." + (name as NSString).pathExtension)
+            return CanonicalPath.key(url.deletingLastPathComponent().appendingPathComponent(renamed))
+        }
+    }
+
+    /// COR-3. When a new name is the current name of another photo that is
+    /// also being renamed (1→2, 2→3 or a swap), the second photo must get
+    /// out of the way first. Phase 1 gives every such photo a temporary
+    /// name; the normal rename then runs in list order and finds its name
+    /// free (phase 2). Both steps go into `result.renames`, so Undo, which
+    /// walks them backwards, never meets a taken name either. Returns the
+    /// moved-aside group by original group.
+    private func stageBlockers(_ resolved: [Resolved], result: inout BatchResult) async -> [ImageGroup: ImageGroup] {
+        let movers = resolved.filter {
+            $0.row.skip == nil && $0.row.outputName != $0.row.source.primary.lastPathComponent
+        }
+        guard movers.count > 1 else { return [:] }
+        var owner: [String: Int] = [:]
+        for (i, r) in movers.enumerated() {
+            for url in r.row.source.allURLs { owner[CanonicalPath.key(url)] = i }
+        }
+        var blockers = Set<Int>()
+        for (i, r) in movers.enumerated() {
+            for key in Self.targetKeys(of: r) {
+                if let j = owner[key], j != i { blockers.insert(j) }
+            }
+        }
+        var staged: [ImageGroup: ImageGroup] = [:]
+        for j in blockers.sorted() {
+            if Task.isCancelled { break }
+            let group = movers[j].row.source
+            let tempStem = "\(Self.stem(of: group)) shrike-tmp-\(UUID().uuidString.prefix(8))"
+            do {
+                let moved = try await fileOps.rename(group, toStem: tempStem)
+                result.renames.append((group, moved))
+                staged[group] = moved
+            } catch { continue }   // stays put; whoever needs its name fails safely
+        }
+        return staged
+    }
+
+    /// Renames `r`; a photo that was moved aside (`staged`) is renamed from
+    /// there, and put back under its old name if this rename does not happen.
+    private func renameItem(_ r: Resolved, plan: BatchPlan, result: inout BatchResult,
+                            staged: ImageGroup? = nil) async -> BatchItemResult {
+        let item = await renameItemCore(r, plan: plan, result: &result, from: staged ?? r.row.source)
+        guard let staged, !item.isDone else { return item }
+        do {
+            let back = try await fileOps.rename(staged, toStem: Self.stem(of: r.row.source))
+            result.renames.append((staged, back))
+            return item
+        } catch {
+            return BatchItemResult(source: r.row.source,
+                                   outcome: .failed(StagedRenameError(tempName: staged.primary.lastPathComponent,
+                                                                      underlying: error.localizedDescription)),
+                                   destinationURL: r.row.destination, failurePhase: .rename)
+        }
+    }
+
+    private func renameItemCore(_ r: Resolved, plan: BatchPlan, result: inout BatchResult,
+                                from current: ImageGroup) async -> BatchItemResult {
         let group = r.row.source
         if Task.isCancelled { return BatchItemResult(source: group, outcome: .skipped(.cancelled)) }
         if let skip = r.row.skip { return BatchItemResult(source: group, outcome: .skipped(skip)) }
@@ -636,8 +765,8 @@ public struct BatchRunner: Sendable {
             } else { try Task.checkCancellation() }
             try await renameCheckpoint?(.beforeMove, group.primary)
             let newStem = (r.row.outputName as NSString).deletingPathExtension
-            let renamed = try await fileOps.rename(group, toStem: newStem)
-            result.renames.append((group, renamed))
+            let renamed = try await fileOps.rename(current, toStem: newStem)
+            result.renames.append((current, renamed))
             if let replaced { result.replacedOriginals.append(replaced) }
             return BatchItemResult(source: group, outcome: .done(renamed.primary), completedPhases: [.rename],
                                    finalURL: renamed.primary, destinationURL: r.row.destination)
@@ -692,7 +821,8 @@ public struct BatchRunner: Sendable {
                 let record = try await ImageExporter(backupStore: backups, metadataStore: metadata).export(
                     recipe: EditRecipe(operations: ops), from: src, to: r.row.destination, format: format,
                     quality: quality, preserveEXIF: convert?.keepMetadata ?? true,
-                    stripGPS: convert?.removeLocation ?? false, backupReason: .replace, resourceCategory: .batchWork)
+                    stripGPS: convert?.removeLocation ?? false,
+                    backupReason: r.row.overwritesOriginal ? .batch : .replace, resourceCategory: .batchWork)
                 return (BatchItemResult(source: group, outcome: .done(r.row.destination), completedPhases: [.export],
                                         destinationURL: r.row.destination), record.map(Change.replaced) ?? .none)
             }

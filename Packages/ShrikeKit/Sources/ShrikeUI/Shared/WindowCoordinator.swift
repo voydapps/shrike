@@ -541,5 +541,12 @@ public final class WindowCoordinator {
         }
         viewers.removeAll { $0 === closed }
         browsers.removeAll { $0.window === closed }
+        // Nothing on screen needs thumbnails any more: give the memory tier
+        // back (up to 128 MB), or an idle app keeps it (audit MP-03). The
+        // disk tier stays, so reopening a folder is still quick. A hidden
+        // paired viewer stays in `viewers`, which keeps the tier warm.
+        if !hasWindows, let cache = services?.thumbnailCache {
+            Task { await cache.evictMemory() }
+        }
     }
 }

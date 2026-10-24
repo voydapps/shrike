@@ -303,6 +303,32 @@ final class TagEditorTests: XCTestCase {
         XCTAssertEqual(stored, expected.sorted())
     }
 
+    /// Audit on-screen M1: a colour click followed by a typed tag keeps both.
+    func testTypedTagAfterAColourClickKeepsTheColour() async throws {
+        let recent = TagEditSession.recentTags
+        defer { TagEditSession.recentTags = recent }
+        let url = try file("colour-then-typed.jpg")
+        let store = try MetadataStore(databaseURL: dir.appendingPathComponent("colour.sqlite"))
+        let undo = UndoManager(); undo.groupsByEvent = false; undo.beginUndoGrouping()
+        let state = session([ImageGroup(primary: url)], undo: undo)
+        let controller = TagsPopoverController(session: state)
+        let window = tokenWindow(controller); defer { window.close() }
+        let editor = try tokenEditor(controller.tokenField, in: window)
+        let red = try XCTUnwrap(controller.toggles.first)
+        controller.toggleColor(red)
+        XCTAssertEqual(editor.selectedRange().length, 0, "nothing is selected after the click")
+        XCTAssertEqual(editor.selectedRange().location, editor.string.utf16.count, "caret after the last token")
+        editor.insertText("keeper", replacementRange: editor.selectedRange())
+        try tokenKey("\r", code: 36, in: window)
+        try await untilTokenState("both tags are on the file") {
+            Set(state.commonTags.map { $0.lowercased() }).isSuperset(of: [red.tag0.name.lowercased(), "keeper"])
+        }
+        await FinderTagWriter.shared.flush()
+        let onDisk = FinderTags.read(url).map { $0.lowercased() }
+        XCTAssertTrue(onDisk.contains(red.tag0.name.lowercased()), "\(onDisk)")
+        XCTAssertTrue(onDisk.contains("keeper"), "\(onDisk)")
+    }
+
     /// Real NSTokenField field-editor input and Return tokenization, not a
     /// direct shouldAdd invocation or a claim about the production popover.
     func testFieldEditorCommitRejectsDuplicateTokensAndPreservesPendingText() async throws {

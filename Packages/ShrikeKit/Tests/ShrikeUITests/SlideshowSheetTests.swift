@@ -45,11 +45,11 @@ final class SlideshowSheetTests: XCTestCase {
             XCTAssertEqual(sheet.selectedRadioForTesting.state == .on, selectedOn, "\(selected) selected")
             XCTAssertEqual(sheet.allRadioForTesting.state == .on, !selectedOn, "\(selected) selected")
             XCTAssertEqual(sheet.selectedRadioForTesting.title, title)
-            XCTAssertEqual(sheet.allRadioForTesting.title, "All 25 visible photos in ‘F’")
+            XCTAssertEqual(sheet.allRadioForTesting.title, "All 25 visible photos in “F”")
         }
-        for (count, title) in [(0, "All 0 visible photos in ‘F’"),
-                               (1, "All 1 visible photo in ‘F’"),
-                               (2, "All 2 visible photos in ‘F’")] {
+        for (count, title) in [(0, "All 0 visible photos in “F”"),
+                               (1, "All 1 visible photo in “F”"),
+                               (2, "All 2 visible photos in “F”")] {
             let scope = SlideshowScope(allCount: count, folderName: "F", selectedCount: 0)
             let sheet = SlideshowSheet.makeForTesting(scope: scope, settings: settings) { _ in }
             XCTAssertEqual(sheet.allRadioForTesting.title, title)

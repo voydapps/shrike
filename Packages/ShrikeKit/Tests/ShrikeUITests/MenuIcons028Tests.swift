@@ -125,7 +125,7 @@ final class MenuIcons028Tests: XCTestCase {
         bar.applyAllIconsForTesting()
         XCTAssertNotNil(review.image, "selector-only Review keeps its icon after a dynamic title update")
         let view = try XCTUnwrap(bar.menu.items.first { $0.submenu?.title == "View" }?.submenu)
-        let compare = try XCTUnwrap(view.items.first { $0.submenu?.title == "Compare Window" })
+        let compare = try XCTUnwrap(view.items.first { $0.submenu?.title == "Compare Options" })
         XCTAssertNotNil(compare.image, "the Compare submenu holder shares the menu's icon policy")
         let titles = view.items.filter { !$0.isSeparatorItem }.map(\.title)
         XCTAssertEqual(titles.count, Set(titles).count, "no two View items share a name: \(titles)")

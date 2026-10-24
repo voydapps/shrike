@@ -127,6 +127,17 @@ enum FileTransferCopy {
     }
     static let conflictMessage = "Replacing it moves the existing file to the Trash."
 
+    /// The same line, naming the other files of the same photo that Replace
+    /// also moves to the Trash (a RAW or sidecar with the same name). Undo
+    /// puts them back.
+    static func conflictMessage(alsoReplacing extra: [String]) -> String {
+        guard !extra.isEmpty else { return conflictMessage }
+        let shown = extra.prefix(4).map { "“\($0)”" }.joined(separator: ", ")
+        let more = extra.count > 4 ? " and \(extra.count - 4) more" : ""
+        return conflictMessage + " Replace also moves \(shown)\(more) to the Trash, because "
+            + (extra.count == 1 ? "it belongs" : "they belong") + " to the same photo."
+    }
+
     static func applyToRemaining(_ remaining: Int) -> String {
         remaining == 1 ? "Do this for the remaining conflict"
                        : "Do this for the remaining \(remaining) conflicts"
@@ -289,7 +300,7 @@ final class FileTransferCoordinator {
         }.value
         let alert = ShrikeAlert.make(
             message: FileTransferCopy.conflictTitle(existing.lastPathComponent, folder: conflict.destinationFolder),
-            information: FileTransferCopy.conflictMessage,
+            information: FileTransferCopy.conflictMessage(alsoReplacing: conflict.otherFilesReplaced.map(\.lastPathComponent)),
             buttons: [.cancel("Skip"), ShrikeAlert.Button("Replace"), ShrikeAlert.Button("Keep Both", role: .default)]
         )
         let label = NSTextField(wrappingLabelWithString: details)
@@ -409,6 +420,13 @@ final class FileTransferCoordinator {
         }
     }
 
+    private static func splitView(in view: NSView?) -> NSSplitView? {
+        guard let view else { return nil }
+        if let split = view as? NSSplitView { return split }
+        for sub in view.subviews { if let found = splitView(in: sub) { return found } }
+        return nil
+    }
+
     func dismissHUD() {
         hudTask?.cancel()
         hudTask = nil
@@ -421,8 +439,10 @@ final class FileTransferCoordinator {
     private func showHUD(_ verb: FileVerb) {
         // A viewer's content view is its split view; the
         // HUD goes on the canvas, never in as a split pane.
+        // The content view can be a plain wrapper around the split view (it is on
+        // macOS 26), so look for the split view inside it.
         let content = window?.contentView
-        guard let container = (content as? NSSplitView)?.arrangedSubviews.first ?? content else { return }
+        guard let container = Self.splitView(in: content)?.arrangedSubviews.first ?? content else { return }
         let view = DestinationHUDView(verb: verb, slots: slots.slots(), last: slots.last(verb))
         view.onPick = { [weak self] choice in self?.onHUDPick?(verb, choice) }
         view.onCancel = { [weak self] in self?.onHUDCancel?() }
@@ -496,7 +516,18 @@ final class DestinationHUDView: NSView {
         stack.alignment = .leading
         stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
-        panel.addSubview(stack)
+        // The rows scroll when the card is taller than the canvas (spec 21b §6).
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.documentView = stack
+        panel.addSubview(scroll)
+        let fullHeight = scroll.heightAnchor.constraint(equalTo: stack.heightAnchor)
+        fullHeight.priority = NSLayoutConstraint.Priority(rawValue: 460)   // above the centring (450), below both clamps
 
         // centerY at 0.6 × half the height = 20 % of the height above
         // centre. Only preferred: the clamps below win in a short window.
@@ -510,21 +541,39 @@ final class DestinationHUDView: NSView {
         let insideTop = panel.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: Self.margin)
         insideTop.priority = Self.topClampPriority
         NSLayoutConstraint.activate([
-            panel.widthAnchor.constraint(equalToConstant: 360),
+            panel.widthAnchor.constraint(lessThanOrEqualToConstant: Self.nominalWidth),
+            panel.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minimumWidth),
             panel.centerXAnchor.constraint(equalTo: centerXAnchor),
             preferred,
             insideTop,
             insideBottom,
-            stack.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: panel.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -16),
+            scroll.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 16),
+            scroll.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -16),
+            scroll.topAnchor.constraint(equalTo: panel.topAnchor, constant: 16),
+            scroll.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -16),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            fullHeight,
         ])
+        // Spec 21b §6: min(360, canvas − 24), never below 216. A narrow viewer
+        // (480 pt window + inspector = 240 pt canvas) must not cut the card off.
+        let nominal = panel.widthAnchor.constraint(equalToConstant: Self.nominalWidth)
+        nominal.priority = NSLayoutConstraint.Priority(rawValue: 490)   // never grows the window
+        let left = panel.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: Self.sideMargin)
+        let right = panel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -Self.sideMargin)
+        left.priority = NSLayoutConstraint.Priority(rawValue: 495); right.priority = left.priority
+        NSLayoutConstraint.activate([nominal, left, right])
         reload(slots: slots, last: last)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    static let nominalWidth: CGFloat = 360
+    static let minimumWidth: CGFloat = 216
+    static let sideMargin: CGFloat = 12
+    var panelFrameForTesting: NSRect { layoutSubtreeIfNeeded(); return panel.frame }
 
     /// Gap between the HUD and the edges it is clamped to.
     static let margin: CGFloat = 12
@@ -628,6 +677,9 @@ final class DestinationHUDRow: NSView {
     init(key: String, name: String, path: String?) {
         super.init(frame: .zero)
         let name = Self.label(name, font: ChromeTypography.font(13), color: .labelColor)
+        // Folder names lose their middle on a narrow canvas; the slot digit keeps its column.
+        name.lineBreakMode = .byTruncatingMiddle
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         var views: [NSView] = [Self.keyLabel(key), name]
         if let path {
             let pathLabel = Self.label(path, font: ChromeTypography.font(11), color: .secondaryLabelColor)
@@ -677,6 +729,8 @@ final class DestinationHUDRow: NSView {
         label.textColor = color
         label.lineBreakMode = .byTruncatingTail
         label.maximumNumberOfLines = 1
+        // A narrow canvas shortens the text; the text never widens the card (or the window).
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return label
     }
 

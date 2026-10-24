@@ -48,7 +48,7 @@ public actor EditRenderer {
     /// the filter chain. 1280 keeps interactive live preview on 24 MP
     /// images snappy on M1; the final drag-end render is always at full
     /// resolution so committed ops carry full-res state.
-    private let draftLongEdge: Int
+    public nonisolated let draftLongEdge: Int
 
     public init(draftLongEdge: Int = 1280) {
         self.draftLongEdge = draftLongEdge
@@ -167,9 +167,42 @@ public actor EditRenderer {
     /// "newer render" doesn't mean anything.
     public func renderFinal(recipe: EditRecipe, from original: CGImage) async -> CGImage {
         let ops = EditRecipe.effectiveOperations(await recipe.snapshot())
+        return renderFinal(effectiveOperations: ops, from: original)
+    }
+
+    /// The same replay for already-resolved operations. Synchronous and not
+    /// bound to the actor, so a caller can run it on its own queue instead
+    /// of blocking a cooperative thread (audit MP-09).
+    public nonisolated func renderFinal(effectiveOperations ops: [EditOperation], from original: CGImage) -> CGImage {
         var current = original
         for op in ops {
             current = apply(op, to: current)
+        }
+        return current
+    }
+
+    /// `renderFinal` for the save path: throws `ExportError.recipeApplyFailed`
+    /// when a Color Adjust or Levels step that should change the picture
+    /// handed its input back, so a save never says "Saved" for an edit it
+    /// did not make (audit COR-1). Size changes are checked by the exporter.
+    func renderVerified(recipe: EditRecipe, from original: CGImage) async throws -> CGImage {
+        let ops = EditRecipe.effectiveOperations(await recipe.snapshot())
+        return try renderVerified(effectiveOperations: ops, from: original)
+    }
+
+    /// The same check for already-resolved operations, off this actor so the
+    /// exporter can run it on its own queue (audit MP-09).
+    nonisolated func renderVerified(effectiveOperations ops: [EditOperation], from original: CGImage) throws -> CGImage {
+        var current = original
+        for op in ops {
+            try Task.checkCancellation()
+            let out = apply(op, to: current)
+            switch op {
+            case .colorAdjust(let p) where !p.isIdentity && out === current: throw ExportError.recipeApplyFailed
+            case .levels(let p) where !p.isIdentity && out === current: throw ExportError.recipeApplyFailed
+            default: break
+            }
+            current = out
         }
         return current
     }

@@ -7,8 +7,10 @@ SwiftPM command boundary. Production always invokes xcrun swift test directly.
 from importlib.util import spec_from_file_location, module_from_spec
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -406,6 +408,78 @@ class ReleaseGateTests(unittest.TestCase):
                         workflow.index('python3 Scripts/publish-release.py'))
         self.assertNotIn('continue-on-error', workflow)
         self.assertNotIn('--clobber', workflow)
+
+    def jobs(self, text):
+        # Splits a workflow into {job name: text} at the two-space job headers.
+        parts = re.split(r'^  ([a-z]+):\n', text.split('\njobs:\n', 1)[1], flags=re.M)
+        return dict(zip(parts[1::2], parts[2::2]))
+
+    def test_release_workflow_splits_read_only_gate_from_write_only_publish(self):
+        text = (SCRIPTS.parent / '.github/workflows/release.yml').read_text()
+        self.assertIn('\npermissions:\n  contents: read\n', text.split('\njobs:\n')[0])
+        jobs = self.jobs(text)
+        self.assertEqual(list(jobs), ['gate', 'publish', 'pages'])
+        gate_job, publish_job, pages_job = jobs['gate'], jobs['publish'], jobs['pages']
+        self.assertNotIn('contents: write', gate_job)
+        self.assertIn('contents: read', gate_job)
+        self.assertIn('python3 Scripts/release-gate.py', gate_job)
+        self.assertNotIn('publish-release.py', gate_job)
+        self.assertIn('needs: gate', publish_job)
+        self.assertIn('contents: write', publish_job)
+        self.assertIn('python3 Scripts/publish-release.py', publish_job)
+        for forbidden in ('release-gate.py', 'xcodebuild', 'swift test', 'brew '):
+            self.assertNotIn(forbidden, publish_job)
+        self.assertIn('needs: publish', pages_job)
+        self.assertNotIn('contents: write', pages_job)
+        # Every checkout drops the token; the gate hands files over by artifact only.
+        for name, body in jobs.items():
+            if 'actions/checkout' in body:
+                self.assertIn('persist-credentials: false', body, name)
+        self.assertIn('release-handoff', gate_job)
+        self.assertIn('release-handoff', publish_job)
+        self.assertIn('SHRIKE_SMOKE_LAUNCH', gate_job)
+
+    def test_workflows_pin_actions_by_commit_and_pages_waits_for_the_release(self):
+        workflows = SCRIPTS.parent / '.github/workflows'
+        for path in sorted(workflows.glob('*.yml')):
+            for line in path.read_text().splitlines():
+                match = re.search(r'uses:\s*(\S+)', line)
+                if match and not match[1].startswith('./'):
+                    self.assertRegex(match[1], r'@[0-9a-f]{40}$', f'{path.name}: {line.strip()}')
+        pages = (workflows / 'pages.yml').read_text()
+        self.assertNotRegex(pages.split('\njobs:\n')[0], r'^\s*push:', 'Pages must not deploy on push')
+        self.assertIn('workflow_dispatch', pages)
+        self.assertIn('gh release view', pages)
+        self.assertTrue((workflows / 'ci.yml').is_file())
+        ci = (workflows / 'ci.yml').read_text()
+        for needed in ('swift test', 'check-site.sh', 'make-changelog-page.mjs --check',
+                       '-configuration Release', 'install-xcodegen.sh'):
+            self.assertIn(needed, ci)
+        self.assertNotIn('contents: write', ci)
+        # The public repo has no internal notes folder and its gate forbids naming it, so the public-tree gate
+        # is a private step (Publishing steps 2 and 3), not part of ci.yml.
+        self.assertNotIn('do' + 'cs/', ci)
+
+    def test_hung_command_is_killed_by_the_watchdog(self):
+        log = self.root / 'hung.log'
+        with patch.object(gate, 'PACKAGE_TIMEOUT', 1):
+            with self.assertRaisesRegex(RuntimeError, 'timed out after 1 s'):
+                gate.Gate(self.root, 'v1.2.3', developer=self.developer).command(
+                    [sys.executable, '-c', 'import time; print("start", flush=True); time.sleep(60)'], log)
+        self.assertIn('start', log.read_text())
+
+    def test_smoke_launch_runs_only_when_requested_and_after_the_package(self):
+        text = (SCRIPTS / 'release-gate.py').read_text()
+        self.assertLess(text.index("'Scripts/make-package.sh'"), text.index("'Scripts/smoke-launch.sh'"))
+        self.assertLess(text.index("'Scripts/smoke-launch.sh'"), text.index('receipt.write_text'))
+        with patch.dict(os.environ, {'SHRIKE_SMOKE_LAUNCH': ''}):
+            self.assertFalse(gate.Gate(self.root, 'v1.2.3', developer=self.developer).smoke)
+        with patch.dict(os.environ, {'SHRIKE_SMOKE_LAUNCH': '1'}):
+            self.assertTrue(gate.Gate(self.root, 'v1.2.3', developer=self.developer).smoke)
+        refused = subprocess.run(['bash', str(SCRIPTS / 'smoke-launch.sh'), '/usr/bin', '/etc/hosts'],
+                                 capture_output=True, text=True,
+                                 env={k: v for k, v in os.environ.items() if k != 'GITHUB_ACTIONS'})
+        self.assertEqual(refused.returncode, 3, refused.stdout + refused.stderr)
 
 
 if __name__ == '__main__':

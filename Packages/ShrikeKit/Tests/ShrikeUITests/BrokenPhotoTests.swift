@@ -46,7 +46,7 @@ final class BrokenPhotoTests: XCTestCase {
         XCTAssertEqual(overlay.nextButton.title, "Next")
         XCTAssertEqual(overlay.revealButton.title, "Reveal in Finder")
         XCTAssertEqual(overlay.nextButton.keyEquivalent, "", "a stray Return must not skip")
-        XCTAssertEqual(overlay.nextButton.toolTip, "Next Image  ·  →")
+        XCTAssertEqual(overlay.nextButton.toolTip, "Next Photo  ·  →")
         XCTAssertTrue(overlay.revealButton.toolTip?.hasPrefix("Reveal in Finder  ·  ") ?? false)
     }
 
@@ -77,6 +77,19 @@ final class BrokenPhotoTests: XCTestCase {
         await view.waitForLoad()
         XCTAssertTrue(view.isShowingBroken)
         XCTAssertNil(view.image)
+    }
+
+    /// A multi-selection whose first file is unreadable gets a neutral stack, not "Can't preview".
+    func testInspectorPreviewForASelectionDoesNotWarnAboutItsFirstFile() async throws {
+        let url = try badFile()
+        let view = InspectorPreviewImageView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        view.isMultiple = true
+        view.show(url)
+        await view.waitForLoad()
+        XCTAssertTrue(view.isShowingBroken, "the box still shows its neutral glyph")
+        XCTAssertFalse(view.showsBrokenText)
+        view.isMultiple = false
+        XCTAssertTrue(view.showsBrokenText, "one selected file: the warning returns")
     }
 
     func testSizeOfABadFileReadsInBytes() throws {

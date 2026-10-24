@@ -1,6 +1,11 @@
 name: Release
 # Existing releases are immutable. A failed/incomplete public release requires a
 # new version; this workflow never overwrites, deletes or appends release assets.
+#
+# Three jobs, least privilege:
+#   gate    (contents: read)   builds, tests, packages, smoke-launches; uploads the DMG as an artifact
+#   publish (contents: write)  downloads that artifact and runs Scripts/publish-release.py; builds nothing
+#   pages   (actions: write)   after a successful publish only, starts the Pages deployment on main
 on:
   push:
     tags: ['v*']
@@ -18,39 +23,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  gate:
     runs-on: macos-26
     timeout-minutes: 90
     permissions:
-      contents: write
+      contents: read
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
       PYTHONDONTWRITEBYTECODE: '1'
+      SHRIKE_SMOKE_LAUNCH: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
           fetch-depth: 0
+          persist-credentials: false
       - name: Fetch main ancestry
+        timeout-minutes: 5
         run: git fetch origin main:refs/remotes/origin/main
       - name: Require intended Xcode (no fallback)
+        timeout-minutes: 5
         run: |
           test -d "$DEVELOPER_DIR" || { echo '::error::Xcode 26.4.1 unavailable'; exit 1; }
           xcodebuild -version
           xcrun swift --version
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen (pinned version and checksum)
+        timeout-minutes: 5
+        run: bash Scripts/install-xcodegen.sh "$RUNNER_TEMP/xcodegen-install"
       - name: Validate release gate failure and immutability boundaries
+        timeout-minutes: 5
         run: python3 Scripts/tests/test-release-gate.py
-      - name: Three full SwiftPM runs, then exact-commit Release package
+      - name: Three full SwiftPM runs, then exact-commit Release package and smoke launch
+        timeout-minutes: 80
         run: python3 Scripts/release-gate.py "$TAG"
-      - name: Publish gated artifact (existing release fails closed)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 Scripts/publish-release.py "$TAG"
       - name: Collect crash reports
         if: always()
+        timeout-minutes: 5
         run: |
           mkdir -p build/release-gate/crashes
           shopt -s nullglob
@@ -58,11 +67,76 @@ jobs:
           true
       - name: Keep gate evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-gate-evidence
           path: |
             build/release-gate/*.log
+            build/release-gate/*.md
             build/release-gate/gate.json
+            build/release-gate/package/build.log
             build/release-gate/crashes/*.ips
           if-no-files-found: ignore
+      - name: Hand the gated files to the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-handoff
+          path: |
+            dist/Shrike.dmg
+            dist/Shrike.dmg.sha256
+            dist/Shrike.provenance.json
+            build/release-gate/gate.json
+            build/release-gate/changes.md
+            build/release-gate/release-package.log
+            build/release-gate/swift-test-1.log
+            build/release-gate/swift-test-2.log
+            build/release-gate/swift-test-3.log
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch main ancestry
+        timeout-minutes: 5
+        run: git fetch origin main:refs/remotes/origin/main
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-handoff
+          path: .
+      - name: Show the restored layout
+        run: /bin/ls -R dist build
+      - name: Publish gated artifact (existing release fails closed)
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 Scripts/publish-release.py "$TAG"
+
+  pages:
+    # The site may name a new version only after its release exists. The
+    # github-pages environment accepts deployments from main only, so this job
+    # starts Pages.yml on main (a dispatch with GITHUB_TOKEN is allowed); that
+    # workflow itself checks that the release named on the page exists.
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Start the Pages deployment on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main --repo "$GITHUB_REPOSITORY"

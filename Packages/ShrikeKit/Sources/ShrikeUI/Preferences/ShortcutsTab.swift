@@ -82,11 +82,23 @@ struct ShortcutsTab: View {
 }
 
 extension ShrikeCommand {
+    /// The words for the star glyph titles ("★★★" is read as "black star" three times).
+    var accessibleRatingTitle: String? {
+        switch self {
+        case .rate1: return "Rate 1 Star"
+        case .rate2: return "Rate 2 Stars"
+        case .rate3: return "Rate 3 Stars"
+        case .rate4: return "Rate 4 Stars"
+        case .rate5: return "Rate 5 Stars"
+        default: return nil
+        }
+    }
+
     /// Menu titles that only make sense inside their submenu get context.
     var shortcutsTabTitle: String {
         switch self {
         case .rate0: return "Rating: None"
-        case .rate1, .rate2, .rate3, .rate4, .rate5: return "Rating: \(title)"
+        case .rate1, .rate2, .rate3, .rate4, .rate5: return accessibleRatingTitle ?? "Rating: \(title)"
         case .viewAsGrid, .viewAsFilmstrip, .viewAsList: return "View \(title)"
         case .sortByName, .sortByDateCaptured, .sortByDateModified, .sortBySize,
              .sortByRating, .sortByKind, .sortByDimensions: return "Sort by \(title)"

@@ -124,9 +124,9 @@ final class ViewerToolbar: HUDSurfaceView {
         // The capsule holds what you do to the photo or to get around;
         // flag, rating and histogram live in the inspector / View menu.
         // Move
-        addButton(symbol: "chevron.left",  accessibility: "Previous image",
+        addButton(symbol: "chevron.left",  accessibility: "Previous photo",
                   selector: #selector(handlePrev(_:)), action: .prevImage)
-        addButton(symbol: "chevron.right", accessibility: "Next image",
+        addButton(symbol: "chevron.right", accessibility: "Next photo",
                   selector: #selector(handleNext(_:)), action: .nextImage)
         addSeparator()
         // View: one zoom pull-down replaces Fit / 100 % / + / -.

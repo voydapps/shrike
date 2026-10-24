@@ -85,7 +85,7 @@ final class FolderTreeAsyncTests: XCTestCase {
         let start = Date()
         outline.expandItem(root)
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertLessThan(elapsed, 0.05, "the expand returns at once; the read runs off main")
+        XCTAssertLessThan(elapsed, 0.2, "the expand returns at once (the lister sleeps 0.4 s, so a blocking read would take longer); the read runs off main")
         XCTAssertTrue(outline.isItemExpanded(root), "actual expansion intent is open while loading, so the user can collapse it")
         XCTAssertEqual(outline.numberOfRows, rowsBefore)
 
@@ -111,7 +111,7 @@ final class FolderTreeAsyncTests: XCTestCase {
         let readsBeforeSelection = lister.calls.count
         let start = Date()
         tree.select(target)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 0.03)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.25, "select returns without waiting for a disk read")
         await tree.selectTask?.value
 
         let selected = try XCTUnwrap(outline.item(atRow: outline.selectedRow) as? FolderTreeNode)

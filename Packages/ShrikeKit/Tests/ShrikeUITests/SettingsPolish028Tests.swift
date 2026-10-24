@@ -82,7 +82,7 @@ final class SettingsPolish028Tests: XCTestCase {
 
     func testWheelTextIsExact() {
         XCTAssertEqual(GeneralTab.wheelHelp,
-                       "On a trackpad, a short two-finger scroll moves to the next photo when the photo fits the window and the wheel is set to Changes image.")
+                       "On a trackpad, a short two-finger scroll moves to the next photo when the photo fits the window and the wheel is set to Changes photo.")
     }
 
     func testExternalEditorsFooterOnlyPointsAtVisibleControls() {

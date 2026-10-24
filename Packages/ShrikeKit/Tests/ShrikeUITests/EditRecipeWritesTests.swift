@@ -512,9 +512,24 @@ final class EditRecipeWritesTests: XCTestCase {
         let (c, _) = controller(image: Self.grey(), tool: .color)
         let panel = try colourPanel(c)
         let slider = panel._saturationSlider
+        let staleIdle = c.coalesceIdleForTesting
         slider.doubleValue = 0.3
         _ = slider.sendAction(slider.action, to: slider.target)
-        try await Task.sleep(nanoseconds: UInt64((EditModeController.coalesceIdle + 0.2) * 1e9))
+        // Wait for the controller's own idle event (the real 500 ms timer), not a guess at
+        // how long it takes: a fixed sleep failed on a loaded CI machine.
+        var idle = c.coalesceIdleForTesting
+        for _ in 0..<200 where idle == nil || idle == staleIdle {
+            try await Task.sleep(for: .milliseconds(10)); idle = c.coalesceIdleForTesting
+        }
+        var idleTask = try XCTUnwrap(idle, "the first slider move starts the idle timer")
+        // A later write cancels and replaces the timer: follow it until the last one has run out.
+        while true {
+            await idleTask.value
+            try await Task.sleep(for: .milliseconds(20))
+            guard let current = c.coalesceIdleForTesting, current != idleTask else { break }
+            idleTask = current
+        }
+        XCTAssertFalse(idleTask.isCancelled, "the timer that ended the drag ran to its end")
         slider.doubleValue = 0.6
         _ = slider.sendAction(slider.action, to: slider.target)
         await c.settleForTesting()

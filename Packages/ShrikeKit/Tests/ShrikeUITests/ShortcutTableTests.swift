@@ -164,7 +164,7 @@ final class ShortcutTableTests: XCTestCase {
         XCTAssertNil(KeyBinding("q").menuKeyEquivalent, "bare letters never go on menu items")
         XCTAssertEqual(KeyBinding(SpecialKey.f2).menuKeyEquivalent, SpecialKey.f2)
         XCTAssertEqual(ShortcutTable.displayString(for: .moveToTrash, context: .browser, preset: .macNative), "⌘⌫")
-        XCTAssertTrue(ShortcutTable.tooltip(for: .previousImage, context: .viewer).hasPrefix("Previous Image  ·  "))
+        XCTAssertTrue(ShortcutTable.tooltip(for: .previousImage, context: .viewer).hasPrefix("Previous Photo  ·  "))
         XCTAssertEqual(ShortcutTable.tooltip(for: .settings, context: .viewer), "Settings…")
     }
 

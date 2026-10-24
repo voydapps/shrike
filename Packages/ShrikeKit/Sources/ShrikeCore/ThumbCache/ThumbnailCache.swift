@@ -542,6 +542,9 @@ public actor ThumbnailCache {
         memory.removeAll()
     }
 
+    /// Bytes the in-memory tier holds right now (tests, diagnostics).
+    public func memoryResidentBytes() -> Int { memory.totalBytes }
+
     public func statistics() -> ThumbStats {
         let delta = disk.changedBytes
         diskEstimate = max(0, diskEstimate + delta - diskEstimateDelta)
@@ -614,11 +617,14 @@ public actor ThumbnailCache {
         guard pressureObservation == nil else { return }
         pressureObservation = resources.observePressure { [weak self] pressure in
             guard pressure != .normal else { return }
-            Task { await self?.relievePressure() }
+            Task { await self?.relievePressure(pressure) }
         }
     }
-    private func relievePressure() {
-        memory.removeAll()
+    /// Optional relief (a big job did not fit) and system warnings halve the
+    /// tier, oldest first, so what is on screen stays; only critical pressure
+    /// empties it (audit MP-06).
+    func relievePressure(_ pressure: ImageMemoryPressure) {
+        if pressure == .critical { memory.removeAll() } else { memory.trim(toBytes: memory.byteLimit / 2) }
         for job in jobs.values where job.priority == .prefetch && job.interest <= 0 {
             job.pinned = false; drop(key: job.key)
         }

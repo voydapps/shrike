@@ -185,7 +185,7 @@ final class VisualBundleRegressionTests: XCTestCase {
         XCTAssertEqual(panel._percentField.stringValue, "1234.5")
         XCTAssertNil(panel.pendingSpec)
         XCTAssertFalse(panel._applyButton.isEnabled)
-        XCTAssertEqual(panel._previewLabel.stringValue, "Same size as the current image.")
+        XCTAssertEqual(panel._previewLabel.stringValue, "Same size as the current photo.")
         panel._applyButton.performClick(nil)
         XCTAssertEqual(applied, 0)
 
@@ -199,7 +199,7 @@ final class VisualBundleRegressionTests: XCTestCase {
         XCTAssertTrue(panel.preventUpscale)
         XCTAssertNil(panel.pendingSpec)
         XCTAssertFalse(panel._applyButton.isEnabled)
-        XCTAssertEqual(panel._previewLabel.stringValue, "Same size as the current image.")
+        XCTAssertEqual(panel._previewLabel.stringValue, "Same size as the current photo.")
 
         commit("50", in: panel._percentField)
         XCTAssertEqual(panel.pendingSpec?.width, 768)

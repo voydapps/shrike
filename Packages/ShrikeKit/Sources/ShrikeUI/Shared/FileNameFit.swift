@@ -14,6 +14,13 @@ public enum FileNameFit {
 
     private static let ellipsis = "…"
 
+    /// A file name for a sentence (toast, message): at most `limit` characters, the
+    /// ending (number, extension) kept. A toast shows 2 lines; 255-character names
+    /// would push the rest of the sentence out.
+    public static func short(_ name: String, limit: Int = 40) -> String {
+        fit(name) { $0.count <= limit }
+    }
+
     /// `name` if it fits, else a shortened form. Never returns an empty string.
     public static func fit(_ name: String, fits: (String) -> Bool) -> String {
         if name.isEmpty || fits(name) { return name }

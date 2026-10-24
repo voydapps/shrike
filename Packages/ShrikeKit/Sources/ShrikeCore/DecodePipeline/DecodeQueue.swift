@@ -130,7 +130,11 @@ public actor DecodeQueue {
     private var preparer: DisplayPreparer?
 
     // Navigation state
-    private var list: [any ImageSource] = []
+    private var list: [any ImageSource] = [] { didSet { listIDsByPath = nil } }
+    /// Standardized file path → decode ids of the list's files; built on
+    /// first use after the list changes, so a burst of changed files is not
+    /// one full list scan each (audit MP-10).
+    private var listIDsByPath: [String: [String]]?
     private var currentIndex: Int = 0 {
         didSet {
             if currentIndex != oldValue {
@@ -412,20 +416,41 @@ public actor DecodeQueue {
             ShrikeSignposts.navigation.end("jumpTo", state, "hit")
             return hit
         }
-        guard let pending = inFlight[id] else {
+        guard var pending = inFlight[id] else {
             ShrikeSignposts.navigation.end("jumpTo", state, "error")
             throw DecodeQueueError.decodeFailed
         }
 
         let entry: DecodedImage
-        do {
-            entry = try await pending.task.value
-        } catch is CancellationError {
-            ShrikeSignposts.navigation.end("jumpTo", state, "superseded")
-            throw CancellationError()
-        } catch {
-            ShrikeSignposts.navigation.end("jumpTo", state, "error")
-            throw error
+        var respawned = false
+        while true {
+            do {
+                entry = try await pending.task.value
+                break
+            } catch is CancellationError {
+                ShrikeSignposts.navigation.end("jumpTo", state, "superseded")
+                throw CancellationError()
+            } catch DecodeQueueError.memoryBudgetExceeded where !respawned {
+                // COR-5: this task was started as a far neighbour (speculative, may be
+                // refused under memory pressure). The user has jumped onto it, so it is
+                // the current photo now: decode it again as REQUIRED instead of
+                // reporting a good file as unreadable.
+                respawned = true
+                guard myGen == latestNavGen else {
+                    ShrikeSignposts.navigation.end("jumpTo", state, "superseded")
+                    throw CancellationError()
+                }
+                if inFlight[id]?.token == pending.token { inFlight.removeValue(forKey: id) }
+                spawnDecode(index: index)
+                guard let again = inFlight[id] else {
+                    ShrikeSignposts.navigation.end("jumpTo", state, "error")
+                    throw DecodeQueueError.decodeFailed
+                }
+                pending = again
+            } catch {
+                ShrikeSignposts.navigation.end("jumpTo", state, "error")
+                throw error
+            }
         }
         guard myGen == latestNavGen else {
             ShrikeSignposts.navigation.end("jumpTo", state, "superseded")
@@ -447,6 +472,27 @@ public actor DecodeQueue {
         schedule(around: index)
     }
 
+    /// Every id this queue may hold for `url`: its URL string and the id of
+    /// each list entry that is the same file.
+    private func decodeIDs(for url: URL) -> Set<String> {
+        if listIDsByPath == nil {
+            var map: [String: [String]] = [:]
+            for src in list {
+                if let file = src as? FileImageSource { map[file.url.standardizedFileURL.path, default: []].append(file.id) }
+            }
+            listIDsByPath = map
+        }
+        var ids: Set<String> = [url.absoluteString]
+        ids.formUnion(listIDsByPath?[url.standardizedFileURL.path] ?? [])
+        return ids
+    }
+
+    /// `evictIfContentChanged(url:)` for a burst of changed files; returns
+    /// the ones it evicted.
+    public func evictIfContentChanged(urls: [URL]) -> [URL] {
+        urls.filter { evictIfContentChanged(url: $0) }
+    }
+
     /// `evict(url:)`, but only when the file's content is not what was
     /// decoded (size or content date differs). A file never decoded has no
     /// stamp and is evicted, to be safe. A stamp outlives the cached image
@@ -454,13 +500,7 @@ public actor DecodeQueue {
     /// Returns whether it evicted.
     @discardableResult
     public func evictIfContentChanged(url: URL) -> Bool {
-        let target = url.standardizedFileURL
-        var ids: Set<String> = [url.absoluteString]
-        for src in list {
-            if let file = src as? FileImageSource, file.url.standardizedFileURL == target {
-                ids.insert(file.id)
-            }
-        }
+        let ids = decodeIDs(for: url)
         let stamps = ids.compactMap { decodeStamps[$0] }
         if !stamps.isEmpty, !stamps.contains(where: { $0.differs(from: url) }) {
             return false
@@ -472,13 +512,7 @@ public actor DecodeQueue {
     /// Drop everything cached or decoding for `url` (file changed on disk:
     /// save, revert, rotate, rename, external edit).
     public func evict(url: URL) {
-        let target = url.standardizedFileURL
-        var ids: Set<String> = [url.absoluteString]
-        for src in list {
-            if let file = src as? FileImageSource, file.url.standardizedFileURL == target {
-                ids.insert(file.id)
-            }
-        }
+        let ids = decodeIDs(for: url)
         for id in ids {
             cache.removeValue(forKey: id)
             inFlight.removeValue(forKey: id)?.task.cancel()

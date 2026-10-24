@@ -83,11 +83,8 @@ extension ViewerWindow {
         if !change.modified.isEmpty {
             let modified = change.modified
             Task { @MainActor [weak self] in
-                var contentChanged: [URL] = []
-                for url in modified where await navigation.decodeQueue.evictIfContentChanged(url: url) {
-                    await cache.evictIfContentChanged(url: url)
-                    contentChanged.append(url)
-                }
+                let contentChanged = await navigation.decodeQueue.evictIfContentChanged(urls: modified)
+                for url in contentChanged { await cache.evictIfContentChanged(url: url) }
                 guard let self,
                       contentChanged.contains(where: { displayedURLs.contains(GroupList.canonical($0)) }),
                       self.displayedItem != nil else { return }
@@ -150,9 +147,13 @@ extension ViewerWindow {
     /// its group. Returns the displayed group when it was removed.
     func applyRemovals(_ removed: [URL], changed: inout Bool) -> (Int, ImageGroup)? {
         guard !removed.isEmpty else { return nil }
+        // Look the removed files up (a few) instead of resolving every
+        // group's paths (audit MP-01).
         let gone = Set(removed.map(GroupList.canonical))
+        let touched = Set(removed.compactMap { list.index(of: $0) })
         var primaries: Set<URL> = []
-        for (index, group) in list.groups.enumerated() {
+        for index in touched.sorted() {
+            guard let group = list[index] else { continue }
             if gone.contains(GroupList.canonical(group.primary)) {
                 primaries.insert(group.primary)
             } else if group.companions.contains(where: { gone.contains(GroupList.canonical($0.url)) }) {
@@ -185,8 +186,11 @@ extension ViewerWindow {
         Task { @MainActor [weak self] in
             guard let scanned = try? await FolderScanner.imageGroups(in: folder, showHidden: hidden),
                   let self else { return }
+            // One pass over the unchanged list (hash lookups), then one
+            // insert: a per-file insert would rebuild the lookup each time.
             var changed = false
             var insertAt = 0
+            var additions: [RemovedGroup] = []
             for group in scanned {
                 if let index = self.list.index(of: group.primary) {
                     if let current = self.list[index], current != group,
@@ -194,12 +198,15 @@ extension ViewerWindow {
                         self.list.replace(at: index, with: group)
                         changed = true
                     }
-                    insertAt = index + 1
+                    insertAt = index + additions.count + 1
                 } else if group.allURLs.allSatisfy({ self.list.index(of: $0) == nil }) {
-                    self.list.insert([RemovedGroup(index: insertAt, group: group)])
+                    additions.append(RemovedGroup(index: insertAt, group: group))
                     insertAt += 1
-                    changed = true
                 }
+            }
+            if !additions.isEmpty {
+                self.list.insert(additions)
+                changed = true
             }
             if changed {
                 if self.isShowingEmptyState, !self.list.isEmpty {
@@ -217,6 +224,12 @@ extension ViewerWindow {
     func syncListKeepingDisplayed() {
         guard !list.isEmpty else { return }
         let sources: [any ImageSource] = list.groups.map { FileImageSource(url: $0.primary) }
+        // COR-4: a navigation still in flight (→ onto a slow photo) is cancelled by the
+        // coalesced list sync below, and nothing would ask for that photo again: the
+        // viewer stayed on the low-res preview, or the dimmed old photo. The intent
+        // cursor holds the photo the user asked for; find it in the NEW list.
+        let pendingTarget: Int? = navCoalescer.isIdle ? nil
+            : (intent.sourceAt(intent.currentIndex) as? FileImageSource).flatMap { list.index(of: $0.url) }
         let index = displayedItem.flatMap { list.index(of: $0.group.primary) }
             ?? min(max(0, intent.currentIndex), list.count - 1)
         intent.setNavigation(list: sources, currentIndex: index)
@@ -231,6 +244,12 @@ extension ViewerWindow {
         let navigation = self.navigation
         coalesceNav { [weak self] in
             await navigation.setNavigation(list: sources, currentIndex: index)
+            if let pendingTarget, !Task.isCancelled {
+                // Finish the navigation the sync cancelled; it paints the photo and
+                // clears the dim, the hairline and the PREVIEW badge itself.
+                await self?.navigate(to: pendingTarget)
+                return
+            }
             await self?.updateFilmstrip(centeredOn: index)
         }
     }

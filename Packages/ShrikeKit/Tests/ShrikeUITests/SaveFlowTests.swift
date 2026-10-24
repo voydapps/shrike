@@ -148,7 +148,7 @@ final class SaveFlowTests: XCTestCase {
         XCTAssertEqual(records.count, 1)
         XCTAssertEqual(try Data(contentsOf: records[0].backupURL), before)
         XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message,
-                       "Saved ‘a.jpg’. Original backup available.")
+                       "Saved “a.jpg”. Original backup available.")
         let edited = await waitUntil { viewer.isDisplayedEdited }
         XCTAssertTrue(edited)
         XCTAssertTrue(viewer.canPerform(.revertToOriginal))
@@ -164,6 +164,58 @@ final class SaveFlowTests: XCTestCase {
         viewer.undoManagerForTesting.redo()
         await viewer.waitForFileVersionSwap()
         XCTAssertEqual(try Data(contentsOf: url), after)
+    }
+
+    /// FS-7: another program rewrites the file while it is open in edit mode.
+    private func rewriteBehindTheEditorsBack(_ url: URL) throws -> Data {
+        let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(dest, Self.image(width: 48, height: 24, red: 0.2), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(dest))
+        return try Data(contentsOf: url)
+    }
+
+    func testSaveAsksWhenTheFileChangedWhileEditing_cancelKeepsTheFile() async throws {
+        let url = dir.appendingPathComponent("changed.jpg")
+        try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        let other = try rewriteBehindTheEditorsBack(url)
+        var asked: String?
+        viewer.alertResponderForTesting = { message in asked = message; return 0 }   // Cancel
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertFalse(saved)
+        XCTAssertEqual(asked, "“changed.jpg” changed while you were editing it.")
+        XCTAssertEqual(try Data(contentsOf: url), other, "Cancel changes nothing on disk")
+        XCTAssertTrue(viewer.contentRootForTesting.isEditModeActive, "edits stay open")
+    }
+
+    func testSaveAnywayAppliesTheEditsAndBacksUpTheNewVersion() async throws {
+        let url = dir.appendingPathComponent("changed2.jpg")
+        try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        let other = try rewriteBehindTheEditorsBack(url)
+        viewer.alertResponderForTesting = { _ in 1 }   // Save Anyway
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(saved)
+        XCTAssertNotEqual(try Data(contentsOf: url), other)
+        let records = await store.records(for: url)
+        XCTAssertEqual(try Data(contentsOf: records[0].backupURL), other, "the version on disk was backed up first")
+    }
+
+    func testSaveDoesNotAskWhenNothingChanged() async throws {
+        let url = dir.appendingPathComponent("same.jpg")
+        try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        var asked = false
+        viewer.alertResponderForTesting = { _ in asked = true; return 0 }
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(saved)
+        XCTAssertFalse(asked)
     }
 
     // GIF → Save panel with M3 and "-edited" name; file untouched.
@@ -216,7 +268,7 @@ final class SaveFlowTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path))
         XCTAssertEqual(viewer.groups.map(\.primary.lastPathComponent), ["b.jpg", "b-edited.jpg"])
         XCTAssertEqual(viewer.displayedItem?.group.primary, url)
-        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message, "Saved copy ‘b-edited.jpg’. Original unchanged.")
+        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message, "Saved copy “b-edited.jpg”. Original unchanged.")
         XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.actionTitle, "Show")
     }
 
@@ -354,5 +406,28 @@ final class SaveFlowTests: XCTestCase {
         XCTAssertTrue(discarded)
         XCTAssertFalse(viewer.contentRootForTesting.isEditModeActive)
         XCTAssertEqual(try Data(contentsOf: url), written, "Don't Save leaves the file")
+    }
+
+    /// COR-7: ⌘Q while a save runs waits for it (and says so) instead of silently cancelling.
+    func testQuitDuringASaveWaitsForTheSave() async throws {
+        let url = dir.appendingPathComponent("qs.jpg")
+        _ = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close(); EditExitModal.responderForTesting = nil }
+        try await enterEditWithRotate(viewer, url: url)
+        let editor = viewer.contentRootForTesting.editModeController
+        editor.setSaving(true)
+        var asked = 0
+        EditExitModal.responderForTesting = { _ in asked += 1; return .discard }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            editor.setSaving(false)
+        }
+        let started = Date()
+        let mayQuit = await viewer.resolveUnsavedEditsForQuit()
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.25, "it waited for the save")
+        XCTAssertTrue(mayQuit, "after the save, the normal exit flow ran (Don't Save)")
+        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message, ViewerWindow.quitWaitsForSave)
     }
 }

@@ -24,7 +24,7 @@
 //  Z-order (bottom → top):
 //    imageView < livePhotoMovie (only while a Live Photo plays)
 //    < canvasDim < [filmstrip, toolbar, inspector]
-//    < zoomBadge < histogramOverlay < loupeView < toastView < pageIndicator
+//    < zoomBadge < histogramOverlay < loupeView < toastView
 //    < livePhotoBadge < navPositionOverlay < previewBadge < errorOverlay
 //
 
@@ -117,7 +117,6 @@ public final class ViewerContentView: NSView {
     /// Shared toast host.
     let toastHost: ToastHostView
     private let errorOverlay: ErrorOverlayView
-    private let pageIndicator: PageIndicatorView
     private let livePhotoBadge: LivePhotoBadgeView
     /// The badge follows the photo's top-left corner.
     private var liveBadgeLeading: NSLayoutConstraint?
@@ -437,7 +436,6 @@ public final class ViewerContentView: NSView {
         self.loupeView = LoupeView()
         self.toastHost = ToastHostView(placement: .viewer)
         self.errorOverlay = ErrorOverlayView()
-        self.pageIndicator = PageIndicatorView()
         self.livePhotoBadge = LivePhotoBadgeView()
         self.navPositionOverlay = NavigationPositionOverlayView()
         self.previewBadge = PreviewBadgeView()
@@ -663,7 +661,7 @@ public final class ViewerContentView: NSView {
         spinner.style = .spinning
         spinner.controlSize = .small
         spinner.startAnimation(nil)
-        let label = NSTextField(labelWithString: "Loading full image…")
+        let label = NSTextField(labelWithString: "Loading full photo…")
         label.font = ChromeTypography.font(13)
         label.textColor = .white
         let stack = NSStackView(views: [spinner, label])
@@ -678,7 +676,7 @@ public final class ViewerContentView: NSView {
             stack.bottomAnchor.constraint(equalTo: v.bottomAnchor),
         ])
         v.setAccessibilityElement(true)
-        v.setAccessibilityLabel("Loading full image")
+        v.setAccessibilityLabel("Loading full photo")
         return v
     }()
 
@@ -916,6 +914,12 @@ public final class ViewerContentView: NSView {
             if editCapsule.superview != nil, !editCapsule.isHidden {
                 e.bottom += max(0, editCapsule.frame.maxY - iv.minY)
             }
+            // The save-policy note sits on the canvas's bottom-left corner: the
+            // photo fits above it, so a turned (tall) photo is never under it
+            // (audit on-screen L9).
+            if let note = editSavePolicySurface, note.superview === self, !note.isHidden {
+                e.bottom = max(e.bottom, note.frame.maxY - iv.minY + 6)
+            }
             return e
         }
         return NSEdgeInsets(top: restTopInset(), left: 0, bottom: 0, right: 0)
@@ -1083,6 +1087,7 @@ public final class ViewerContentView: NSView {
         // Zoom badge.
         zoomBadge.translatesAutoresizingMaskIntoConstraints = false
         zoomBadge.alphaValue = 0
+        zoomBadge.isHidden = true   // out of the accessibility tree until the first zoom
         addSubview(zoomBadge)
         NSLayoutConstraint.activate([
             zoomBadge.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -1106,14 +1111,6 @@ public final class ViewerContentView: NSView {
         // lands on it, whatever the safe area is.
         toastHost.keepBelow(zoomBadge, gap: 12)
 
-        // Page indicator.
-        pageIndicator.translatesAutoresizingMaskIntoConstraints = false
-        pageIndicator.alphaValue = 0
-        addSubview(pageIndicator)
-        NSLayoutConstraint.activate([
-            pageIndicator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
-            pageIndicator.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -24),
-        ])
 
         // LIVE badge.
         livePhotoBadge.translatesAutoresizingMaskIntoConstraints = false
@@ -1492,7 +1489,6 @@ public final class ViewerContentView: NSView {
         // No zoom HUD on a photo change: only a zoom the user makes shows
         // it.
         previewBadge.hide()
-        pageIndicator.hideAnimated()
     }
 
     /// Surface the filmstrip selection immediately on `beginNavigation()`,

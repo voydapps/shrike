@@ -94,7 +94,7 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
         action: nil
     )
     private let preventUpscaleCheckbox = NSButton(
-        checkboxWithTitle: "Don't upscale",
+        checkboxWithTitle: "Don't enlarge",
         target: nil,
         action: nil
     )
@@ -389,8 +389,8 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
 
     /// "New size: 5184 × 3456 px", or "Same size as the current image." (spec 27 P3-8c).
     static func previewText(source: CGSize, width: Int, height: Int) -> String {
-        guard width > 0, height > 0 else { return "Same size as the current image." }
-        if width == Int(source.width), height == Int(source.height) { return "Same size as the current image." }
+        guard width > 0, height > 0 else { return "Same size as the current photo." }
+        if width == Int(source.width), height == Int(source.height) { return "Same size as the current photo." }
         return "New size: \(width) × \(height) px"
     }
 

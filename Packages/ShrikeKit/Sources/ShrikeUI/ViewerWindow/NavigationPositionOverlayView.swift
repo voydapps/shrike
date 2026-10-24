@@ -4,8 +4,7 @@
 //
 //  Bottom-left "43 / 180 — DSC_0042.jpg" overlay that tells the user where
 //  they are in the current folder during a navigation sequence. Separate
-//  view type from `PageIndicatorView` (which is earmarked for PDF-style
-//  page-within-a-file feedback) so each can evolve
+//  view type, so each can evolve
 //  independently.
 //
 //  Behaviour:
@@ -1751,7 +1750,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
         }
         lastAnnouncementEpoch = now
         let message = NSLocalizedString(
-            "Loading image",
+            "Loading photo",
             comment: "VoiceOver announcement for viewer loading hairline"
         )
         voiceOverAnnouncer(message)

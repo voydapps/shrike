@@ -180,12 +180,15 @@ final class ViewerTitleScrim028Tests: XCTestCase {
                             backing.draw(backing.bounds)
                         }
                         NSGraphicsContext.restoreGraphicsState()
-                        for (x, y) in [(0, 0), (1, 1), (2, 2)] {
+                        // Spec 21b §2: a translucent band (the photo shows softly through), never a
+                        // solid block. Sample the middle row (the 0.5 pt separator is at the bottom).
+                        for (x, y) in [(0, 1), (1, 1), (2, 1)] {
                             let actual = try XCTUnwrap(rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
-                            XCTAssertEqual(actual.alphaComponent, 1, accuracy: 1 / 255, "No photo may show through the native band")
-                            XCTAssertEqual(actual.redComponent, expected.redComponent, accuracy: 1 / 255)
-                            XCTAssertEqual(actual.greenComponent, expected.greenComponent, accuracy: 1 / 255)
-                            XCTAssertEqual(actual.blueComponent, expected.blueComponent, accuracy: 1 / 255)
+                            XCTAssertEqual(actual.alphaComponent, TitlebarScrimView.fillAlpha, accuracy: 2 / 255, "translucent")
+                            XCTAssertLessThan(actual.alphaComponent, 1)
+                            XCTAssertEqual(actual.redComponent, expected.redComponent, accuracy: 2 / 255)
+                            XCTAssertEqual(actual.greenComponent, expected.greenComponent, accuracy: 2 / 255)
+                            XCTAssertEqual(actual.blueComponent, expected.blueComponent, accuracy: 2 / 255)
                         }
                         XCTAssertEqual(viewer.imageViewForTesting.frame, imageFrame)
                         XCTAssertEqual(viewer.imageViewForTesting.drawnImageRect, imageRect)
@@ -238,7 +241,7 @@ final class ViewerTitleScrim028Tests: XCTestCase {
             XCTFail("The native chrome requires its own opaque backing", file: file, line: line)
             return
         }
-        XCTAssertTrue(backing.isOpaque, "Native text requires a fully opaque plateau", file: file, line: line)
+        XCTAssertFalse(backing.isOpaque, "Spec 21b §2: the band is translucent, the photo shows through", file: file, line: line)
         XCTAssertTrue(backing.superview === container, "Backing must share native chrome layout and animation", file: file, line: line)
         XCTAssertEqual(backing.frame, container.bounds, "Cover the entire measured native band", file: file, line: line)
         XCTAssertEqual(backing.alphaValue, 1, accuracy: 0.001, file: file, line: line)

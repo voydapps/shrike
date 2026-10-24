@@ -146,7 +146,7 @@ final class ViewerWatchTests: XCTestCase {
         XCTAssertEqual(browser.contentController.visibleItems.count, 0)
         // The status bar and the subtitle stop counting the gone folder.
         XCTAssertEqual(browser.statusTextForTesting, "", "nothing selected: an empty status")
-        XCTAssertEqual(browser.window?.subtitle, "0 images")
+        XCTAssertEqual(browser.window?.subtitle, "0 photos")
         let gone = dir.appendingPathComponent("x/y", isDirectory: true)
         XCTAssertEqual(BrowserWindowController.nearestExistingAncestor(of: gone).standardizedFileURL.path,
                        dir.standardizedFileURL.path)

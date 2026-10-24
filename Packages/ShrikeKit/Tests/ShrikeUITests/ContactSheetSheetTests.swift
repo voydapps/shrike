@@ -117,7 +117,7 @@ final class ContactSheetSheetTests: XCTestCase {
 
     func testControlsMapToOptions() {
         let scope = ContactSheetScope(allCount: 180, folderName: "Italy 2026", selectedCount: 12)
-        XCTAssertEqual(scope.allTitle, "All 180 visible photos in ‘Italy 2026’")
+        XCTAssertEqual(scope.allTitle, "All 180 visible photos in “Italy 2026”")
         XCTAssertEqual(scope.selectedTitle, "12 selected photos")
         let initial = ContactSheetOptions(title: "Italy 2026", columns: 5, paper: .usLetter, caption: .fileName)
         var answer: ContactSheetRequest?

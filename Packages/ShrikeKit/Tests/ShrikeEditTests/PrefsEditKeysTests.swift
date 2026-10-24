@@ -24,6 +24,14 @@ final class PrefsEditKeysTests: XCTestCase {
         }
     }
 
+    /// The store is shared by every test in the process: leave no edit key behind.
+    override func tearDown() {
+        for k in Prefs.Key.allKeys where k.hasPrefix("shrike.edit.") {
+            ShrikeDefaults.store.removeObject(forKey: k)
+        }
+        super.tearDown()
+    }
+
     func test_editKeys_allRegisteredInAllKeys() {
         // Every `shrike.edit.*` key we ship must be in
         // Prefs.Key.allKeys so `resetAll()` wipes it.

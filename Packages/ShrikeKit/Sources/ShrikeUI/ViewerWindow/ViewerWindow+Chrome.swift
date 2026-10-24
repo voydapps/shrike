@@ -182,11 +182,18 @@ extension ViewerWindow: ViewerToolbarHost {
     }
 }
 
-/// A solid native-chrome surface. The historical scrim name remains local;
-/// this view no longer samples the image or fades independently of its parent.
+/// The backing of the revealed title bar and toolbar (spec 21b §2): a translucent
+/// system-colour band with a 0.5 pt separator, so the photo shows softly through it and
+/// the bar is no longer a solid block over the sky. Title and buttons stay readable
+/// (the fill is 85 % opaque). It exists only while the bar is revealed; the photo's
+/// fitted size never depends on it. This view no longer samples the image or fades
+/// independently of its parent.
 @MainActor
 final class TitlebarScrimView: NSView {
-    override var isOpaque: Bool { true }
+    /// Spec 21b §2 fallback: `NSVisualEffectView` does not sample a `CAMetalLayer`, so the
+    /// band is a translucent fill instead of the `.titlebar` material.
+    static let fillAlpha: CGFloat = 0.85
+    override var isOpaque: Bool { false }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -197,7 +204,9 @@ final class TitlebarScrimView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         // Resolve in the native titlebar's inherited effective appearance.
         // A dark canvas / HUD token would mismatch native light chrome.
-        NSColor.windowBackgroundColor.withAlphaComponent(1).setFill()
-        bounds.fill()
+        NSColor.windowBackgroundColor.withAlphaComponent(Self.fillAlpha).setFill()
+        bounds.fill(using: .copy)
+        NSColor.separatorColor.setFill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: 0.5).fill()
     }
 }

@@ -11,9 +11,13 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
+import threading
 
 XCODE = Path('/Applications/Xcode_26.4.1.app/Contents/Developer')
 XCODE_VERSION = 'Xcode 26.4.1'
+# A hung test must not wait for the 90-minute job limit (one full run takes ~10 minutes).
+TEST_RUN_TIMEOUT = 30 * 60
+PACKAGE_TIMEOUT = 40 * 60
 
 
 def digest(path):
@@ -54,25 +58,44 @@ def assert_clean_release_inputs(run):
 
 
 class Gate:
-    def __init__(self, root, tag, run=None, developer=XCODE):
+    def __init__(self, root, tag, run=None, developer=XCODE, smoke=None):
         self.root = Path(root).resolve()
         self.tag = tag
         self.developer = Path(developer)
         self.env = dict(os.environ, DEVELOPER_DIR=str(self.developer))
         self.work = self.root / 'build/release-gate'
         self.run = run or self.command
+        # The smoke launch opens the real app, so only the CI runner asks for it.
+        self.smoke = os.environ.get('SHRIKE_SMOKE_LAUNCH') == '1' if smoke is None else smoke
 
     def command(self, args, log=None):
         # Full output is retained per phase and streamed for CI diagnostics.
+        # The watchdog kills a hung command: a hung test blocks the stdout loop
+        # itself, so a timeout on wait() alone would never fire.
         if log:
+            timeout = TEST_RUN_TIMEOUT if args[:3] == ['xcrun', 'swift', 'test'] else PACKAGE_TIMEOUT
             with log.open('w') as output:
                 process = subprocess.Popen(args, cwd=self.root, env=self.env,
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                            text=True)
-                for line in process.stdout:
-                    print(line, end='', flush=True)
-                    output.write(line)
-                if process.wait():
+                expired = threading.Event()
+                def expire():
+                    expired.set()
+                    process.kill()
+                watchdog = threading.Timer(timeout, expire) if timeout else None
+                if watchdog:
+                    watchdog.start()
+                try:
+                    for line in process.stdout:
+                        print(line, end='', flush=True)
+                        output.write(line)
+                    status = process.wait()
+                finally:
+                    if watchdog:
+                        watchdog.cancel()
+                if expired.is_set():
+                    raise RuntimeError(f'timed out after {timeout} s: {args[0]} (see {log})')
+                if status:
                     raise RuntimeError(f'failed: {args[0]} (see {log})')
             return ''
         output = subprocess.check_output(args, cwd=self.root, env=self.env,
@@ -157,12 +180,20 @@ class Gate:
         app_bytes = sum(p.stat().st_size for p in app.rglob('*') if p.is_file())
         if app_bytes > 20_000_000 or set(archs.split()) != {'arm64', 'x86_64'}:
             raise RuntimeError('universal archive or stripped app budget check failed')
+        # The Release binary is otherwise never started (tests run in Debug).
+        smoke = 'skipped (not requested; runs on the CI runner)'
+        if self.smoke:
+            fixture = self.work / 'smoke-photo.jpg'
+            fixture.write_bytes((self.root / 'Packages/ShrikeKit/Tests/ShrikeEditTests/Fixtures/small.jpg').read_bytes())
+            self.run(['bash', 'Scripts/smoke-launch.sh', str(app), str(fixture)],
+                     self.work / 'smoke-launch.log')
+            smoke = 'passed'
         data = {'schema': 1, 'commit': sha, 'tag': self.tag, 'version': version,
                 'developer_dir': str(self.developer), 'xcode': xcode, 'swift': swift,
                 'swiftpm': runs, 'release': 'passed', 'signature': signature,
                 'signature_policy': 'ad-hoc; not notarized', 'architectures': archs,
                 'app_bytes': app_bytes, 'app_budget_bytes': 20_000_000,
-                'artifact': 'Shrike.dmg', 'artifact_sha256': digest(stable),
+                'smoke_launch': smoke, 'artifact': 'Shrike.dmg', 'artifact_sha256': digest(stable),
                 'package_log_sha256': digest(self.work / 'release-package.log'),
                 'runtime_limits': 'Runner only; universal compilation does not verify macOS 14 or Intel runtime.'}
         receipt.write_text(json.dumps(data, indent=2) + '\n')

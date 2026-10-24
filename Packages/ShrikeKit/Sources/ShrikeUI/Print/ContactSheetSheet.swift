@@ -25,7 +25,7 @@ struct ContactSheetScope: Equatable {
     /// "All 180 in “Italy 2026”" ("All 180 images" with no folder).
     var allTitle: String {
         let photos = allCount == 1 ? "photo" : "photos"
-        return folderName.isEmpty ? "All \(allCount) visible \(photos)" : "All \(allCount) visible \(photos) in ‘\(folderName)’"
+        return folderName.isEmpty ? "All \(allCount) visible \(photos)" : "All \(allCount) visible \(photos) in “\(folderName)”"
     }
     /// "The 12 selected".
     var selectedTitle: String { "\(selectedCount) selected \(selectedCount == 1 ? "photo" : "photos")" }
@@ -198,7 +198,7 @@ final class ContactSheetSheet: NSObject, NSTextFieldDelegate {
         captionPopup.setAccessibilityLabel("Caption")
         captionPopup.target = self; captionPopup.action = #selector(previewChanged)
 
-        var rows: [[NSView]] = [[label("Images:"), allRadio]]
+        var rows: [[NSView]] = [[label("Photos:"), allRadio]]
         if scope.offersSelection { rows.append([NSGridCell.emptyContentView, selectedRadio]) }
         rows += [
             [label("Title:"), titleField],

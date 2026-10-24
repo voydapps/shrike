@@ -104,6 +104,8 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         let modifiers: NSEvent.ModifierFlags
     }
     private var surfaceItems: [SurfaceItem] = []
+    /// View ▸ Compare Options: visible only when a Compare window is main.
+    private(set) var compareOptionsRow: NSMenuItem?
     private var itemsByCommand: [ShrikeCommand: [NSMenuItem]] = [:]
 
     // Lazy submenus.
@@ -217,6 +219,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
 
     public func menuNeedsUpdate(_ menu: NSMenu) {
         apply(surface: MenuSurface.of(NSApp?.mainWindow))
+        compareOptionsRow?.isHidden = !(NSApp?.mainWindow is CompareWindow)
         applyIcons(opening: menu)   // before the hints: an icon changes the row width
         applyKeyHints(opening: menu)
         switch menu {
@@ -389,7 +392,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
     /// The icon of each Shrike item in a menu that shows icons (Shrike, File, Edit, View, Window).
     /// A menu is all icons or none, so View lists every one of its rows.
     static let menuIconTable: [(command: ShrikeCommand, symbol: String)] = [
-        (.copyPath, "link"), (.deselectAll, "rectangle.dashed"),                   // Edit
+        (.copyPath, "link"), (.deselectAll, "rectangle.dashed"), (.find, "magnifyingglass"),                   // Edit
         (.viewAsGrid, "square.grid.2x2"), (.viewAsFilmstrip, "film"),              // View
         (.viewAsList, "list.bullet"), (.filter, "line.3.horizontal.decrease"),
         (.largerThumbnails, "arrow.up.left.and.arrow.down.right"),
@@ -420,9 +423,8 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
     static let menuHolderIconTable: [(title: String, symbol: String)] = [
         ("Services", "gearshape.2"),            // Shrike
         ("Open Recent", "clock"),               // File
-        ("Find", "magnifyingglass"),            // Edit
         ("Sort By", "arrow.up.arrow.down"),     // View
-        ("Compare Window", "rectangle.split.2x1"),
+        ("Compare Options", "rectangle.split.2x1"),
     ]
 
     /// Selector-only actions keep their icons when their displayed title changes.
@@ -475,6 +477,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
     ) -> NSMenuItem {
         let item = NSMenuItem(title: title ?? command.title, action: action, keyEquivalent: "")
         item.representedObject = command.rawValue
+        if let words = command.accessibleRatingTitle { item.setAccessibilityLabel(words) }
         if withKey, let binding = ShortcutTable.menuBinding(for: command),
            let key = binding.menuKeyEquivalent {
             item.keyEquivalent = key
@@ -591,9 +594,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         add(.selectAll, to: m, action: #selector(NSText.selectAll(_:)))
         add(.deselectAll, to: m, .browser)
         m.addItem(.separator())
-        let find = NSMenu(title: "Find")
-        add(.find, to: find, .browser)
-        addSubmenu(find, to: m, .browser)
+        add(.find, to: m, .browser)
         return m
     }
 
@@ -631,18 +632,24 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         add(.toggleToolbar, to: m, action: #selector(NSWindow.toggleToolbarShown(_:)))
         add(.customizeToolbar, to: m, action: #selector(NSWindow.runToolbarCustomizationPalette(_:)))
         add(.toggleInspector, to: m)
-        m.addItem(withTitle: "Show Review Controls", action: #selector(ViewerWindow.toggleReviewControls(_:)), keyEquivalent: "")
+        let reviewControls = NSMenuItem(title: "Show Review Controls", action: #selector(ViewerWindow.toggleReviewControls(_:)), keyEquivalent: "")
+        register(reviewControls, command: nil, placement: .viewer); m.addItem(reviewControls)
         add(.toggleFilmstrip, to: m, .viewer)
         add(.toggleHistogram, to: m, .viewer)
         add(.unpinAllPanels, to: m, .viewer)
         m.addItem(.separator())
         add(.slideshow, to: m)
         add(.compare, to: m)
-        let compare = NSMenu(title: "Compare Window")
+        let compare = NSMenu(title: "Compare Options")
         compare.addItem(withTitle: "Keep Focused Photo", action: #selector(CompareWindow.keepFocusedPhoto(_:)), keyEquivalent: "")
         compare.addItem(withTitle: "Sync Zoom and Pan", action: #selector(CompareWindow.toggleLockFromToolbar(_:)), keyEquivalent: "")
-        compare.addItem(withTitle: "Fit", action: #selector(CompareWindow.fitAllFromToolbar(_:)), keyEquivalent: "")
-        let compareRow = NSMenuItem(title: "Compare Window", action: nil, keyEquivalent: ""); compareRow.submenu = compare; m.addItem(compareRow)
+        compare.addItem(withTitle: "Fit All", action: #selector(CompareWindow.fitAllFromToolbar(_:)), keyEquivalent: "")
+        let compareRow = NSMenuItem(title: "Compare Options", action: nil, keyEquivalent: ""); compareRow.submenu = compare
+        // Shown only while a Compare window is the main window (decided in
+        // `menuNeedsUpdate`): a Compare window is neither a Browser nor a viewer surface.
+        compareRow.isHidden = true
+        compareOptionsRow = compareRow
+        m.addItem(compareRow)
         add(.toggleFullScreen, to: m, .viewer, action: #selector(NSWindow.toggleFullScreen(_:)))
         return m
     }
@@ -711,6 +718,13 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
     private func helpMenuBuilt() -> NSMenu {
         add(.keyboardShortcuts, to: helpMenu,
             action: #selector(AppCommands.showKeyboardShortcuts(_:)), target: appCommands)
+        if !helpMenu.items.contains(where: { $0.action == #selector(AppCommands.openWebsite(_:)) }) {
+            helpMenu.addItem(.separator())
+            let site = helpMenu.addItem(withTitle: "Shrike Website", action: #selector(AppCommands.openWebsite(_:)), keyEquivalent: "")
+            site.target = appCommands
+            let report = helpMenu.addItem(withTitle: "Report a Problem…", action: #selector(AppCommands.reportProblem(_:)), keyEquivalent: "")
+            report.target = appCommands
+        }
         return helpMenu
     }
 }

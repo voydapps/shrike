@@ -22,14 +22,14 @@ enum FileActionCopy {
             return "Moved \(groups.count) items to the Trash."
         }
         if group.hasRAW && !group.primaryIsRAW {
-            return "Moved “\(group.displayName)” and its RAW file to the Trash."
+            return "Moved “\(FileNameFit.short(group.displayName))” and its RAW file to the Trash."
         }
-        return "Moved “\(group.displayName)” to the Trash."
+        return "Moved “\(FileNameFit.short(group.displayName))” to the Trash."
     }
 
     /// T2: "Couldn't move “x.jpg” to the Trash — the volume is read-only."
     static func trashFailed(_ group: ImageGroup, error: any Error) -> String {
-        let base = "Couldn't move “\(group.displayName)” to the Trash"
+        let base = "Couldn't move “\(FileNameFit.short(group.displayName))” to the Trash"
         if let ops = error as? FileOpsError, let reason = reason(for: ops) {
             return "\(base) — \(reason)."
         }
@@ -39,14 +39,39 @@ enum FileActionCopy {
     /// "Put back “DSC_0042.jpg”." or "Put back as “DSC_0042 2.jpg”."
     static func putBack(original: ImageGroup, restored: ImageGroup) -> String {
         if original.primary.lastPathComponent == restored.primary.lastPathComponent {
-            return "Put back “\(restored.displayName)”."
+            return "Put back “\(FileNameFit.short(restored.displayName))”."
         }
-        return "Put back as “\(restored.displayName)”."
+        return "Put back as “\(FileNameFit.short(restored.displayName))”."
+    }
+
+    /// The permanent-delete alert for a volume without a Trash (spec 21b §4): one builder
+    /// for the Browser, the viewer and Compare. Cancel is the default (Return and Esc).
+    struct NoTrashDelete: Equatable {
+        let message: String
+        let information: String
+        let deleteTitle: String
+        var buttons: [ShrikeAlert.Button] {
+            [ShrikeAlert.Button(deleteTitle, role: .destructive), .safeCancel()]
+        }
+    }
+
+    static func noTrashDelete(_ groups: [ImageGroup]) -> NoTrashDelete {
+        let one = groups.count == 1
+        var info = one
+            ? "This disk has no Trash, so the photo can't be moved there. Deleting it now is permanent. You can't undo this."
+            : "This disk has no Trash, so these photos can't be moved there. Deleting them now is permanent. You can't undo this."
+        if groups.contains(where: { $0.companions.contains { $0.kind == .raw || $0.kind == .sidecar } }) {
+            info += one ? " Its RAW and sidecar files are deleted too." : " Their RAW and sidecar files are deleted too."
+        }
+        return NoTrashDelete(
+            message: one ? "Delete “\(groups[0].displayName)” now?" : "Delete \(groups.count) photos now?",
+            information: info,
+            deleteTitle: one ? "Delete" : "Delete \(groups.count) Photos")
     }
 
     /// After the permanent-delete alert's Delete fails.
     static func deleteFailed(_ group: ImageGroup, error: any Error) -> String {
-        let base = "Couldn't delete “\(group.displayName)”"
+        let base = "Couldn't delete “\(FileNameFit.short(group.displayName))”"
         if let ops = error as? FileOpsError, let reason = reason(for: ops) {
             return "\(base) — \(reason)."
         }
@@ -54,7 +79,7 @@ enum FileActionCopy {
     }
 
     static func noLongerInTrash(_ name: String) -> String {
-        "Couldn't undo — “\(name)” is no longer in the Trash."
+        "Couldn't undo — “\(FileNameFit.short(name))” is no longer in the Trash."
     }
 
     static func reason(for error: FileOpsError) -> String? {
@@ -83,7 +108,13 @@ extension ViewerWindow {
     /// hands pixels (preview, stand-in or full) to the Metal view, or shows
     /// the error overlay for a file.
     func markDisplayed(_ index: Int) {
-        defer { refreshReviewRecord() }
+        defer {
+            refreshReviewRecord()
+            // The toolbar follows the displayed photo at once. AppKit re-validates it
+            // only on mouse events, so after keyboard navigation it showed the PREVIOUS
+            // photo's rating, Back and Edit state until the pointer moved (audit M2).
+            toolbar?.validateVisibleItems()
+        }
         guard let group = list[index] else { return }
         // A late paint from a list that has since changed must not label
         // the screen with the wrong file.
@@ -347,13 +378,13 @@ extension ViewerWindow {
     static func edgeCopy(_ direction: FolderScanner.Direction, current: String, target: String?) -> String {
         switch (direction, target) {
         case (.next, let name?):
-            return "Last image. Press → again to open “\(name)”."
+            return "Last photo. Press → again to open “\(FileNameFit.short(name))”."
         case (.next, nil):
-            return "Last image in “\(current)”."
+            return "Last photo in “\(FileNameFit.short(current))”."
         case (.previous, let name?):
-            return "First image. Press ← again to open “\(name)”."
+            return "First photo. Press ← again to open “\(FileNameFit.short(name))”."
         case (.previous, nil):
-            return "First image in “\(current)”."
+            return "First photo in “\(FileNameFit.short(current))”."
         }
     }
 
@@ -373,7 +404,7 @@ extension ViewerWindow {
     // MARK: - Paired Browser
 
     /// How long a hidden viewer keeps its decode cache.
-    static let hiddenTrimDelay: Duration = .seconds(60)
+    static var hiddenTrimDelay: Duration = .seconds(60)
 
     /// Esc outside edit mode and sheets: one layer per press.
     func handleEscape() {
@@ -481,6 +512,7 @@ extension ViewerWindow {
         guard let browser = pairedBrowser else { return }
         returnHintPopover?.close(); returnHintPopover = nil
         let selected = displayedItem?.group.primary
+        isParkedForBrowser = true
         orderOut(nil)
         browser.window?.makeKeyAndOrderFront(nil)
         if let selected {
@@ -489,7 +521,8 @@ extension ViewerWindow {
         scheduleHiddenTrim()
     }
 
-    /// 60 s after `orderOut`, drop every cached decode; the on-screen
+    /// 60 s after `orderOut`, drop every cached decode and the full-resolution
+    /// texture (up to ~180 MB for a 45 MP photo at 100 %). The fit-size
     /// texture stays, so the next Return shows the photo at once.
     func scheduleHiddenTrim() {
         hiddenTrimTask?.cancel()
@@ -498,7 +531,19 @@ extension ViewerWindow {
             try? await Task.sleep(for: Self.hiddenTrimDelay)
             guard !Task.isCancelled, let self, !self.isVisible else { return }
             await navigation.trimToCurrent()
+            self.dropFullResolutionWhileParked()
         }
+    }
+
+    /// A parked (hidden) viewer gives back its full-resolution texture at
+    /// any zoom; showing it again fetches the detail it needs (audit MP-04).
+    /// Edit mode keeps its pixels.
+    func dropFullResolutionWhileParked() {
+        guard isParkedForBrowser, !isVisible, !didTearDown, !contentRoot.isEditModeActive else { return }
+        let view = contentRoot.imageView
+        guard view.isShowingFullResolution, !view.isZoomAnimating else { return }
+        cancelFullResolution()
+        view.dropFullResolution()
     }
 
     /// Brings a hidden paired viewer back (Return / ⌘B in the Browser).
@@ -506,6 +551,8 @@ extension ViewerWindow {
         refreshBrowserReturnContext()
         hiddenTrimTask?.cancel()
         hiddenTrimTask = nil
+        isParkedForBrowser = false
+        defer { requestFullResolutionIfNeeded() }
         if contentRoot.isEditModeActive, groups.indices.contains(startIndex),
            groups[startIndex].primary == displayedItem?.group.primary {
             makeKeyAndOrderFront(nil)
