@@ -13,6 +13,23 @@ final class ViewerPreviewLifetimeTests: XCTestCase {
         init(_ value: T?) { self.value = value }
     }
 
+    private var savedEdge = 0
+
+    /// The source below answers a 1024 px request with the small preview (that is what the
+    /// thumbnail bridge asks for) and holds every other request at `fullGate`. The viewer asks
+    /// for its own texture size, which on a 1024 pt wide, 1x screen (the CI runner) is also
+    /// 1024 px: the required decode then returned at once, never reached the gate, and the
+    /// optional paths were then skipped. A decode size cap below the bridge size
+    /// keeps the two requests apart on every screen.
+    override func setUp() async throws {
+        savedEdge = Prefs.maxDisplayLongEdge
+        Prefs.maxDisplayLongEdge = 512
+    }
+
+    override func tearDown() async throws {
+        Prefs.maxDisplayLongEdge = savedEdge
+    }
+
     private func until(_ condition: () async -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(3)
         while !(await condition()), Date() < deadline {

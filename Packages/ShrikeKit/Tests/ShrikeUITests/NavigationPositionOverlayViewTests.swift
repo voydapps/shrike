@@ -1010,9 +1010,9 @@ final class NavigationPositionOverlayViewTests: XCTestCase {
     ///
     /// Drives five `scheduleHairlineShow` calls 50 ms apart — simulating
     /// a 10 Hz held-arrow burst — and asserts the bar becomes visible
-    /// within 250 ms of the first call (the 100 ms grace, plus runloop
-    /// slack, plus DispatchQueue scheduling granularity). The
-    /// threshold is 250 ms; we stay conservative.
+    /// during the burst: already visible when the re-seeds at 150 ms and
+    /// 200 ms run (the grace is due at 100 ms). Order, not wall-clock time,
+    /// so a slow CI runner cannot fail it.
     ///
     /// Uses `DispatchQueue.main.asyncAfter` to schedule re-seeds and a
     /// poll — keeps everything on the main actor without needing the
@@ -1022,8 +1022,6 @@ final class NavigationPositionOverlayViewTests: XCTestCase {
         overlay.frame = CGRect(x: 0, y: 0, width: 200, height: 26)
         overlay.layoutSubtreeIfNeeded()
 
-        let firstNavInstant = Date()
-
         // First nav seeds the 100 ms grace. Deadline is locked here.
         overlay.scheduleHairlineShow(predicted: 0.300)
         XCTAssertNotNil(overlay.pendingHairlineShowTask)
@@ -1031,39 +1029,34 @@ final class NavigationPositionOverlayViewTests: XCTestCase {
 
         // Re-seed at 50 ms intervals to simulate a held-arrow burst.
         // The grace task must stay on its original deadline (100 ms from
-        // first nav) and fire exactly once.
+        // first nav) and fire exactly once. The timers run in deadline
+        // order even when a loaded machine delays them all, so the test
+        // asserts ORDER, not wall-clock time: the grace (deadline 100 ms)
+        // must have fired before the re-seeds at 150 ms and 200 ms ran.
+        // If re-seeding pushed the deadline back (the regression this
+        // pins), the bar would first appear 100 ms after the LAST re-seed,
+        // i.e. after the burst, and these checks would read false.
+        // A wall-clock budget here measured the CI runner's stalls
+        // (0.2519 s on run 40088362293), not the grace.
+        var visibleWhenReseedRan: [Int: Bool] = [:]
+        let burstDone = expectation(description: "burst re-seeds ran")
         for tick in 1..<5 {
             let deadline = 0.050 * Double(tick)
             DispatchQueue.main.asyncAfter(deadline: .now() + deadline) {
+                visibleWhenReseedRan[tick] = overlay.isHairlineVisible
                 overlay.scheduleHairlineShow(predicted: 0.300)
+                if tick == 4 { burstDone.fulfill() }
             }
         }
 
-        // Pump the runloop waiting for the grace task to fire. Expected
-        // window: 100 ms grace + runloop + DispatchQueue granularity.
-        let appeared = expectation(description: "hairline visible")
-        appeared.assertForOverFulfill = true
+        // The timeout is only a guard against a hang: the last re-seed
+        // always runs; how late it runs is not what this test checks.
+        wait(for: [burstDone], timeout: 10)
 
-        // Poll on main via asyncAfter rather than Timer — the latter's
-        // callback isn't MainActor-isolated under Swift 6 strict.
-        func schedulePoll() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.010) {
-                if overlay.isHairlineVisible {
-                    appeared.fulfill()
-                } else {
-                    schedulePoll()
-                }
-            }
-        }
-        schedulePoll()
-
-        wait(for: [appeared], timeout: 0.250)
-
-        let elapsed = Date().timeIntervalSince(firstNavInstant)
-        XCTAssertLessThanOrEqual(
-            elapsed, 0.250,
-            "bar must appear within 250 ms of the first nav (elapsed=\(elapsed)s)"
-        )
+        XCTAssertEqual(visibleWhenReseedRan[3], true,
+            "bar must already be visible when the 150 ms re-seed of the burst runs")
+        XCTAssertEqual(visibleWhenReseedRan[4], true,
+            "bar must be visible during the burst, before its last re-seed (200 ms)")
         XCTAssertTrue(overlay.isHairlineVisible,
             "bar must be visible after the grace fires during a burst")
     }
