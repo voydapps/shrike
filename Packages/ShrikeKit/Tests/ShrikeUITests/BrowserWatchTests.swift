@@ -8,6 +8,7 @@
 //
 
 import XCTest
+import os
 @testable import ShrikeUI
 @testable import ShrikeCore
 @testable import ShrikeIO
@@ -65,6 +66,32 @@ final class BrowserWatchTests: XCTestCase {
         browser.handleFolderChange(FolderChange(added: [b]), in: dir)
         let listed = await waitUntil { browser.contentController.visibleItems.count == 2 }
         XCTAssertTrue(listed)
+    }
+
+    // A file that appears after the listing was read but before it is on
+    // screen used to fall between the old watcher's stop and the new one's
+    // start (a Browser count stayed short after a burst of copies). The
+    // watcher now starts when the listing begins, so the folder is listed again.
+    func testFileCreatedWhileTheFolderIsListedTriggersAnotherListing() async throws {
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let folder = dir!
+        let browser = BrowserWindowController(
+            services: ShrikeServices.makeDefault(), initialFolder: nil,
+            folderEnumerator: { url, _ in
+                // Other folders (the window's default one) are not ours.
+                guard GroupList.canonical(url) == GroupList.canonical(folder) else { return [] }
+                let n = calls.withLock { c -> Int in c += 1; return c }
+                if n == 1 {
+                    // Read done; the file lands before the listing is painted.
+                    try Data([0xFF, 0xD8, 0xFF]).write(to: folder.appendingPathComponent("late.jpg"))
+                    try await Task.sleep(for: .milliseconds(1500))
+                }
+                return []
+            })
+        defer { browser.close() }
+        browser.navigate(to: folder)
+        let relisted = await waitUntil(6) { calls.withLock { $0 } >= 2 }
+        XCTAssertTrue(relisted, "the late file's change must list the folder again (listings: \(calls.withLock { $0 }))")
     }
 
     // A re-list (outside change, or the watcher seeing our own tag write)

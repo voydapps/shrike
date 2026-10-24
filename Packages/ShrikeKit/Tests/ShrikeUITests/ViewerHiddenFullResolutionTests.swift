@@ -109,4 +109,25 @@ final class ViewerHiddenFullResolutionTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(200))
         XCTAssertTrue(view.isShowingFullResolution)
     }
+
+    /// Returning to the same photo after the trim emptied the decode cache keeps the
+    /// picture on screen: no low-resolution stand-in is painted over it (0.2.28 showed
+    /// the PREVIEW layout for 3-6 frames on every such return).
+    func testReturnToTheSamePhotoAfterTheTrimPaintsNoStandIn() async throws {
+        let viewer = try await makePairedViewer()
+        let view = viewer.imageViewForTesting
+        ViewerWindow.hiddenTrimDelay = .milliseconds(30)
+        viewer.returnToBrowser()
+        let parked = await until { view.isCanvasParked }
+        XCTAssertTrue(parked, "the trim also parks the canvas")
+        view.recordsImageAssignmentsForTesting = true
+        viewer.showFromBrowser(groups: viewer.groups, startIndex: 0)
+        XCTAssertFalse(view.isCanvasParked, "the canvas is restored before the window shows")
+        try? await Task.sleep(for: .milliseconds(300))
+        _ = await until { viewer.navCoalescer.isIdle }
+        XCTAssertTrue(view.imageAssignmentLogForTesting.isEmpty,
+                      "the photo on screen stays: nothing is painted over it (\(view.imageAssignmentLogForTesting.map(\.isPlaceholder)))")
+        XCTAssertNotNil(view.sourceID)
+        XCTAssertTrue(view.showsPhotoNotStandIn)
+    }
 }

@@ -88,6 +88,9 @@ extension ViewerWindow {
                 guard let self,
                       contentChanged.contains(where: { displayedURLs.contains(GroupList.canonical($0)) }),
                       self.displayedItem != nil else { return }
+                // The info panel's file rows (size, dimensions, dates) follow the
+                // file, also while edit mode keeps its own pixels.
+                self.contentRoot.reloadInspectorFile()
                 self.redrawDisplayedKeepingView()
             }
             refreshTags(for: modified.filter { list.index(of: $0) != nil })

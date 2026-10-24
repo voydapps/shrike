@@ -330,6 +330,7 @@ public final class ViewerWindow: NSWindow {
         // Another app changed the photo's file during the edit: the pre-edit image is not put
         // back; the file's current pixels are decoded fresh (0.2.28 gate D1).
         contentRoot.onPreEditImageStale = { [weak self] in
+            self?.contentRoot.reloadInspectorFile()
             self?.redrawDisplayedKeepingView(fit: true)
         }
         // 0.2.10 audit item 3: a resize that bypasses `contentMinSize` (a programmatic
@@ -585,6 +586,25 @@ public final class ViewerWindow: NSWindow {
         guard isParkedForBrowser else { return }
         isParkedForBrowser = false
         requestFullResolutionIfNeeded()
+    }
+
+    // A hidden viewer's canvas holds a 1 x 1 drawable (MP-04). Every way of
+    // showing the window first restores it and draws one frame at full size.
+    public override func makeKeyAndOrderFront(_ sender: Any?) {
+        contentRoot.imageView.unparkCanvas()
+        super.makeKeyAndOrderFront(sender)
+    }
+    public override func orderFront(_ sender: Any?) {
+        contentRoot.imageView.unparkCanvas()
+        super.orderFront(sender)
+    }
+    public override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        if place != .out { contentRoot.imageView.unparkCanvas() }
+        super.order(place, relativeTo: otherWin)
+    }
+    public override func orderFrontRegardless() {
+        contentRoot.imageView.unparkCanvas()
+        super.orderFrontRegardless()
     }
 
     public override func close() {

@@ -296,4 +296,38 @@ final class ReleasedCanvasTests: XCTestCase {
         XCTAssertEqual(view.releasedCanvasAcquisitionAttemptsForTesting, 2)
         XCTAssertEqual(view.releasedCanvasSubmissionsForTesting, 1)
     }
+
+    /// MP-04: a hidden viewer's canvas shrinks to 1 x 1; restoring draws one
+    /// frame at the real size before the window is shown again.
+    func testParkedCanvasShrinksAndUnparkDrawsFullSizeFrameBeforeShow() async throws {
+        let view = MetalImageView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+        let window = window(for: view)
+        defer { window.orderOut(nil); view.disposeAfterClose() }
+        view.setImage(try image(), sourceID: "parked")
+        await drain()
+        let scale = view.metalLayerContentsScaleForTesting
+        let full = CGSize(width: 320 * scale, height: 240 * scale)
+        XCTAssertEqual(view.drawableSizeForTesting, full)
+
+        XCTAssertFalse(view.unparkCanvas(), "nothing parked: nothing to do")
+        window.orderOut(nil)
+        view.parkCanvas()
+        XCTAssertTrue(view.isCanvasParked)
+        XCTAssertEqual(view.drawableSizeForTesting, CGSize(width: 1, height: 1))
+        XCTAssertTrue(view.hasTextureForTesting, "the photo's texture stays")
+        // Layout and redraw requests while hidden keep the tiny drawable.
+        let frames = view.framesDrawnForTesting
+        view.setFrameSize(NSSize(width: 320, height: 240)); view.layout(); view.needsDisplay = true
+        await drain()
+        XCTAssertEqual(view.drawableSizeForTesting, CGSize(width: 1, height: 1))
+        XCTAssertEqual(view.framesDrawnForTesting, frames)
+
+        let submissions = view.frameSubmissionsForTesting
+        XCTAssertTrue(view.unparkCanvas())
+        XCTAssertFalse(window.isVisible, "the frame is drawn before the window shows")
+        XCTAssertEqual(view.frameSubmissionsForTesting, submissions + 1)
+        XCTAssertEqual(view.lastSubmittedDrawableSizeForTesting, full)
+        XCTAssertEqual(view.drawableSizeForTesting, full)
+        XCTAssertFalse(view.isCanvasParked)
+    }
 }

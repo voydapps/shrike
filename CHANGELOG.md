@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.29 - 2026-10-24
+
+### Faster
+- Shrike uses less memory while a viewer is hidden (after Back to Browser).
+
+### Fixed
+- Going back to the viewer after a minute no longer flashes a small, blurry copy of the photo first.
+- The info panel updates its size and dimensions when another app changes the photo, also while you edit.
+- A Browser no longer misses photos that are copied into the folder while it is open.
+
 ## 0.2.28 - 2026-10-24
 
 ### New

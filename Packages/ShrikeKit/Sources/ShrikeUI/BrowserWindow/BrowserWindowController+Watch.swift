@@ -22,12 +22,26 @@ extension BrowserWindowController {
     func startWatching(_ folder: URL) {
         guard !browserDidClose else { return }
         let generation = folderRequestGeneration
+        // The watcher made when the listing began (`prepareWatching`) already
+        // holds every change since then; adopting it loses nothing.
+        let prepared = preparedWatcher
+        preparedWatcher = nil
         if let watcher = folderWatcher, GroupList.canonical(watcher.folder) == GroupList.canonical(folder) {
+            discard(prepared)
             return
         }
         stopWatching()
-        guard let watcher = try? FolderWatcher(folder: folder) else { return }
-        FolderWatcherRegistry.shared.register(watcher)
+        var adopted: FolderWatcher?
+        if let prepared, GroupList.canonical(prepared.folder) == GroupList.canonical(folder) {
+            adopted = prepared
+        } else {
+            discard(prepared)
+            if let fresh = try? FolderWatcher(folder: folder) {
+                FolderWatcherRegistry.shared.register(fresh)
+                adopted = fresh
+            }
+        }
+        guard let watcher = adopted else { return }
         folderWatcher = watcher
         folderWatchTask = Task { @MainActor [weak self] in
             for await change in watcher.changes {
@@ -37,7 +51,29 @@ extension BrowserWindowController {
         }
     }
 
+    /// Starts watching `folder` when its listing begins, but reads no change
+    /// yet (the stream keeps them). Files that appear while the folder is
+    /// listed used to fall between the old watcher's stop and the new one's
+    /// start and never showed up (a count 11 short after a burst of copies).
+    /// `startWatching` adopts this watcher once the listing is on screen; any
+    /// change it kept then lists the folder again.
+    func prepareWatching(_ folder: URL) {
+        discard(preparedWatcher)
+        preparedWatcher = nil
+        guard !browserDidClose, let watcher = try? FolderWatcher(folder: folder) else { return }
+        FolderWatcherRegistry.shared.register(watcher)
+        preparedWatcher = watcher
+    }
+
+    private func discard(_ watcher: FolderWatcher?) {
+        guard let watcher else { return }
+        watcher.stop()
+        FolderWatcherRegistry.shared.unregister(watcher)
+    }
+
     func stopWatching() {
+        discard(preparedWatcher)
+        preparedWatcher = nil
         folderWatchTask?.cancel()
         folderWatchTask = nil
         if let watcher = folderWatcher {

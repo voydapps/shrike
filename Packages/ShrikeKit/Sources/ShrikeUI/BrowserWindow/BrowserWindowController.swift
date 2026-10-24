@@ -207,6 +207,8 @@ public final class BrowserWindowController: NSWindowController {
     /// watchers still report the change. See `WindowWatcherScope`.
     let watcherScope = WindowWatcherScope()
     var folderWatchTask: Task<Void, Never>?
+    /// Watcher started when a listing began; adopted when it is painted.
+    var preparedWatcher: FolderWatcher?
     /// File ▸ Export Contact Sheet… while its PDF is made.
     var contactSheetExport: Task<Void, Never>?
     /// Test seam: the saved contact sheet (nil when it failed).
@@ -960,6 +962,7 @@ public final class BrowserWindowController: NSWindowController {
         subfolderCheckTask?.cancel()
         subfolderCheckTask = nil
         stopWatching()
+        prepareWatching(std)
         let store = services.metadataStore
         let backups = services.backupStore
         let hidden = Prefs.showHiddenFiles
@@ -1013,6 +1016,8 @@ public final class BrowserWindowController: NSWindowController {
     }
 
     private func showFolderReadError(_ error: any Error, folder: URL) {
+        // No listing to keep in step: the watcher made for it is not needed.
+        stopWatching()
         subtitleLoadingTask?.cancel()
         subtitleLoadingTask = nil
         window?.title = folder.lastPathComponent

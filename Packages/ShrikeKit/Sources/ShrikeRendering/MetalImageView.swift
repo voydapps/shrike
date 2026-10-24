@@ -334,6 +334,8 @@ public final class MetalImageView: NSView {
 
     /// Test seam: true while a texture is on screen.
     internal var hasTextureForTesting: Bool { currentDisplay != nil }
+    /// A photo (not a low-resolution stand-in) is on the canvas.
+    public var showsPhotoNotStandIn: Bool { currentDisplay != nil && !isCurrentImagePlaceholder }
 
     /// Texture handed in by `setImage(_:sourceID:prepared:)`, consumed by
     /// the `image` didSet.
@@ -1233,6 +1235,12 @@ public final class MetalImageView: NSView {
         // Closing can leave geometry callbacks queued. Only a new photo may
         // reactivate the drawable; layout must not rebuild its surface pool.
         guard !isPermanentlyDisposed, !drawableWasReleased, let metalLayer else { return }
+        // A hidden (parked) canvas keeps its tiny drawable; if the window is
+        // somehow visible again, wake it up here (normal path: `unparkCanvas`).
+        if isCanvasParked {
+            guard window?.isVisible == true else { return }
+            isCanvasParked = false
+        }
         let scale = metalLayer.contentsScale
         let w = max(1.0, bounds.width * scale)
         let h = max(1.0, bounds.height * scale)
@@ -1668,18 +1676,21 @@ public final class MetalImageView: NSView {
         CFRunLoopWakeUp(runLoop)
     }
 
-    private func drawFrame() {
+    @discardableResult
+    private func drawFrame(synchronous: Bool = false) -> Bool {
         guard !isPermanentlyDisposed, !drawableWasReleased, !skipsFramesForTesting, let metalLayer,
               metalLayer.drawableSize.width > 0, metalLayer.drawableSize.height > 0 else {
-            return
+            return false
         }
+        // A parked canvas draws only its one tiny flush frame (`parkCanvas`).
+        if isCanvasParked, !isParkingFlush { return false }
         framesDrawn &+= 1
 
         let token = ShrikeSignposts.navigation.begin("drawFrame")
         defer { ShrikeSignposts.navigation.end("drawFrame", token) }
 
-        guard let drawable = metalLayer.nextDrawable() else { return }
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+        guard let drawable = metalLayer.nextDrawable() else { return false }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return false }
         commandBuffer.label = "Shrike viewer frame"
 
         let rpd = MTLRenderPassDescriptor()
@@ -1689,7 +1700,7 @@ public final class MetalImageView: NSView {
         rpd.colorAttachments[0].clearColor = clearColorForDraw()
 
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else {
-            return
+            return false
         }
         encoder.label = "Shrike viewer encoder"
 
@@ -1762,10 +1773,58 @@ public final class MetalImageView: NSView {
                 }
             }
         }
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
+        if synchronous {
+            // The frame joins the Core Animation transaction that orders the
+            // window front: the compositor never sees the window without it.
+            metalLayer.presentsWithTransaction = true
+            commandBuffer.commit()
+            commandBuffer.waitUntilScheduled()
+            drawable.present()
+            metalLayer.presentsWithTransaction = false
+        } else {
+            commandBuffer.present(drawable)
+            commandBuffer.commit()
+        }
         frameSubmissionsForTesting &+= 1
         lastSubmittedDrawableSizeForTesting = CGSize(width: drawable.texture.width, height: drawable.texture.height)
+        return true
+    }
+
+    // MARK: - Parking (hidden viewer)
+
+    /// True while a hidden viewer's canvas holds a 1 × 1 drawable.
+    public private(set) var isCanvasParked = false
+    private var isParkingFlush = false
+
+    /// A hidden viewer gives back its two window-sized drawables (~26 MB each
+    /// at 1600 × 1000 pt, 2x): the drawable shrinks to 1 × 1 and one tiny
+    /// frame replaces the layer's last window-sized contents. The photo's
+    /// texture stays. `unparkCanvas()` must run before the window is shown.
+    public func parkCanvas() {
+        guard !isPermanentlyDisposed, !drawableWasReleased, !isCanvasParked,
+              window?.isVisible != true, let metalLayer else { return }
+        isCanvasParked = true
+        metalLayer.drawableSize = CGSize(width: 1, height: 1)
+        isParkingFlush = true
+        drawFrame()
+        isParkingFlush = false
+    }
+
+    /// Brings the real drawable size back and draws one frame at it, inside the
+    /// transaction that shows the window (call it just before ordering front).
+    /// Returns false when nothing was parked or the frame could not be made;
+    /// the normal deferred redraw then runs.
+    @discardableResult
+    public func unparkCanvas() -> Bool {
+        guard isCanvasParked else { return false }
+        isCanvasParked = false
+        guard !isPermanentlyDisposed, !drawableWasReleased, let metalLayer else { return false }
+        let scale = window?.backingScaleFactor ?? metalLayer.contentsScale
+        metalLayer.contentsScale = scale
+        updateDrawableSize()
+        let drawn = drawFrame(synchronous: true)
+        if !drawn { needsDisplay = true }
+        return drawn
     }
 
     /// Fragment uniforms; layout matches `FragUniforms` in the shader

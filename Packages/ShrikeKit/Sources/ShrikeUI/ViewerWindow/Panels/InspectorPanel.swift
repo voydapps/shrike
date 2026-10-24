@@ -230,7 +230,10 @@ final class InspectorPanel: HUDSurfaceView {
     }
 
     private static func fileSize(_ url: URL) -> Int64? {
-        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
+        // A URL value caches resource values; a file rewritten by another app
+        // would keep its old size here.
+        let fresh = URL(fileURLWithPath: url.path)
+        return (try? fresh.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
     }
 
     private func readInfo(_ url: URL) {

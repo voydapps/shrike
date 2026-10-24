@@ -210,6 +210,7 @@ extension ViewerWindow {
     /// "Show Folder in Browser": the paired Browser, or a new one.
     private func showFolderInBrowser(_ folder: URL) {
         if let browser = pairedBrowser {
+            isParkedForBrowser = true
             orderOut(nil)
             browser.window?.makeKeyAndOrderFront(nil)
             scheduleHiddenTrim()

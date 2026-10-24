@@ -532,6 +532,7 @@ extension ViewerWindow {
             guard !Task.isCancelled, let self, !self.isVisible else { return }
             await navigation.trimToCurrent()
             self.dropFullResolutionWhileParked()
+            self.parkCanvasWhileHidden()
         }
     }
 
@@ -544,6 +545,14 @@ extension ViewerWindow {
         guard view.isShowingFullResolution, !view.isZoomAnimating else { return }
         cancelFullResolution()
         view.dropFullResolution()
+    }
+
+    /// A parked viewer also gives back its window-sized drawables (audit
+    /// MP-04). `showFromBrowser` and every order-front path restore them, with
+    /// one frame drawn before the window appears (`MetalImageView.unparkCanvas`).
+    func parkCanvasWhileHidden() {
+        guard isParkedForBrowser, !isVisible, !didTearDown, !contentRoot.isEditModeActive else { return }
+        contentRoot.imageView.parkCanvas()
     }
 
     /// Brings a hidden paired viewer back (Return / ⌘B in the Browser).
@@ -565,6 +574,19 @@ extension ViewerWindow {
             leaveEditModeThen(reason: .navigation) { [weak self] in
                 self?.setGroups(groups, startIndex: startIndex)
             }
+            return
+        }
+        // The same photo is still on screen (also after the 60 s trim emptied the
+        // decode cache): keep it. A new navigation would paint the low-resolution
+        // stand-in over a picture that is already right. Only the list is brought
+        // up to date.
+        if groups.indices.contains(startIndex), !isShowingEmptyState, let shown = displayedItem,
+           shown.group.primary == groups[startIndex].primary, shown.shownURL == shown.group.primary,
+           contentRoot.imageView.showsPhotoNotStandIn {
+            endOfFolderCue = nil
+            list.replace(with: groups)
+            syncListKeepingDisplayed()
+            makeKeyAndOrderFront(nil)
             return
         }
         setGroups(groups, startIndex: startIndex)
