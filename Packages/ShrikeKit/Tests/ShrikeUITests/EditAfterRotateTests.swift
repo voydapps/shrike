@@ -14,7 +14,7 @@ final class EditAfterRotateTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-edit-after-rotate-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         ViewerWindow.orientationWriteDelay = .seconds(30)

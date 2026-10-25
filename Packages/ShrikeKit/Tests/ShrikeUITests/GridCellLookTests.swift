@@ -20,7 +20,7 @@ final class GridCellLookTests: XCTestCase {
     private var windows: [NSWindow] = []
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-cells-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         ShrikeTokens.increaseContrastOverride = false

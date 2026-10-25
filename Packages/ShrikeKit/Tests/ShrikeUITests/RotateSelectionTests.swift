@@ -23,7 +23,7 @@ final class RotateSelectionTests: XCTestCase {
     private var store: BackupStore!
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("RotateSelectionTests-\(UUID().uuidString)", isDirectory: true)
         let photos = dir.appendingPathComponent("photos", isDirectory: true)
         try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)

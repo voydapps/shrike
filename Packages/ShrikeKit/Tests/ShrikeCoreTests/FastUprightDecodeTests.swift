@@ -65,7 +65,7 @@ final class FastUprightDecodeTests: XCTestCase {
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
         ))
         ctx.fill(CGRect(x: 0, y: 0, width: 2000, height: 1000))
-        let url = FileManager.default.temporaryDirectory
+        let url = TestScratch.directory
             .appendingPathComponent("fast-upright-\(UUID().uuidString).jpg")
         let dest = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil))
         CGImageDestinationAddImage(dest, try XCTUnwrap(ctx.makeImage()), nil)

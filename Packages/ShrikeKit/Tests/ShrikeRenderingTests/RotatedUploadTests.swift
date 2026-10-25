@@ -22,7 +22,7 @@ final class RotatedUploadTests: XCTestCase {
 
     override func setUpWithError() throws {
         try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("rotated-upload-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

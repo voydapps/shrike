@@ -24,7 +24,7 @@ final class ViewerSmallFixesTests: XCTestCase {
     private var savedHistogram: Bool = false
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("A2sPolish-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedHistogram = Prefs.viewerHistogramVisible

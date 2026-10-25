@@ -24,7 +24,7 @@ final class BrowserWindowFrameStabilityTests: XCTestCase {
 
     override func setUp() async throws {
         savedFrame = UserDefaults.standard.string(forKey: Self.frameKey)
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-frame-stability-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

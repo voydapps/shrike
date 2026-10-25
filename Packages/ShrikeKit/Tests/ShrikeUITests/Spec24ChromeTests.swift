@@ -110,7 +110,7 @@ final class Spec24ChromeTests: XCTestCase {
     }
 
     func testCapsuleZoomMenuEndsWithTheHistogramLine() throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("spec24-\(UUID().uuidString).jpg")
+        let url = TestScratch.directory.appendingPathComponent("spec24-\(UUID().uuidString).jpg")
         try Data([0xFF, 0xD8, 0xFF]).write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
         let window = ViewerWindow(groups: [ImageGroup(primary: url)], startIndex: 0, services: .makeDefault())

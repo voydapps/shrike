@@ -28,7 +28,7 @@ final class BrowserSmallFeaturesTests: XCTestCase {
     private var savedSortAscending = true
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-browser-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Holiday", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -298,9 +298,11 @@ final class BrowserSmallFeaturesTests: XCTestCase {
         XCTAssertNil(column("flag"), "Flag is not a sort key")
     }
 
-    // MARK: (k) Sidebar places once
+    // MARK: (k) Sidebar places (spec 22-sidebar §4.1)
 
-    func testAPlaceInFavoritesIsNotRepeatedUnderFolders() throws {
+    /// A place may be a Favorite (a shortcut) and also a tree row (its real
+    /// place, inside Home). Nothing is dropped from either.
+    func testAPlaceInFavoritesIsAlsoInsideHome() throws {
         let fm = FileManager.default
         let pictures = try XCTUnwrap(fm.urls(for: .picturesDirectory, in: .userDomainMask).first)
         let desktop = try XCTUnwrap(fm.urls(for: .desktopDirectory, in: .userDomainMask).first)
@@ -308,14 +310,13 @@ final class BrowserSmallFeaturesTests: XCTestCase {
         let source = FolderTreeDataSource()
         source.rebuildRoots(favorites: [pictures, desktop, downloads].map { SidebarFavoriteRow(url: $0, isMissing: false) },
                             volumes: [])
-        let folders = try XCTUnwrap(source.roots.first { $0.section == .folders })
-        XCTAssertEqual(folders.children.map(\.title), ["Home", "Documents"])
-        let favorites = try XCTUnwrap(source.roots.first { $0.section == .favorites })
+        let favorites = try XCTUnwrap(source.favoritesSection)
         XCTAssertEqual(favorites.children.count, 3)
-
+        // Locations holds Home only; the standard folders are not roots.
+        XCTAssertEqual(source.locationsSection?.children.map(\.title), ["Home"])
         source.rebuildRoots(favorites: [], volumes: [])
-        XCTAssertEqual(source.roots.first { $0.section == .folders }?.children.map(\.title),
-                       ["Home", "Desktop", "Documents", "Pictures", "Downloads"])
+        XCTAssertNil(source.favoritesSection)
+        XCTAssertEqual(source.locationsSection?.children.map(\.title), ["Home"])
     }
 
     // MARK: (l) Toolbar room at the minimum width

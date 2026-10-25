@@ -24,7 +24,7 @@ final class Audit1024LowsBTests: XCTestCase {
         XCTAssertNotEqual(target.path, "/Volumes")
         XCTAssertTrue(target.path.hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path))
         // A normal missing folder keeps the old wording and its nearest parent.
-        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("nope-\(UUID().uuidString)")
+        let missing = TestScratch.directory.appendingPathComponent("nope-\(UUID().uuidString)")
         XCTAssertNil(BrowserWindowController.goneVolumeName(of: missing))
         XCTAssertEqual(BrowserContentViewController.folderGoneSubtitle(for: missing),
                        "It may have been moved, or its disk was disconnected.")
@@ -38,7 +38,7 @@ final class Audit1024LowsBTests: XCTestCase {
     }
 
     func testHomeAndEndSelectTheFirstAndLastPhoto() async throws {
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-homeend-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

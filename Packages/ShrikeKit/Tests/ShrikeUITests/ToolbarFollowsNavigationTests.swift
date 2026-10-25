@@ -20,7 +20,7 @@ final class ToolbarFollowsNavigationTests: XCTestCase {
     }
 
     func testMarkDisplayedValidatesTheToolbar() throws {
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("ToolbarNav-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

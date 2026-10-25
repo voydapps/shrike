@@ -152,6 +152,25 @@ public enum InspectorLayout {
     public static let rowGap: CGFloat = 4
     public static let sectionGap: CGFloat = 16
     public static let valueLineLimit = 2
+
+    /// The Browser info panel's surface: the page-background tone in a dark
+    /// window (as before); the window colour in a light one, where the page
+    /// tone is a dim grey block.
+    public static var browserPaneBackground: NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .underPageBackgroundColor : .windowBackgroundColor
+        }
+    }
+
+    /// Row labels: the system's secondary colour in a dark window; in a
+    /// light one it is only 3.9:1 on the window colour, so the label is
+    /// primary at 70 %.
+    public static var rowLabelColor: NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? .secondaryLabelColor : NSColor.labelColor.withAlphaComponent(0.7)
+        }
+    }
 }
 
 /// A section header: 13 pt semibold, primary colour.
@@ -182,7 +201,7 @@ struct InspectorRowView: View {
             if !label.isEmpty {
                 Text(label)
                     .font(.system(size: InspectorLayout.rowFontSize))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(nsColor: InspectorLayout.rowLabelColor))
                     .fixedSize(horizontal: true, vertical: false)
             }
             Text(shown)

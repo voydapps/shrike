@@ -22,7 +22,7 @@ final class TransferProgressTests: XCTestCase {
         _ = NSApplication.shared
         previousDelay = FileTransferCoordinator.progressDelay
         FileTransferCoordinator.progressDelay = .milliseconds(30)
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-transfer-progress-\(UUID().uuidString)", isDirectory: true)
         source = root.appendingPathComponent("Source", isDirectory: true)
         destination = root.appendingPathComponent("Destination", isDirectory: true)

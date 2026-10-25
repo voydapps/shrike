@@ -12,7 +12,7 @@ final class BatchPresetStoreTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() {
-        dir = FileManager.default.temporaryDirectory.appendingPathComponent("presets-\(UUID().uuidString)")
+        dir = TestScratch.directory.appendingPathComponent("presets-\(UUID().uuidString)")
     }
 
     override func tearDown() {

@@ -24,7 +24,7 @@ final class TransferFlowTests: XCTestCase {
     private var slots: DestinationSlots!
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-transfer-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Italy 2026", isDirectory: true)
         selects = root.appendingPathComponent("Selects", isDirectory: true)

@@ -47,7 +47,7 @@ final class ExternalEditorsUITests: XCTestCase {
     private let textEdit = URL(fileURLWithPath: "/System/Applications/TextEdit.app", isDirectory: true)
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-editors-ui-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         workspace = RecordingWorkspace()

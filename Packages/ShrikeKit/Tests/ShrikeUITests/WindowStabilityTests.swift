@@ -24,7 +24,7 @@ final class WindowStabilityTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-p1-\(UUID().uuidString)", isDirectory: true)
             .appendingPathComponent("Shoot", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

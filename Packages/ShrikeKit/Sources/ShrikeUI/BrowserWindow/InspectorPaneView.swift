@@ -195,7 +195,7 @@ public final class InspectorPaneController: NSViewController {
             onRemoveTag: { [weak self] in self?.onRemoveTag?($0) },
             onAddTag: { [weak self] in self?.addTagTapped() },
             registerTagsAnchor: { [weak self] in self?.tagsRowAnchor = $0 }
-        ).tint(ShrikeAccent.markColor))
+        ).tint(ShrikeAccent.linkTextColor))
         host.translatesAutoresizingMaskIntoConstraints = false
         // A hosting view turns its SwiftUI ideal/min size into
         // constraints by default, and those pushed through the split view
@@ -338,7 +338,7 @@ private struct InspectorRoot: View {
             .padding(.vertical, 12)
         }
         .frame(minWidth: 220, maxWidth: .infinity)
-        .background(Color(nsColor: .underPageBackgroundColor))
+        .background(Color(nsColor: InspectorLayout.browserPaneBackground))
     }
 }
 
@@ -823,7 +823,7 @@ private struct RatingSection: View {
                 } label: {
                     Text("Clear")
                         .font(.system(size: InspectorLayout.rowFontSize))
-                        .foregroundStyle(ShrikeAccent.markColor)
+                        .foregroundStyle(ShrikeAccent.linkTextColor)
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, 8)

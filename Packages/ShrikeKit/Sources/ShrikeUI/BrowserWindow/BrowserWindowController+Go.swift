@@ -75,13 +75,11 @@ extension BrowserWindowController {
     }
 
     /// True when the sidebar shows `folder`'s subfolders: the sidebar is
-    /// open and `folder` is a row of its folder tree (a Favorites row never
-    /// opens; "/private/tmp" or a folder on the boot disk outside Home is
-    /// on no row). Uses the sidebar's own path lookup (reads off main).
+    /// open. The current folder is always a row of its tree (spec
+    /// 22-sidebar §4.3), so nothing else is needed; the check keeps its
+    /// shape so the empty-folder text stays one rule.
     func sidebarShowsSubfolders(of folder: URL) async -> Bool {
-        guard splitController.splitViewItems.first?.isCollapsed == false else { return false }
-        guard let node = await treeController.dataSource.node(for: folder) else { return false }
-        return node.kind != .favorite && node.url?.standardizedFileURL.path == folder.standardizedFileURL.path
+        splitController.splitViewItems.first?.isCollapsed == false
     }
 
     /// True when `folder` holds a folder (not a package such as a

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.30 - 2026-10-25
+
+### New
+- The sidebar is redesigned. It is one folder tree that always opens to the folder you are in and highlights it.
+- Favorites are quick jumps to your most used folders. Locations shows Home and your disks.
+- There are no empty headings, and the names line up. Eject is always visible on a disk.
+- The folder menu has Open in New Window and Copy Path.
+- A disk that was unplugged shows that its folder is gone.
+- When you drag photos over a closed folder in the sidebar and wait a moment, it opens, so you can drop into a subfolder.
+
+### Faster
+- Listing a very large folder is faster, and it stops when you close the Browser.
+
+### Changed
+- A read-only folder or disk refuses drops. It does not light up.
+
+### Fixed
+- The info panel is readable in a light window.
+- The New Folder… menu item no longer shows a wrong shortcut.
+
 ## 0.2.29 - 2026-10-24
 
 ### Faster

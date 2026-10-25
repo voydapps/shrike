@@ -236,4 +236,15 @@ enum SidebarCopy {
         "Couldn't eject “\(name)”. A file on it may be in use."
     }
     static func ejectLabel(_ name: String) -> String { "Eject \(name)" }
+    static func ejectMenu(_ name: String) -> String { "Eject “\(name)”" }
+    static let openInNewWindow = "Open in New Window"
+    static let copyPath = "Copy Path"
+    static let newFolder = "New Folder…"
+    static let cantReadTooltip = "Shrike can't read this folder."
+    static func cantRead(_ name: String) -> String { "Shrike can't read “\(name)”." }
+    // VoiceOver
+    static let voiceOverName = "Sidebar"
+    static let currentFolderValue = "current folder"
+    static let hiddenValue = "hidden"
+    static let cantReadValue = "can't read"
 }

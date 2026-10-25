@@ -15,7 +15,7 @@ final class BatchOverwriteConfirmationTests: XCTestCase {
 
     override func setUp() async throws {
         ShrikeDefaults.store.removeObject(forKey: BatchModel.lastFormKey)
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-batch-overwrite-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         photo = dir.appendingPathComponent("p.jpg")

@@ -105,7 +105,7 @@ final class PrimaryButtonContrastTests: XCTestCase {
             NotificationCenter.default.post(name: .shrikeChromePreferencesChanged, object: nil)
         }
         Prefs.largerChrome = false; Prefs.reviewControlsVisible = true
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-primary-font-\(UUID())")
+        let root = TestScratch.directory.appendingPathComponent("shrike-primary-font-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("photo.jpg")

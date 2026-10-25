@@ -18,7 +18,7 @@ final class BrowserFocusRingTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-focusring-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let cs = CGColorSpace(name: CGColorSpace.sRGB)!

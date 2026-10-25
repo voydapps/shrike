@@ -21,7 +21,7 @@ final class OpenRequestRoutingTests: XCTestCase {
     // (fails to compile with `swift test -c release`).
     override func setUp() async throws {
         try await super.setUp()
-        folder = FileManager.default.temporaryDirectory
+        folder = TestScratch.directory
             .appendingPathComponent("OpenRequestRoutingTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         for name in ["b.jpg", "a.JPG", "img10.png", "img2.png", "notes.txt"] {
@@ -87,7 +87,7 @@ final class OpenRequestRoutingTests: XCTestCase {
     func testStartIndexSurvivesDifferentPathSpelling() async throws {
         // `/tmp/...` vs `/private/tmp/...` style mismatch: build the opened
         // URL through a symlinked parent so it differs from the listing.
-        let link = FileManager.default.temporaryDirectory
+        let link = TestScratch.directory
             .appendingPathComponent("OpenRequestRoutingLink-\(UUID().uuidString)")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: folder)
         defer { try? FileManager.default.removeItem(at: link) }

@@ -23,7 +23,7 @@ final class EditChromeTests: XCTestCase {
         // ⌘K in testKeysInEditMode flips the docked-strip pref; put it back
         // so later tests (EditEntryTests) see the default.
         savedStripDocked = Prefs.filmstripVisibleInWindowed
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("EditChromeTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

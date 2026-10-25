@@ -21,7 +21,7 @@ final class BrowserInspectorLayoutTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-inspector-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

@@ -47,7 +47,7 @@ final class TempDir {
     let url: URL
 
     init(_ label: String = "ShrikeCoreTests") {
-        let root = FileManager.default.temporaryDirectory
+        let root = TestScratch.directory
             .appendingPathComponent("\(label)-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         self.url = root

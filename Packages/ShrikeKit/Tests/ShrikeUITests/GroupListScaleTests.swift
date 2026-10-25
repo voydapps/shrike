@@ -82,7 +82,7 @@ final class GroupListScaleTests: XCTestCase {
     /// End to end: a viewer on a 2000-file folder gets one new file. The
     /// main thread must not stall (old code: ~28 s of path resolution).
     func testViewerWithTwoThousandFilesInsertsOneAddedFileWithoutStalling() async throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = TestScratch.directory
             .appendingPathComponent("shrike-scale-\(UUID().uuidString)", isDirectory: true)
         let dir = root.appendingPathComponent("big", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

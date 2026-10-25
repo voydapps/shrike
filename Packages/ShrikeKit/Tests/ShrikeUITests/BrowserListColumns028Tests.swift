@@ -24,7 +24,7 @@ final class BrowserListColumns028Tests: XCTestCase {
         savedHidden = Prefs.browserListHiddenColumns
         Prefs.browserListHiddenColumns = []
         BrowserWindowController.restoresViewModeUnderTests = true
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-listcols-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         for i in 0..<5 {

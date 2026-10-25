@@ -31,7 +31,7 @@ final class BrowserScrollAndFollowTests: XCTestCase {
         // Hidden test windows do not service NSClipView's scroll animator.
         // Assert final scroll geometry here; native QA covers normal motion.
         ReduceMotion.overrideForTesting = true
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-bscroll-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Folder", isDirectory: true)
         fakeTrash = root.appendingPathComponent("FakeTrash", isDirectory: true)

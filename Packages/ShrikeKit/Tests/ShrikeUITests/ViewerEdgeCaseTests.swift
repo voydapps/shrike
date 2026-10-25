@@ -26,7 +26,7 @@ final class ViewerEdgeCaseTests: XCTestCase {
     private var coordinators: [WindowCoordinator] = []
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-viewer-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedHistogram = Prefs.viewerHistogramVisible

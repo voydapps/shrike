@@ -24,7 +24,7 @@ final class BrowserSelectionSteadinessTests: XCTestCase {
     private var savedSortAscending = true
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-steady-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedSortKey = Prefs.browserSortKey

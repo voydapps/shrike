@@ -118,7 +118,7 @@ final class MenuHintsAndShortcutsWindowTests: XCTestCase {
     // app to be launched; that was not done here.
 
     private func closeBrowserAfterViewerClosed(searchFieldFocused: Bool) async throws {
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-cmdw-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

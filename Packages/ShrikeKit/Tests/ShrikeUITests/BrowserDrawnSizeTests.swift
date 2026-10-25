@@ -23,7 +23,7 @@ final class BrowserDrawnSizeTests: XCTestCase {
 
     override func setUp() async throws {
         savedSort = BrowserSort.saved
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-drawn-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

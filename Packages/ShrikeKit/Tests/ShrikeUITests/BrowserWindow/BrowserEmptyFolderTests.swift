@@ -24,7 +24,7 @@ final class BrowserEmptyFolderTests: XCTestCase {
     override func setUp() async throws {
         savedExpansion = [:]
         for key in expansionKeys { savedExpansion[key] = ShrikeDefaults.store.object(forKey: key) }
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-empty-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
@@ -72,7 +72,7 @@ final class BrowserEmptyFolderTests: XCTestCase {
     }
 
     /// A collapsed sidebar cannot show children, even though the active
-    /// folder is represented by its own Current Folder root.
+    /// folder is a row of the tree.
     func testEmptyFolderOutsideTheSidebarCountsItsSubfolders() async throws {
         let folder = try makeFolder("Trips")
         _ = try makeFolder("Trips/2025")
@@ -87,8 +87,9 @@ final class BrowserEmptyFolderTests: XCTestCase {
         let inSidebar = await browser.sidebarShowsSubfolders(of: folder)
         XCTAssertFalse(inSidebar)
         XCTAssertEqual(browser.treeController.dataSource.currentFolder, folder.standardizedFileURL)
-        let current = try XCTUnwrap(browser.treeController.dataSource.roots.first { $0.section == .currentFolder })
-        XCTAssertEqual(current.children.first?.url?.standardizedFileURL, folder.standardizedFileURL)
+        let current = await browser.treeController.dataSource.node(for: folder)
+        XCTAssertEqual(current?.url?.standardizedFileURL, folder.standardizedFileURL)
+        XCTAssertEqual(current?.kind, .folder)
         browser.splitController.splitViewItems[0].isCollapsed = false
         browser.reloadCurrentFolder()
         let reopened = await waitUntil {

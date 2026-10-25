@@ -39,7 +39,7 @@ final class AppCommandsTests: XCTestCase {
     }
 
     func testOpenFolderPanelRoutesAsBrowsersAndRemembersFolder() {
-        let folder = FileManager.default.temporaryDirectory
+        let folder = TestScratch.directory
             .appendingPathComponent("shrike-open-\(UUID().uuidString)", isDirectory: true)
         let runner = FakeOpenPanelRunner()
         runner.answer = [folder]
@@ -70,7 +70,7 @@ final class AppCommandsTests: XCTestCase {
     }
 
     func testOpenFilesRoutesToViewerAndRemembersParentFolder() {
-        let file = FileManager.default.temporaryDirectory
+        let file = TestScratch.directory
             .appendingPathComponent("shrike-pick-\(UUID().uuidString)", isDirectory: true)
             .appendingPathComponent("photo.jpg")
         let runner = FakeOpenPanelRunner()
@@ -139,8 +139,8 @@ final class WelcomeWindowTests: XCTestCase {
     }
 
     func testWelcomeSkipsAndPrunesRecentsWhoseFolderIsGone() async throws {
-        let live = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-recent-live-\(UUID().uuidString)")
-        let deleted = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-recent-gone-\(UUID().uuidString)")
+        let live = TestScratch.directory.appendingPathComponent("shrike-recent-live-\(UUID().uuidString)")
+        let deleted = TestScratch.directory.appendingPathComponent("shrike-recent-gone-\(UUID().uuidString)")
         let unplugged = URL(fileURLWithPath: "/Volumes/ShrikeNotMounted-\(UUID().uuidString)/Trip")
         try FileManager.default.createDirectory(at: live, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: live) }
@@ -173,7 +173,7 @@ final class WelcomeWindowTests: XCTestCase {
     }
 
     func testRecentRowsOpenAndMissingItemsExplain() {
-        let present = FileManager.default.temporaryDirectory
+        let present = TestScratch.directory
         let missing = URL(fileURLWithPath: "/nonexistent-shrike-\(UUID().uuidString)/Trip")
         let controller = WelcomeWindowController(recentURLs: { [present, missing] })
         defer { controller.close() }
@@ -197,7 +197,7 @@ final class WelcomeWindowTests: XCTestCase {
     }
 
     func testDropZoneAcceptsOnlyOpenableItems() {
-        let folder = FileManager.default.temporaryDirectory
+        let folder = TestScratch.directory
         XCTAssertTrue(WelcomeDropZone.openable([folder]))
         XCTAssertFalse(WelcomeDropZone.openable([URL(fileURLWithPath: "/nonexistent-shrike/readme.txt")]))
     }

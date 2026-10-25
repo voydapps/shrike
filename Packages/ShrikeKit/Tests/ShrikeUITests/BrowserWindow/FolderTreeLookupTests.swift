@@ -22,7 +22,7 @@ final class FolderTreeLookupTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         let fm = FileManager.default
-        tempRoot = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        tempRoot = TestScratch.directory
             .appendingPathComponent("shrike-tree-lookup-\(UUID().uuidString)")
         // A big sibling branch that sorts BEFORE the target branch — the
         // old search listed all of it first.
@@ -120,11 +120,64 @@ final class FolderTreeLookupTests: XCTestCase {
         XCTAssertTrue(listed.isEmpty)
     }
 
-    func testLookupOfMissingFolderStopsAtTheFirstMissingComponent() async {
+    /// A part that its parent's listing does not show gets a 50 % path row
+    /// (spec 22-sidebar §4.4 rule 5); the walk continues below it.
+    func testLookupOfMissingFolderInsertsPathRows() async throws {
         let source = makeSource(roots: [tempRoot])
-        let awaited4 = await source.node(for: tempRoot.appendingPathComponent("photos/nope/deeper"))
-        XCTAssertNil(awaited4)
-        XCTAssertEqual(listed, [tempRoot.standardizedFileURL.path, rel("photos")])
+        let node = await source.node(for: tempRoot.appendingPathComponent("photos/nope/deeper"))
+        let row = try XCTUnwrap(node)
+        XCTAssertEqual(row.title, "deeper")
+        XCTAssertTrue(row.isPathRow)
+        XCTAssertTrue(row.parent?.isPathRow == true)
+        XCTAssertEqual(row.parent?.title, "nope")
+        XCTAssertEqual(listed.prefix(2), [tempRoot.standardizedFileURL.path, rel("photos")])
+        // The path row is a child of the folder that did not list it.
+        XCTAssertTrue(row.parent?.parent?.children.contains { $0.title == "nope" } == true)
+    }
+
+    /// A folder hidden while "Show hidden files" is off is found as a path row.
+    func testLookupOfHiddenFolderIsAPathRowThenARealRow() async throws {
+        try FileManager.default.createDirectory(at: tempRoot.appendingPathComponent(".secret/inner"), withIntermediateDirectories: true)
+        let source = makeSource(roots: [tempRoot])
+        source.showHiddenFiles = false
+        let hiddenOff = await source.node(for: tempRoot.appendingPathComponent(".secret/inner"))
+        XCTAssertEqual(hiddenOff?.parent?.isPathRow, true)
+        XCTAssertEqual(hiddenOff?.parent?.title, ".secret")
+        XCTAssertEqual(hiddenOff?.parent?.isDimmed, true)
+        XCTAssertEqual(hiddenOff?.title, "inner")
+        XCTAssertEqual(hiddenOff?.isPathRow, false, "inner is listed by its (path-row) parent")
+        // With hidden files on, the same folder is a normal hidden row.
+        let other = makeSource(roots: [tempRoot])
+        other.showHiddenFiles = true
+        let hiddenOn = await other.node(for: tempRoot.appendingPathComponent(".secret/inner"))
+        XCTAssertEqual(hiddenOn?.parent?.isPathRow, false)
+        XCTAssertEqual(hiddenOn?.parent?.isHidden, true)
+    }
+
+    /// A folder outside Home resolves under the "/" root, and /private/tmp
+    /// (which Foundation writes as /tmp) is read as the `private` folder.
+    func testLookupOutsideHomeResolvesUnderTheStartupDisk() async throws {
+        let source = FolderTreeDataSource()
+        let startup = SidebarVolume(url: URL(fileURLWithPath: "/"), name: "Macintosh HD", kind: .internal, isEjectable: false)
+        source.rebuildRoots(favorites: [], volumes: [startup])
+        XCTAssertEqual(FolderTreeDataSource.lookupComponents(URL(fileURLWithPath: "/private/tmp/x")),
+                       ["/", "private", "tmp", "x"])
+        // Lister fake: a tiny "/" so nothing real is read.
+        source.lister = { folder, _ in
+            switch folder.standardizedFileURL.path {
+            case "/": return [URL(fileURLWithPath: "/private", isDirectory: true), URL(fileURLWithPath: "/Users", isDirectory: true)]
+            case "/private": return [URL(fileURLWithPath: "/private/tmp", isDirectory: true)]
+            case "/tmp": return [URL(fileURLWithPath: "/private/tmp/x", isDirectory: true)]
+            default: return []
+            }
+        }
+        let node = await source.node(for: URL(fileURLWithPath: "/private/tmp/x"))
+        XCTAssertEqual(node?.title, "x")
+        var chain: [String] = []
+        var cursor = node
+        while let item = cursor { chain.append(item.title); cursor = item.parent }
+        XCTAssertEqual(chain, ["x", "tmp", "private", "Macintosh HD", "Locations"])
+        XCTAssertEqual(node?.isPathRow, false)
     }
 
     func testLookupReusesAlreadyLoadedChildren() async {

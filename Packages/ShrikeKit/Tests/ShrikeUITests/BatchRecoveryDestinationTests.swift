@@ -13,7 +13,7 @@ final class BatchRecoveryDestinationTests: XCTestCase {
 
     override func setUp() async throws {
         ShrikeDefaults.store.removeObject(forKey: BatchModel.lastFormKey)
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-batch-recovery-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

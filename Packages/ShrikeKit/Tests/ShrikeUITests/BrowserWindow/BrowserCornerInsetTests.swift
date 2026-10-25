@@ -17,7 +17,7 @@ import AppKit
 final class BrowserCornerInsetTests: XCTestCase {
 
     func testTheBottomBarEndsClearTheWindowCorners() async throws {
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-corner-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

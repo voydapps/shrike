@@ -25,7 +25,7 @@ final class FolderTreeAsyncTests: XCTestCase {
         try await super.setUp()
         savedExpansion = [:]
         for key in expansionKeys { savedExpansion[key] = ShrikeDefaults.store.object(forKey: key) }
-        tempRoot = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        tempRoot = TestScratch.directory
             .appendingPathComponent("shrike-tree-async-\(UUID().uuidString)")
         for path in ["A/one", "A/two", "B"] {
             try FileManager.default.createDirectory(at: tempRoot.appendingPathComponent(path),
@@ -60,7 +60,7 @@ final class FolderTreeAsyncTests: XCTestCase {
     private func makeTree(lister: SlowLister) -> (FolderTreeViewController, FolderTreeNode) {
         let tree = FolderTreeViewController(favorites: .inMemory(), volumes: .none)
         tree.dataSource.lister = { lister.list($0, $1) }
-        let section = FolderTreeNode(url: nil, title: "Folders", section: .folders)
+        let section = FolderTreeNode(url: nil, title: "Locations", section: .locations)
         section.childrenLoaded = true
         let root = FolderTreeNode(url: tempRoot, title: "root")
         root.parent = section
@@ -102,13 +102,13 @@ final class FolderTreeAsyncTests: XCTestCase {
         let (tree, _) = makeTree(lister: lister)
         let outline = tree.outlineViewForTesting
         let target = tempRoot.appendingPathComponent("A/two")
+        let chain = [tempRoot.standardizedFileURL.path,
+                     tempRoot.appendingPathComponent("A").standardizedFileURL.path]
 
         let ancestorNode = await tree.dataSource.node(for: target)
         XCTAssertEqual(ancestorNode?.url?.standardizedFileURL, target.standardizedFileURL)
-        XCTAssertEqual(lister.calls.map(\.path), [tempRoot.standardizedFileURL.path,
-                                                  tempRoot.appendingPathComponent("A").standardizedFileURL.path])
+        XCTAssertEqual(lister.calls.map(\.path), chain)
         XCTAssertTrue(lister.calls.allSatisfy { !$0.onMain })
-        let readsBeforeSelection = lister.calls.count
         let start = Date()
         tree.select(target)
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.25, "select returns without waiting for a disk read")
@@ -116,11 +116,13 @@ final class FolderTreeAsyncTests: XCTestCase {
 
         let selected = try XCTUnwrap(outline.item(atRow: outline.selectedRow) as? FolderTreeNode)
         XCTAssertEqual(selected.url?.standardizedFileURL, target.standardizedFileURL)
-        XCTAssertEqual(lister.calls.map(\.path), [tempRoot.standardizedFileURL.path,
-                                                  tempRoot.appendingPathComponent("A").standardizedFileURL.path])
+        // The chain was read once. The target itself is read only because
+        // the reveal opens it (a click or a route that is not the keyboard).
+        await tree.loadTask?.value
+        XCTAssertEqual(lister.calls.map(\.path), chain + [target.standardizedFileURL.path])
         XCTAssertTrue(lister.calls.allSatisfy { !$0.onMain })
-        XCTAssertEqual(lister.calls.count, readsBeforeSelection, "known Current Folder selection does not traverse ancestors again")
         XCTAssertEqual(tree.dataSource.currentFolder, target.standardizedFileURL)
+        XCTAssertTrue(tree.openedPaths.isEmpty, "rows opened by the reveal are not saved")
     }
 
     /// The outline's data source calls never read the disk.
@@ -190,8 +192,8 @@ final class FolderTreeAsyncTests: XCTestCase {
         _ = tree.view
         let outline = tree.outlineViewForTesting
         outline.expandItem(section)
-        tree.select(ownedRoot.appendingPathComponent("A", isDirectory: true)); await tree.selectTask?.value
-        XCTAssertTrue(gate.calls.isEmpty, "Current Folder selection does not walk ancestors")
+        tree.select(ownedRoot, autoExpand: false); await tree.selectTask?.value
+        XCTAssertTrue(gate.calls.isEmpty, "a root row is found by path: nothing is listed")
         var tasks: [Task<Void, Never>] = []
         do {
             outline.expandItem(root)
@@ -219,7 +221,7 @@ final class FolderTreeAsyncTests: XCTestCase {
             XCTAssertFalse(outline.isItemExpanded(other), "the older overlapping task is not the last loadTask")
             XCTAssertFalse(other.childrenLoaded)
             let selected = try XCTUnwrap(outline.item(atRow: outline.selectedRow) as? FolderTreeNode)
-            XCTAssertEqual(selected.url, b)
+            XCTAssertEqual(selected.url?.standardizedFileURL, b.standardizedFileURL)
             gate.open(2); await current.value
             XCTAssertTrue(outline.isItemExpanded(root))
             XCTAssertEqual(Set(root.children.map(\.title)), [".Hidden", "A", "B"])
@@ -227,7 +229,7 @@ final class FolderTreeAsyncTests: XCTestCase {
             XCTAssertFalse(outline.isItemExpanded(other))
             XCTAssertEqual(tree.dataSource.currentFolder, b)
             let stillSelected = try XCTUnwrap(outline.item(atRow: outline.selectedRow) as? FolderTreeNode)
-            XCTAssertEqual(stillSelected.url, b)
+            XCTAssertEqual(stillSelected.url?.standardizedFileURL, b.standardizedFileURL)
             XCTAssertEqual(gate.calls.map { $0.0 }, [ownedRoot.standardizedFileURL, b.standardizedFileURL, ownedRoot.standardizedFileURL])
             XCTAssertEqual(gate.calls.map { $0.1 }, [true, true, true])
             XCTAssertEqual(gate.timeouts, 0)
@@ -240,53 +242,56 @@ final class FolderTreeAsyncTests: XCTestCase {
         for task in tasks { await task.value }
     }
 
-    func testHiddenPolicyInvalidatesRetainedBaseCacheBeforeItReappears() async throws {
+    func testHiddenPolicyInvalidatesLoadedCachesBeforeTheyReappear() async throws {
         let ownedRoot = URL(fileURLWithPath: tempRoot.path, isDirectory: true).standardizedFileURL
         for key in expansionKeys { ShrikeDefaults.store.removeObject(forKey: key) }
         let fixture = ownedRoot.appendingPathComponent("RetainedCacheFixture", isDirectory: true)
         for name in ["Visible", ".Hidden"] {
             try FileManager.default.createDirectory(at: fixture.appendingPathComponent(name), withIntermediateDirectories: true)
         }
-        let tree = FolderTreeViewController(favorites: .inMemory(), volumes: .none)
+        let volume = SidebarVolume(url: fixture, name: "Fixture", kind: .external, isEjectable: false)
+        let tree = FolderTreeViewController(favorites: .inMemory(), volumes: VolumeSource(list: { [volume] }, eject: { _ in }))
         let source = tree.dataSource
-        let folders = try XCTUnwrap(source.roots.first { $0.section == .folders })
-        let base = try XCTUnwrap(folders.children.first), baseURL = try XCTUnwrap(base.url)
-        let untouched = try XCTUnwrap(folders.children.dropFirst().first)
-        // The standard base URL is an identity-only cache key. This injected
-        // lister reads ONLY the owned fixture, never Home/Pictures or ancestors.
+        let locations = try XCTUnwrap(source.locationsSection)
+        let base = try XCTUnwrap(locations.children.first { $0.kind == .volume })
+        let untouched = try XCTUnwrap(locations.children.first { $0.isHome })
+        // The injected lister reads ONLY the owned fixture, never Home or ancestors.
         source.lister = { _, hidden in FolderTreeDataSource.listSubfolders(of: fixture, showHidden: hidden) }
         var reads: [URL] = []
         source.didListFolder = { reads.append($0) }
         source.showHiddenFiles = true
         await source.loadChildren(base)
         XCTAssertEqual(Set(base.children.map(\.title)), [".Hidden", "Visible"])
-        source.setCurrentFolder(baseURL)
-        XCTAssertFalse(folders.children.contains { $0 === base }, "the cached base node is privately retained, not in roots")
+        XCTAssertTrue(base.children.first { $0.title == ".Hidden" }?.isHidden == true, "hidden rows are marked for the 50 % look")
         _ = tree.view
         let generation = base.loadGeneration, untouchedGeneration = untouched.loadGeneration
-        tree.refreshHiddenFilesPolicy(false, currentFolder: baseURL)
+        tree.refreshHiddenFilesPolicy(false, currentFolder: fixture)
         await tree.selectTask?.value
         XCTAssertEqual(base.loadGeneration, generation + 1)
         XCTAssertEqual(untouched.loadGeneration, untouchedGeneration + 1)
         XCTAssertFalse(base.childrenLoaded); XCTAssertTrue(base.children.isEmpty)
-        XCTAssertEqual(reads, [baseURL], "invalidating excluded and collapsed base nodes must not list them")
-        tree.select(ownedRoot)
+        XCTAssertEqual(reads, [fixture], "invalidating collapsed nodes must not list them")
+        tree.select(fixture)
         await tree.selectTask?.value
-        XCTAssertTrue(folders.children.contains { $0 === base }, "the same retained base object reappears")
+        await tree.loadTask?.value
         await source.loadChildren(base)
         XCTAssertEqual(base.children.map(\.title), ["Visible"], "the old hidden child cache cannot return")
-        XCTAssertEqual(reads, [baseURL, baseURL])
-        tree.refreshHiddenFilesPolicy(false, currentFolder: ownedRoot)
+        XCTAssertEqual(reads, [fixture, fixture])
+        tree.refreshHiddenFilesPolicy(false, currentFolder: fixture)
         XCTAssertEqual(base.loadGeneration, generation + 1)
         XCTAssertEqual(untouched.loadGeneration, untouchedGeneration + 1)
         XCTAssertTrue(base.childrenLoaded)
         XCTAssertEqual(reads.count, 2, "unchanged policy, including pair-only notifications, keeps caches intact")
-        tree.refreshHiddenFilesPolicy(true, currentFolder: ownedRoot)
+        tree.refreshHiddenFilesPolicy(true, currentFolder: fixture)
         await tree.selectTask?.value
         XCTAssertEqual(base.loadGeneration, generation + 2)
         XCTAssertEqual(untouched.loadGeneration, untouchedGeneration + 2)
         XCTAssertFalse(base.childrenLoaded)
-        XCTAssertEqual(reads.count, 2)
+        // The current folder's row was open and loaded: it opens again and
+        // reads once, under the new policy.
+        await tree.loadTask?.value
+        XCTAssertEqual(reads.count, 3)
+        XCTAssertEqual(Set(base.children.map(\.title)), [".Hidden", "Visible"])
     }
 
     func testExpansionCapabilityQueryDoesNotReadOrOpenCollapsedFolder() async throws {

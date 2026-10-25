@@ -20,7 +20,7 @@ final class ViewerWatchTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = TestScratch.directory
             .appendingPathComponent("shrike-vwatch-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Italy 2026", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

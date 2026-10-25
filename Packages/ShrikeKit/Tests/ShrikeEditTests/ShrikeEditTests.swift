@@ -85,7 +85,7 @@ enum EditFixture {
 final class EditTempDir {
     let url: URL
     init(_ label: String = "ShrikeEditTests") {
-        let root = FileManager.default.temporaryDirectory
+        let root = TestScratch.directory
             .appendingPathComponent("\(label)-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         self.url = root

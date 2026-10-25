@@ -30,7 +30,7 @@ final class GoToFolderTests: XCTestCase {
     private var opened: [BrowserWindowController] = []
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-goto-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         GoToFolder.lastPath = ""

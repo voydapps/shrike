@@ -57,7 +57,7 @@ final class BrowserDragDropTests: XCTestCase {
     private var pasteboards: [NSPasteboard] = []
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-dragdrop-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Italy 2026", isDirectory: true)
         selects = root.appendingPathComponent("Selects", isDirectory: true)
@@ -318,6 +318,34 @@ final class BrowserDragDropTests: XCTestCase {
     }
 
     // MARK: Sidebar folder row
+
+    func testSidebarDropOnAReadOnlyFolderIsRefused() async throws {
+        _ = try makeFiles(["R.jpg"], in: dir)
+        let browser = browser(dir)
+        defer { browser.close() }
+        let loaded = await waitUntil { browser.contentController.visibleItems.count == 1 }
+        XCTAssertTrue(loaded)
+        let item = try XCTUnwrap(browser.contentController.visibleItems.first)
+        let tree = browser.treeControllerForTesting
+        let outline = tree.outlineViewForTesting
+        let row = FolderTreeNode(url: selects, title: "Selects")
+        let info = FakeDraggingInfo(pasteboard: pasteboard([PhotoPasteboard.dragItem(for: item.group, source: browser.contentController.dragSourceID)]),
+                                    mask: [.copy, .move, .generic])
+        tree.modifierFlagsProvider = { [] }
+        tree.isFolderWritable = { _ in false }
+        XCTAssertEqual(tree.outlineView(outline, validateDrop: info, proposedItem: row,
+                                        proposedChildIndex: NSOutlineViewDropOnItemIndex), [], "no highlight, no action")
+        XCTAssertFalse(tree.outlineView(outline, acceptDrop: info, item: row, childIndex: NSOutlineViewDropOnItemIndex))
+        XCTAssertEqual(names(dir), ["R.jpg"])
+        // A real read-only folder is found by the default check.
+        let locked = selects.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+        let fresh = FolderTreeViewController(favorites: .inMemory([]), volumes: VolumeSource(list: { [] }, eject: { _ in }))
+        XCTAssertFalse(fresh.isFolderWritable(locked))
+        XCTAssertTrue(fresh.isFolderWritable(selects))
+    }
 
     func testSidebarDropMovesTheWholeGroupWithOneUndo() async throws {
         let before = ImageGroupingPreference.isEnabled

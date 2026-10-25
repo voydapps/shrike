@@ -22,7 +22,7 @@ final class PhotoPasteboardTests: XCTestCase {
     private let reads = OSAllocatedUnfairLock<[String]>(initialState: [])
 
     override func setUp() async throws {
-        folder = FileManager.default.temporaryDirectory
+        folder = TestScratch.directory
             .appendingPathComponent("pasteboard-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         pasteboard = NSPasteboard(name: NSPasteboard.Name("app.shrike.tests.\(UUID().uuidString)"))

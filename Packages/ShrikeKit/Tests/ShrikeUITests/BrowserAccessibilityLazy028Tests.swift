@@ -27,7 +27,7 @@ final class BrowserAccessibilityLazy028Tests: XCTestCase {
         savedMode = Prefs.browserViewMode
         BrowserWindowController.restoresViewModeUnderTests = true
         savedPreset = Prefs.shortcutPreset; Prefs.shortcutPreset = .macNative
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-axlazy-\(UUID())")
+        root = TestScratch.directory.appendingPathComponent("shrike-axlazy-\(UUID())")
         dir = root.appendingPathComponent("Photos")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let data = NSMutableData()

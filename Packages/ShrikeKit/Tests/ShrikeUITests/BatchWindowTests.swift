@@ -27,7 +27,7 @@ final class BatchWindowTests: XCTestCase {
 
     override func setUp() async throws {
         ShrikeDefaults.store.removeObject(forKey: BatchModel.lastFormKey)
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-batch-ui-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         backups = BackupStore(root: dir.appendingPathComponent("_backups", isDirectory: true), retentionDays: { 30 })
@@ -964,7 +964,7 @@ final class BatchWindowSnapshotHarness: XCTestCase {
         guard let out = ProcessInfo.processInfo.environment["SHRIKE_BATCH_SNAPSHOT_DIR"] else {
             throw XCTSkip("set SHRIKE_BATCH_SNAPSHOT_DIR to render")
         }
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-batch-snap-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

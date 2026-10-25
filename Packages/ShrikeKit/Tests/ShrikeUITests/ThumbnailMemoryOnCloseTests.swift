@@ -21,7 +21,7 @@ final class ThumbnailMemoryOnCloseTests: XCTestCase {
     private var services: ShrikeServices!
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-thumbclose-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("A"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("B"), withIntermediateDirectories: true)

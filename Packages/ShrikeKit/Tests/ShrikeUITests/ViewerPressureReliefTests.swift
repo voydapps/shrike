@@ -14,7 +14,7 @@ final class ViewerPressureReliefTests: XCTestCase {
     private var gates: [PressureWorkGate] = []
     private var caches: [ThumbnailCache] = []
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-pressure-\(UUID())")
+        root = TestScratch.directory.appendingPathComponent("shrike-pressure-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         savedEdge = Prefs.maxDisplayLongEdge; Prefs.maxDisplayLongEdge = 1024
     }

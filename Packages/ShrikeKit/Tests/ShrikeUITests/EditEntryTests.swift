@@ -26,7 +26,7 @@ final class EditEntryTests: XCTestCase {
     private var savedFilmstripVisible = true
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-edit-entry-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         store = BackupStore(root: root.appendingPathComponent("Backups", isDirectory: true))

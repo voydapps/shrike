@@ -23,7 +23,7 @@ final class HistogramViewTests: XCTestCase {
     private var savedMode = "rgbl"
 
     override func setUp() async throws {
-        tempDir = FileManager.default.temporaryDirectory
+        tempDir = TestScratch.directory
             .appendingPathComponent("shrike-histogram-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         savedVisible = Prefs.viewerHistogramVisible

@@ -34,7 +34,7 @@ final class InspectorFileChangeTests: XCTestCase {
     }
 
     func testModifiedShownFileRefreshesInspectorFileRows() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-insp-\(UUID().uuidString)", isDirectory: true)
+        let root = TestScratch.directory.appendingPathComponent("shrike-insp-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("a.jpg")

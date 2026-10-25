@@ -119,7 +119,7 @@ final class TagFilterTests: XCTestCase {
     /// The popover opened from the toolbar gets the folder's tags (it was built before
     /// the window stored it, so the tag row stayed on "No Tags in This Folder").
     func testOpeningThePopoverFromTheWindowListsTheFoldersTags() async throws {
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-tagpop-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

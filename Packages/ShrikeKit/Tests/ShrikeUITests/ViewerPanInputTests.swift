@@ -28,7 +28,7 @@ final class ViewerPanInputTests: XCTestCase {
     private var savedWheel = true
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-pan-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedInspector = Prefs.viewerInspectorVisibleWindowed

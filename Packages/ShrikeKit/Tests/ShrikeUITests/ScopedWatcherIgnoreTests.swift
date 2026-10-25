@@ -85,7 +85,7 @@ final class ScopedWatcherIgnoreTests: XCTestCase {
     override func setUp() async throws {
         EditToolTransitionModal.responderForTesting = { _ in .keep }
         ViewerWindow.orientationWriteDelay = .milliseconds(100)
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-scoped-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Photos", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

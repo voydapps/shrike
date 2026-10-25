@@ -22,7 +22,7 @@ final class TagEditorTests: XCTestCase {
     private let blue = FinderTag(name: "Blue", color: .blue)
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-tags-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

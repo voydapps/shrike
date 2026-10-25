@@ -20,7 +20,7 @@ final class FolderTreeDataSourceTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         let fm = FileManager.default
-        let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        let base = TestScratch.directory
             .appendingPathComponent("shrike-tree-test-\(UUID().uuidString)")
         try fm.createDirectory(at: base, withIntermediateDirectories: true)
         tempRoot = base
@@ -55,24 +55,37 @@ final class FolderTreeDataSourceTests: XCTestCase {
 
     // MARK: - Roots
 
-    // Favorites, Locations, then the folder tree;
-    // empty sections are hidden.
+    // Favorites (while there is one), then Locations: Home first, then
+    // the volumes.
     func testRoots_SectionOrderAndEmptySectionsHidden() {
         let ds = FolderTreeDataSource()
-        XCTAssertEqual(ds.roots.map(\.section), [.folders])
+        XCTAssertEqual(ds.roots.map(\.section), [.locations], "no Favorites section while empty")
+        XCTAssertEqual(ds.roots.first?.children.first?.title, "Home")
         let fav = SidebarFavoriteRow(url: tempRoot, isMissing: false)
         let sd = SidebarVolume(url: URL(fileURLWithPath: "/Volumes/SD"), name: "SD", kind: .removable, isEjectable: true)
         ds.rebuildRoots(favorites: [fav], volumes: [sd])
-        XCTAssertEqual(ds.roots.map(\.section), [.favorites, .locations, .folders])
-        XCTAssertEqual(ds.roots.map(\.title), ["Favorites", "Locations", "Folders"])
+        XCTAssertEqual(ds.roots.map(\.section), [.favorites, .locations])
+        XCTAssertEqual(ds.roots.map(\.title), ["Favorites", "Locations"])
+        XCTAssertEqual(ds.locationsSection?.children.map(\.title), ["Home", "SD"])
     }
 
-    func testLocations_ContainsStandardFolders() {
+    // Desktop, Documents, Pictures and Downloads are inside Home, not roots.
+    func testLocations_HomeIsTheOnlyFolderRootBesidesVolumes() {
         let ds = FolderTreeDataSource()
-        let locations = ds.roots.last!
-        let titles = locations.children.map(\.title)
-        XCTAssertTrue(titles.contains("Home"))
-        XCTAssertTrue(titles.contains("Pictures"))
+        let locations = ds.locationsSection!
+        XCTAssertEqual(locations.children.map(\.title), ["Home"])
+        XCTAssertEqual(locations.children.first?.symbolName, "house")
+        XCTAssertTrue(locations.children.first?.isHome == true)
+    }
+
+    // A rebuild (⌘D, a disk mounted) keeps the nodes of roots that stay.
+    func testRebuild_KeepsLocationRootNodes() {
+        let ds = FolderTreeDataSource()
+        let sd = SidebarVolume(url: URL(fileURLWithPath: "/Volumes/SD"), name: "SD", kind: .removable, isEjectable: true)
+        ds.rebuildRoots(favorites: [], volumes: [sd])
+        let before = ds.locationsSection!.children
+        ds.rebuildRoots(favorites: [.init(url: tempRoot, isMissing: false)], volumes: [sd])
+        XCTAssertTrue(zip(before, ds.locationsSection!.children).allSatisfy { $0 === $1 })
     }
 
     // MARK: - Lazy load

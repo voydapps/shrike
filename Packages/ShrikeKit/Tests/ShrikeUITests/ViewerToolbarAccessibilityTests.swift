@@ -28,7 +28,7 @@ final class ViewerToolbarAccessibilityTests: XCTestCase {
     private var savedHistogram = false
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-tbax-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedInspector = Prefs.viewerInspectorVisibleWindowed

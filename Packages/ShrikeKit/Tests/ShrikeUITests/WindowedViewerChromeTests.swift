@@ -20,7 +20,7 @@ final class WindowedViewerChromeTests: XCTestCase {
     private var savedInspectorPref = false
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-chrome-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedInspectorPref = Prefs.viewerInspectorVisibleWindowed

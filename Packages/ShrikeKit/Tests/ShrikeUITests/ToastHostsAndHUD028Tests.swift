@@ -68,7 +68,7 @@ final class ToastHostsAndHUD028Tests: XCTestCase {
     }
 
     func testNineHitsInTheBrowser() async throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = TestScratch.directory
             .appendingPathComponent("shrike-toast028-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }

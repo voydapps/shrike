@@ -24,7 +24,7 @@ final class ViewerFullResolutionTests: XCTestCase {
     private var savedInspector = false
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-fullres-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedInspector = Prefs.viewerInspectorVisibleWindowed

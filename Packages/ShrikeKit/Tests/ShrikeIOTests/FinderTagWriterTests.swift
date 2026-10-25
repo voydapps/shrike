@@ -18,7 +18,7 @@ final class FinderTagWriterTests: XCTestCase {
     private var writer: FinderTagWriter!
 
     override func setUpWithError() throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("ShrikeFinderTagWriterTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         writer = FinderTagWriter(label: "test.finder-tags.\(UUID().uuidString)")

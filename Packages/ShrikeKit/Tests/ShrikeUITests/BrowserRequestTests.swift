@@ -136,7 +136,7 @@ final class BrowserRequestTests: XCTestCase {
 
     func testOldSameFolderHydrateCannotReplaceNewListing() async throws {
         let gate = FolderListingGate()
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-hydrate-\(UUID().uuidString)", isDirectory: true)
+        let root = TestScratch.directory.appendingPathComponent("shrike-hydrate-\(UUID().uuidString)", isDirectory: true)
         let folder = root.appendingPathComponent("Photos", isDirectory: true).standardizedFileURL
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -199,7 +199,7 @@ final class BrowserRequestTests: XCTestCase {
             NotificationCenter.default.post(name: .shrikeGroupingDidChange, object: nil)
         }
         Prefs.showHiddenFiles = false
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-hidden-request-\(UUID())", isDirectory: true).standardizedFileURL
+        let root = TestScratch.directory.appendingPathComponent("shrike-hidden-request-\(UUID())", isDirectory: true).standardizedFileURL
         let a = root.appendingPathComponent("A", isDirectory: true), b = root.appendingPathComponent("B", isDirectory: true)
         for folder in [a, b] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

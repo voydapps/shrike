@@ -23,7 +23,7 @@ final class ViewerLifetimeTests: XCTestCase {
     private var tempDir: URL!
 
     override func setUp() async throws {
-        tempDir = FileManager.default.temporaryDirectory
+        tempDir = TestScratch.directory
             .appendingPathComponent("shrike-lifetime-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     }

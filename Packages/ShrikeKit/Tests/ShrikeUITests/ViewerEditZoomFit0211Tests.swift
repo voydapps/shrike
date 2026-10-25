@@ -20,7 +20,7 @@ final class ViewerEditZoomFit0211Tests: XCTestCase {
     private var savedInspector = false
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-editzoom-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         savedInspector = Prefs.viewerInspectorVisibleWindowed

@@ -22,7 +22,7 @@ final class ViewerEditWidth028Tests: XCTestCase {
     private var savedAutoHide = false
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-editwidth-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         savedInspector = Prefs.viewerInspectorVisibleWindowed

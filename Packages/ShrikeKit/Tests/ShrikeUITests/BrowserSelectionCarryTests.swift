@@ -25,7 +25,7 @@ final class BrowserSelectionCarryTests: XCTestCase {
     private var savedMotion: Bool?
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-selection-\(UUID().uuidString)", isDirectory: true)
             .appendingPathComponent("Shoot", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

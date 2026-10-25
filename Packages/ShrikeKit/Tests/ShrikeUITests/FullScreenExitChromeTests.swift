@@ -23,7 +23,7 @@ final class FullScreenExitChromeTests: XCTestCase {
     private var saved: (strip: Bool, hist: Bool, stripPin: Bool, inspPin: Bool) = (false, false, false, false)
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-fsexit-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         saved = (Prefs.filmstripVisibleInWindowed, Prefs.viewerHistogramVisible,

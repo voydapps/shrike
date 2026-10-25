@@ -22,7 +22,7 @@ final class BatchRenameChainTests: XCTestCase {
     private var runner: BatchRunner!
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("ShrikeRenameChain-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         backups = BackupStore(root: root.appendingPathComponent("_backups", isDirectory: true), retentionDays: { 30 })

@@ -26,7 +26,7 @@ final class BrowserRatingInPlaceTests: XCTestCase {
     private var savedSortAscending = true
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-rate-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedSortKey = Prefs.browserSortKey

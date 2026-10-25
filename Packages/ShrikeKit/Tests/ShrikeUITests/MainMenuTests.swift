@@ -112,7 +112,7 @@ final class MenuKeyUniquenessTests: XCTestCase {
     func testLazySubmenusFillOnDemand() {
         let bar = makeBar()
         XCTAssertTrue(bar.openRecentMenu.items.isEmpty, "Open Recent is empty until opened")
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("shrike-recent")
+        let dir = TestScratch.directory.appendingPathComponent("shrike-recent")
         bar.recentURLs = { [dir, dir.appendingPathComponent("x.jpg")] }
         bar.menuNeedsUpdate(bar.openRecentMenu)
         let titles = bar.openRecentMenu.items.map(\.title)
@@ -131,7 +131,7 @@ final class MenuValidationTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-menu-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         for name in ["a.jpg", "b.jpg"] { try Data([0]).write(to: dir.appendingPathComponent(name)) }
@@ -274,7 +274,7 @@ final class MenuSeparatorTests: XCTestCase {
     }
 
     func testViewerRightClickMenuHasNoEmptyGroups() throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-sep-\(UUID().uuidString)")
+        let dir = TestScratch.directory.appendingPathComponent("shrike-sep-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("a.jpg")

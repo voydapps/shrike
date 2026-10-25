@@ -27,7 +27,7 @@ final class EditFitAreaTests: XCTestCase {
     private let hs: CGFloat = 5
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-editfit-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         saved = (Prefs.viewerToolbarAutoHide, Prefs.viewerInspectorVisibleWindowed)

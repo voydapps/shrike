@@ -19,7 +19,7 @@ final class OpenFolderReuseTests: XCTestCase {
     private var services: ShrikeServices!
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-reuse-\(UUID().uuidString)", isDirectory: true)
         for name in ["X", "X/Y", "Z"] {
             try FileManager.default.createDirectory(

@@ -30,7 +30,7 @@ final class EditExitChangedFileTests: XCTestCase {
         savedWatch = ViewerWindow.watchFoldersForTesting
         ViewerWindow.watchFoldersForTesting = false
         EditToolTransitionModal.responderForTesting = { _ in .keep }
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-editchanged-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

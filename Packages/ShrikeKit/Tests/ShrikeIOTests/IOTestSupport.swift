@@ -12,7 +12,7 @@ final class IOTempDir {
     let url: URL
 
     init(_ label: String) {
-        let root = FileManager.default.temporaryDirectory
+        let root = TestScratch.directory
             .appendingPathComponent("ShrikeIOTests-\(label)-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         // Resolve /var → /private/var once so path comparisons are stable.

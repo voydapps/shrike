@@ -23,7 +23,7 @@ final class BrowserOpenKeysTests: XCTestCase {
     override func setUp() async throws {
         savedMode = Prefs.browserViewMode
         BrowserWindowController.restoresViewModeUnderTests = true
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-openkeys-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let cs = CGColorSpace(name: CGColorSpace.sRGB)!

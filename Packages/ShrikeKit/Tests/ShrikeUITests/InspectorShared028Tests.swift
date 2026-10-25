@@ -26,7 +26,11 @@ final class InspectorShared028Tests: XCTestCase {
         // Headers: primary label colour, on the Browser pane (follows the system) and the HUD (dark).
         for appearance in [Contrast.dark, Contrast.light] {
             XCTAssertGreaterThanOrEqual(
-                Contrast.ratio(.labelColor, on: .underPageBackgroundColor, in: appearance), 4.5, "\(appearance.name)")
+                Contrast.ratio(.labelColor, on: InspectorLayout.browserPaneBackground, in: appearance), 4.5, "\(appearance.name)")
+            XCTAssertGreaterThanOrEqual(
+                Contrast.ratio(ShrikeAccent.linkText, on: InspectorLayout.browserPaneBackground, in: appearance), 4.5, "link \(appearance.name)")
+            XCTAssertGreaterThanOrEqual(
+                Contrast.ratio(InspectorLayout.rowLabelColor, on: InspectorLayout.browserPaneBackground, in: appearance), 4.5, "row label \(appearance.name)")
         }
         // Row labels (secondary) on the dark inspector surface (spec: about 5.2:1).
         XCTAssertGreaterThanOrEqual(

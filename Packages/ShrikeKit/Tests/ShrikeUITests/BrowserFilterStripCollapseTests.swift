@@ -48,7 +48,7 @@ final class BrowserFilterStripCollapseTests: XCTestCase {
     }
 
     func testProductionBrowserFilterStripStaysBelowToolbarAcrossModesTextSizesAndCollapse() throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-filter-safe-area-\(UUID().uuidString)", isDirectory: true)
+        let folder = TestScratch.directory.appendingPathComponent("shrike-filter-safe-area-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let thumbs = try ThumbnailCache(diskURL: folder.appendingPathComponent("thumbs", isDirectory: true))

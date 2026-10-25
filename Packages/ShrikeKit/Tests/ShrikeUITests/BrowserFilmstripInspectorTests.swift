@@ -21,7 +21,7 @@ final class BrowserFilmstripInspectorTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-fsinsp-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Folder", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -25,7 +25,7 @@ final class BrowserFirstOnOpenSortTests: XCTestCase {
     override func setUp() async throws {
         Prefs.browserSortKey = "dateCaptured"
         Prefs.browserSortAscending = false
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-firstopen-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // The newest photo is in the MIDDLE of the file-name order, so the

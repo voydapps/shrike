@@ -23,7 +23,7 @@ final class ShareMenuTests: XCTestCase {
     private var savedProvider: (([URL]) -> [NSSharingService])!
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-share-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         shared = []

@@ -20,12 +20,18 @@ public protocol FolderTreeDelegate: AnyObject {
     /// Shows `message` in the window's toast (missing favorite, eject
     /// failure).
     func folderTreeToast(_ message: String)
+    /// "Open in New Window" on a row: a new Browser on that folder.
+    func folderTreeRequestOpenInNewWindow(_ url: URL)
+    /// The list of mounted disks changed and the sidebar was rebuilt.
+    func folderTreeVolumesDidChange()
     /// Images dropped on a folder row are moved or copied
     /// there through `FileOps` (undo, toasts, conflicts).
     func folderTreeRequestTransfer(_ verb: FileVerb, groups: [ImageGroup], to folder: URL)
 }
 
 public extension FolderTreeDelegate {
+    func folderTreeRequestOpenInNewWindow(_ url: URL) {}
+    func folderTreeVolumesDidChange() {}
     func folderTreeRequestTransfer(_ verb: FileVerb, groups: [ImageGroup], to folder: URL) {}
 }
 
@@ -82,8 +88,30 @@ public final class FolderTreeViewController: NSViewController {
     /// The last eject (tests await it).
     private(set) var ejectTask: Task<Void, Never>?
 
-    /// Persisted expand/collapse state (UserDefaults-backed).
+    /// Persisted expand/collapse state (UserDefaults-backed). Only rows the
+    /// user opened by hand are saved (chevron, → or ⌥→), oldest first, at
+    /// most `openedPathsLimit`. Rows opened by the reveal or by the click
+    /// auto-expand are not (spec 22-sidebar §4.10).
     private let expansionKey = "shrike.browser.tree.expanded"
+    static let openedPathsLimit = 200
+    private(set) var openedPaths: [String] = []
+    /// > 0 while the controller itself expands or collapses rows, so those
+    /// are not taken for the user's own opening.
+    private var programmaticExpandDepth = 0
+    /// The path a keyboard selection (↑ ↓ → ←) asked the Browser to open.
+    /// The reveal that follows does not auto-expand that folder (§4.4 rule 3).
+    private var keyboardPath: String?
+    /// The row the user is opening right now (see `outlineViewItemWillExpand`).
+    private var userExpandTarget: ObjectIdentifier?
+    /// Rows whose children take longer than 300 ms to read (spinner shown).
+    private var loadingNodes: Set<ObjectIdentifier> = []
+    /// Open rows to bring back after a hidden-files change, whoever opened
+    /// them (the current folder's own row is opened by the reveal).
+    private var reopenPaths: Set<String> = []
+    /// Folders already toasted as unreadable in this window.
+    private var toastedUnreadable: Set<String> = []
+    /// Return / Enter / ⌘↓ in the sidebar: focus goes to the photos.
+    var onFocusPhotos: (() -> Void)?
 
     public override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 600))
@@ -109,6 +137,11 @@ public final class FolderTreeViewController: NSViewController {
 
         dataSource.showHiddenFiles = Prefs.showHiddenFiles
         dataSource.rebuildRoots(favorites: self.favorites.rows(), volumes: volumes.list())
+        // The section open/closed state is gone: headers do not collapse.
+        ShrikeDefaults.store.removeObject(forKey: expansionKey + ".sections")
+        openedPaths = (ShrikeDefaults.store.array(forKey: expansionKey) as? [String]) ?? []
+        dataSource.onUnreadable = { [weak self] node in self?.nodeUnreadable(node) }
+        outlineView.onFocusPhotos = { [weak self] in self?.onFocusPhotos?() }
         // Mount / unmount notifications may arrive on any thread: the
         // selector is nonisolated and hops to the main actor.
         let center = NSWorkspace.shared.notificationCenter
@@ -119,6 +152,25 @@ public final class FolderTreeViewController: NSViewController {
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    /// The indent that puts a child's chevron under its parent's icon
+    /// centre: 7 pt (the chevron's centre from the row's inner edge) plus
+    /// half the icon box. Measured at Large (24 pt icons, 19 pt); the
+    /// formula gives 15 at Small and 17 at Medium.
+    static func indentation(forIconSide side: CGFloat) -> CGFloat { 7 + side / 2 }
+
+    /// Follows the system's sidebar icon size; called when rows are made.
+    func updateIndentation() {
+        let wanted = Self.indentation(forIconSide: SidebarRowCell.iconSide(for: outlineView.effectiveRowSizeStyle))
+        if outlineView.indentationPerLevel != wanted { outlineView.indentationPerLevel = wanted }
+    }
+
+    /// The Browser closed: running reads and lookups stop.
+    func shutDown() {
+        selectTask?.cancel()
+        loadTask?.cancel()
+        dataSource.cancelLoads()
+    }
 
     @objc nonisolated private func volumesDidChange(_ note: Notification) {
         Task { @MainActor [weak self] in self?.refreshVolumes() }
@@ -131,6 +183,7 @@ public final class FolderTreeViewController: NSViewController {
         Task { [weak self] in
             let volumes = await Task.detached(priority: .userInitiated) { list() }.value
             self?.rebuild(volumes: volumes)
+            self?.delegate?.folderTreeVolumesDidChange()
         }
     }
 
@@ -141,7 +194,9 @@ public final class FolderTreeViewController: NSViewController {
         dataSource.rebuildRoots(favorites: favorites.rows(), volumes: newVolumes ?? volumes.list())
         guard isViewLoaded else { return }
         reload()
-        if let currentURL { select(currentURL) }
+        // A rebuild (⌘D, a disk mounted) shows the same place again; it does
+        // not open a folder the user may have closed.
+        if let currentURL { select(currentURL, scrollToSelection: true, autoExpand: false) }
     }
 
     /// Follow the Browser's hidden-file policy without rebuilding global roots
@@ -153,7 +208,6 @@ public final class FolderTreeViewController: NSViewController {
         viewportUpdateDepth += 1
         defer { viewportUpdateDepth -= 1 }
         pendingViewport = nil
-        if isViewLoaded { saveExpandedState(includePending: false) }
         let selecting = isSelectingProgrammatically
         isSelectingProgrammatically = true
         isRefreshingHiddenPolicy = true
@@ -168,17 +222,29 @@ public final class FolderTreeViewController: NSViewController {
         dataSource.showHiddenFiles = showHidden
         // Collect before clearing parents; never enumerate to discover invalidation targets.
         let nodes = dataSource.instantiatedFolderNodes()
+        if isViewLoaded {
+            // Only rows that were open AND loaded come back. A row still
+            // reading is cancelled by the change (it is closed and forgotten).
+            reopenPaths = Set(nodes.filter { outlineView.isItemExpanded($0) && $0.childrenLoaded }
+                .compactMap { $0.url?.standardizedFileURL.path })
+            for node in nodes where outlineView.isItemExpanded(node) && !node.childrenLoaded {
+                if let path = node.url?.standardizedFileURL.path { noteUserClosed(path) }
+            }
+        }
         // A cached open row must pass through shouldExpandItem again under
         // the new policy. Keep its saved path while collapsing the stale cache.
         if isViewLoaded {
+            programmaticExpandDepth += 1
             for node in nodes where outlineView.isItemExpanded(node) { outlineView.collapseItem(node) }
+            programmaticExpandDepth -= 1
         }
         for node in nodes { dataSource.invalidate(node) }
         guard isViewLoaded else { return }
         if let currentFolder {
             // The Browser may already be requesting B while this tree still shows A.
-            // An explicitly open hidden folder remains represented as Current Folder.
-            select(currentFolder, scrollToSelection: false, preserveViewport: sameFolder, viewportAnchor: anchor)
+            // A hidden folder on the path comes back as a 50 % path row.
+            select(currentFolder, scrollToSelection: false, preserveViewport: sameFolder,
+                   viewportAnchor: anchor, reloadFirst: true, autoExpand: false)
         } else {
             beginViewportRestoration(anchor)
             reload()
@@ -391,8 +457,12 @@ public final class FolderTreeViewController: NSViewController {
         outlineView.headerView = nil
         outlineView.rowSizeStyle = .default
         outlineView.floatsGroupRows = false
-        outlineView.indentationPerLevel = 16
         outlineView.style = .sourceList
+        // A child's chevron sits under its parent's icon centre (spec
+        // 22-sidebar §4.2, ±2 pt). The indent follows the icon box, so it
+        // holds at Small, Medium and Large (`updateIndentation`; this line
+        // must come after `.sourceList`, which sets its own indent).
+        updateIndentation()
         // `selectionHighlightStyle = .sourceList` was deprecated in macOS 12
         // in favour of `.style = .sourceList` above, which already applies
         // the source-list selection chrome.
@@ -405,17 +475,25 @@ public final class FolderTreeViewController: NSViewController {
         outlineView.registerForDraggedTypes([.fileURL, PhotoPasteboard.groupIDsType])
         outlineView.setDraggingSourceOperationMask(.link, forLocal: false)
 
+        outlineView.onDragEnd = { [weak self] in self?.springLoad(nil) }
         outlineView.onDelete = { [weak self] in self?.deleteSelectedFavorite() ?? false }
         outlineView.menu = makeContextMenu()
-        outlineView.setAccessibilityLabel("Folder tree")
+        outlineView.setAccessibilityLabel(SidebarCopy.voiceOverName)
         outlineView.setAccessibilityIdentifier("BrowserFolderTree")
     }
 
     /// The sidebar changed width: the name column takes the visible
     /// width again (grows or shrinks, down to its minimum), so a long
     /// name ends in "…" at the sidebar's edge.
+    private var scrollWhenLaidOut = false
+
     public override func viewDidLayout() {
         super.viewDidLayout()
+        if scrollWhenLaidOut, scrollView.contentView.bounds.height >= 10 {
+            scrollWhenLaidOut = false
+            let row = outlineView.selectedRow
+            if row >= 0 { outlineView.scrollRowToVisible(row) }
+        }
         guard let column = outlineView.tableColumns.first else { return }
         let clip = scrollView.contentView.bounds.width
         guard clip > 0, abs(outlineView.frame.width - clip) > 0.5 || column.width < column.minWidth else { return }
@@ -431,27 +509,26 @@ public final class FolderTreeViewController: NSViewController {
     public func reload() {
         viewportUpdateDepth += 1
         defer { viewportUpdateDepth -= 1; restorePendingViewport() }
-        // Structural section expansion must not overwrite the paths being restored.
+        // Structural expansion must not overwrite the paths being restored.
         // Restore the previous value so a reentrant reload stays in the same scope.
         let wasRestoring = isRestoringExpansionState
         isRestoringExpansionState = true
         defer { isRestoringExpansionState = wasRestoring }
         outlineView.reloadData()
-        // Expand top-level sections automatically — they're the primary
-        // groupings and should always be visible. Locations is expanded so
-        // Home / Pictures etc. are one click away.
-        for root in dataSource.roots {
-            if root.section == .favorites || root.section == .currentFolder || expandedSections.contains(root.section?.title ?? "") { outlineView.expandItem(root) }
-        }
+        // Both sections are open on every reload; headers do not collapse
+        // (spec 22-sidebar §4.1).
+        programmaticExpandDepth += 1
+        for root in dataSource.roots { outlineView.expandItem(root) }
+        programmaticExpandDepth -= 1
         restoreExpandedState()
     }
 
-    /// Find and select the node corresponding to `url`, if it exists.
-    /// Lookup is by path (`FolderTreeDataSource.node(for:)`), listing only
-    /// the target's ancestors, off the main thread. The
-    /// row is selected when the chain has loaded. When no sidebar root
-    /// contains `url`, the selection is cleared so the tree never points
-    /// at a stale folder.
+    /// Reveals `url`: the tree opens the folder's parents and selects the
+    /// folder's row in Locations (spec 22-sidebar §4.3, §4.4). Lookup is by
+    /// path (`FolderTreeDataSource.node(for:)`), listing only the target's
+    /// ancestors, off the main thread. The row is selected when the chain
+    /// has loaded; until then the old selection is cleared, so the tree
+    /// never points at a stale folder.
     public func select(_ url: URL) {
         select(url, scrollToSelection: true)
     }
@@ -463,37 +540,115 @@ public final class FolderTreeViewController: NSViewController {
         select(url, scrollToSelection: !preserve, preserveViewport: preserve)
     }
 
+    /// Reveals `url` without opening its row (tests, rebuilds).
+    func select(_ url: URL, autoExpand: Bool) {
+        select(url, scrollToSelection: true, autoExpand: autoExpand)
+    }
+
+    /// The Browser starts opening `url` by some route: the old selection is
+    /// cleared at once, so the sidebar never points at the previous folder.
+    /// A tree row that already is `url` (a click, a key) stays.
+    func willNavigate(to url: URL) {
+        guard isViewLoaded else { return }
+        let path = url.standardizedFileURL.path
+        if let node = selectedNode, node.kind != .favorite, node.url?.standardizedFileURL.path == path { return }
+        selectTask?.cancel()
+        guard outlineView.selectedRow >= 0 else { return }
+        isSelectingProgrammatically = true
+        outlineView.deselectAll(nil)
+        isSelectingProgrammatically = false
+    }
+
+    /// A folder was made on disk inside a folder the tree may already have
+    /// read: that parent is read again, then the new folder is revealed.
+    func folderCreated(_ url: URL) {
+        let parentPath = url.deletingLastPathComponent().standardizedFileURL.path
+        if isViewLoaded, let parent = dataSource.instantiatedFolderNodes().first(where: {
+            $0.kind != .favorite && $0.url?.standardizedFileURL.path == parentPath }) {
+            programmaticExpandDepth += 1
+            outlineView.collapseItem(parent)
+            programmaticExpandDepth -= 1
+            dataSource.invalidate(parent)
+            outlineView.reloadItem(parent, reloadChildren: true)
+        }
+        select(url)
+    }
+
+    private var selectedNode: FolderTreeNode? {
+        let row = outlineView.selectedRow
+        return row >= 0 ? outlineView.item(atRow: row) as? FolderTreeNode : nil
+    }
+
+    /// A folder the volumes list no longer has (its disk was ejected): the
+    /// Browser shows "folder gone"; the sidebar has nothing to select.
+    private func isOnUnmountedVolume(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix("/Volumes/") else { return false }
+        let roots = dataSource.locationsSection?.children ?? []
+        return !roots.contains { node in
+            guard let root = node.url?.standardizedFileURL.path, root != "/" else { return false }
+            return path == root || path.hasPrefix(root + "/")
+        }
+    }
+
     private func select(_ url: URL, scrollToSelection: Bool, preserveViewport: Bool = false,
-                        viewportAnchor: ViewportAnchor? = nil) {
+                        viewportAnchor: ViewportAnchor? = nil, reloadFirst: Bool = false,
+                        autoExpand: Bool? = nil) {
         let policy = hiddenPolicyGeneration
         let anchor = preserveViewport ? (viewportAnchor ?? viewportAnchorToPreserve()) : nil
         selectionGeneration &+= 1
         pendingViewport = nil
         currentURL = url
+        dataSource.setCurrentFolder(url)
         beginViewportRestoration(anchor)
         viewportUpdateDepth += 1
         defer { viewportUpdateDepth -= 1; restorePendingViewport() }
-        dataSource.setCurrentFolder(url)
-        reload()
+        if reloadFirst { reload() }
         guard currentURL == url, hiddenPolicyGeneration == policy else { return }
         selectTask?.cancel()
-        // A favorite row that already points here stays selected (the
-        // user clicked it; don't jump to the same folder in the tree).
         let path = url.standardizedFileURL.path
-        if outlineView.selectedRow >= 0,
-           let selected = outlineView.item(atRow: outlineView.selectedRow) as? FolderTreeNode,
-           selected.url?.standardizedFileURL.path == path {
+        // A folder the keyboard moved to is not opened by the reveal.
+        let wasKeyboard = keyboardPath == path
+        keyboardPath = nil
+        let expand = autoExpand ?? !wasKeyboard
+        if isOnUnmountedVolume(url) {
             selectTask = nil
+            isSelectingProgrammatically = true
+            outlineView.deselectAll(nil)
+            isSelectingProgrammatically = false
             return
         }
+        // The folder's own row in the tree is already selected (a click or a
+        // key, or a re-list of the same folder). A Favorite never counts:
+        // the selection moves into the tree.
+        if let selected = selectedNode, selected.kind != .favorite, !selected.isSection,
+           selected.url?.standardizedFileURL.path == path {
+            selectTask = nil
+            if expand { openCurrentFolder(selected) }
+            return
+        }
+        isSelectingProgrammatically = true
+        outlineView.deselectAll(nil)
+        isSelectingProgrammatically = false
         selectTask = Task { [weak self] in
             guard let self else { return }
             let node = await self.dataSource.node(for: url)
             guard !Task.isCancelled, self.currentURL == url,
                   self.hiddenPolicyGeneration == policy else { return }
-            self.applySelection(node, scrollToSelection: scrollToSelection)
+            self.applySelection(node, scrollToSelection: scrollToSelection, autoExpand: expand)
         }
     }
+
+    /// Whether the user could write into `folder`; a read-only disk or
+    /// folder is no drop target. One access check, no listing (tests set it).
+    var isFolderWritable: (URL) -> Bool = { FileManager.default.isWritableFile(atPath: $0.path) }
+
+    /// How long a drag rests on a closed folder row before it opens.
+    var springLoadDelay: Duration = .milliseconds(800)
+    /// True while a drag is in progress (tests set it).
+    var isDragInProgress: () -> Bool = { NSEvent.pressedMouseButtons != 0 }
+    private(set) var springTask: Task<Void, Never>?
+    private var springNode: ObjectIdentifier?
 
     /// The running path lookup (tests await it).
     private(set) var selectTask: Task<Void, Never>?
@@ -501,8 +656,21 @@ public final class FolderTreeViewController: NSViewController {
     /// keyboard).
     var modifierFlagsProvider: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
 
+    /// Opens the current folder's row so its subfolders show right below it
+    /// (spec 22-sidebar §4.4 rule 3). Not saved as user-opened.
+    private func openCurrentFolder(_ node: FolderTreeNode) {
+        guard !outlineView.isItemExpanded(node), dataSource.isExpandable(node) else { return }
+        expandProgrammatically(node)
+    }
+
+    private func expandProgrammatically(_ node: FolderTreeNode) {
+        programmaticExpandDepth += 1
+        outlineView.expandItem(node)
+        programmaticExpandDepth -= 1
+    }
+
     /// Expands `node`'s loaded ancestor chain and selects its row.
-    private func applySelection(_ node: FolderTreeNode?, scrollToSelection: Bool) {
+    private func applySelection(_ node: FolderTreeNode?, scrollToSelection: Bool, autoExpand: Bool) {
         if scrollToSelection { supersedeViewportRestoration() }
         else if validViewport() == nil { beginViewportRestoration(captureViewportAnchor()) }
         viewportUpdateDepth += 1
@@ -519,15 +687,42 @@ public final class FolderTreeViewController: NSViewController {
             chain.append(c)
             cursor = c.parent
         }
-        for ancestor in chain.reversed() {
-            // Loaded while the row was closed: show the new children.
-            if !outlineView.isItemExpanded(ancestor) { outlineView.reloadItem(ancestor, reloadChildren: true) }
-            outlineView.expandItem(ancestor)
+        let ordered = Array(chain.reversed())
+        for (index, ancestor) in ordered.enumerated() {
+            let next: FolderTreeNode = index + 1 < ordered.count ? ordered[index + 1] : node
+            // Loaded while the row was closed, or a path row was added to an
+            // open parent: show the new children.
+            if !outlineView.isItemExpanded(ancestor) || outlineView.row(forItem: next) < 0 {
+                programmaticExpandDepth += 1
+                outlineView.reloadItem(ancestor, reloadChildren: true)
+                programmaticExpandDepth -= 1
+            }
+            expandProgrammatically(ancestor)
         }
         let row = outlineView.row(forItem: node)
         guard row >= 0 else { return }
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        if scrollToSelection { outlineView.scrollRowToVisible(row) }
+        if scrollToSelection {
+            outlineView.scrollRowToVisible(row)
+            // A window that is still opening has no height yet: scroll again
+            // when the sidebar is first laid out.
+            scrollWhenLaidOut = scrollView.contentView.bounds.height < 10
+        }
+        refreshCurrentMarks()
+        if autoExpand { openCurrentFolder(node) }
+    }
+
+    /// The row of the current folder says so to VoiceOver.
+    private func refreshCurrentMarks() {
+        for row in 0..<outlineView.numberOfRows {
+            guard let cell = outlineView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarRowCell else { continue }
+            cell.isCurrent = isCurrent(cell.node)
+        }
+    }
+
+    private func isCurrent(_ node: FolderTreeNode) -> Bool {
+        guard node.kind != .favorite, let url = node.url, let current = currentURL else { return false }
+        return url.standardizedFileURL.path == current.standardizedFileURL.path
     }
 
     // MARK: - Expanding (reads off the main thread)
@@ -540,12 +735,22 @@ public final class FolderTreeViewController: NSViewController {
     private func loadThenExpand(_ node: FolderTreeNode, intent: UUID) {
         let policy = hiddenPolicyGeneration, generation = node.loadGeneration
         let source = dataSource, key = ObjectIdentifier(node)
+        // A slow read (network, sleeping disk) shows a small spinner on the
+        // row, but only after 300 ms: a quick read never flashes it.
+        Task { @MainActor [weak self, weak node] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard let self, let node, !Task.isCancelled, self.expansionIntents[key] == intent,
+                  source.isLoading(node) else { return }
+            self.loadingNodes.insert(key)
+            self.cell(for: node)?.setLoading(true)
+        }
         loadTask = Task { @MainActor [weak self, weak node] in
             defer {
                 if self?.expansionIntents[key] == intent {
                     self?.expansionIntents[key] = nil
                     self?.restorePendingViewport()
                 }
+                if self?.loadingNodes.remove(key) != nil { self?.cell(forKey: key)?.setLoading(false) }
             }
             // A collapse, policy change or root replacement can precede this
             // task's first turn. Validate weak ownership before starting IO.
@@ -559,6 +764,29 @@ public final class FolderTreeViewController: NSViewController {
                   self.outlineView.row(forItem: node) >= 0 else { return }
             self.childrenArrived(node)
         }
+    }
+
+    private func cell(for node: FolderTreeNode) -> SidebarRowCell? {
+        let row = outlineView.row(forItem: node)
+        guard row >= 0 else { return nil }
+        return outlineView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarRowCell
+    }
+
+    private func cell(forKey key: ObjectIdentifier) -> SidebarRowCell? {
+        for row in 0..<outlineView.numberOfRows {
+            if let cell = outlineView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarRowCell,
+               ObjectIdentifier(cell.node) == key { return cell }
+        }
+        return nil
+    }
+
+    /// A folder could not be read: one toast per folder per window. The
+    /// current folder's own failure is already told by the Browser.
+    private func nodeUnreadable(_ node: FolderTreeNode) {
+        guard let url = node.url else { return }
+        let path = url.standardizedFileURL.path
+        guard path != currentURL?.standardizedFileURL.path, toastedUnreadable.insert(path).inserted else { return }
+        delegate?.folderTreeToast(SidebarCopy.cantRead(node.title))
     }
 
     private func revokeExpansionIntent(_ node: FolderTreeNode) {
@@ -578,9 +806,11 @@ public final class FolderTreeViewController: NSViewController {
         viewportUpdateDepth += 1
         defer { viewportUpdateDepth -= 1; restorePendingViewport() }
         let selected = outlineView.selectedRow >= 0 ? outlineView.item(atRow: outlineView.selectedRow) : nil
+        programmaticExpandDepth += 1
         outlineView.reloadItem(node, reloadChildren: true)
         if dataSource.isExpandable(node) { outlineView.expandItem(node) }
         else { outlineView.collapseItem(node) }
+        programmaticExpandDepth -= 1
         if let path = node.url?.standardizedFileURL.path { pendingExpandPaths.remove(path) }
         if let selected {
             let row = outlineView.row(forItem: selected)
@@ -593,36 +823,41 @@ public final class FolderTreeViewController: NSViewController {
         // Folders the user had open last time, one level at a time.
         for child in node.children {
             if let path = child.url?.standardizedFileURL.path, pendingExpandPaths.contains(path) {
-                outlineView.expandItem(child)
+                expandProgrammatically(child)
             }
         }
     }
 
     // MARK: - Context menu
 
+    /// Order and words from spec 22-sidebar §4.8. No key equivalents: "New
+    /// Folder…" used to show ⌘N, which is New Browser Window.
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(withTitle: "Show Package Contents", action: #selector(menuPackageContents(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "Reveal in Finder",
-                     action: #selector(menuReveal(_:)),
-                     keyEquivalent: "")
-        menu.addItem(withTitle: "New Folder Inside",
-                     action: #selector(menuNewFolder(_:)),
-                     keyEquivalent: "n")
-        menu.addItem(withTitle: "Add to Favorites",
-                     action: #selector(menuAddBookmark(_:)),
-                     keyEquivalent: "")
-        menu.addItem(withTitle: "Remove from Favorites",
-                     action: #selector(menuRemoveFavorite(_:)),
-                     keyEquivalent: "")
-        for item in menu.items { item.target = self }
+        menu.delegate = self
+        menu.addItem(withTitle: SidebarCopy.openInNewWindow, action: #selector(menuOpenInNewWindow(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Reveal in Finder", action: #selector(menuReveal(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: SidebarCopy.copyPath, action: #selector(menuCopyPath(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: SidebarCopy.newFolder, action: #selector(menuNewFolder(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Add to Favorites", action: #selector(menuAddBookmark(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Remove from Favorites", action: #selector(menuRemoveFavorite(_:)), keyEquivalent: "")
+        for item in menu.items where !item.isSeparatorItem { item.target = self }
         // "Set as Destination ▸ 1 … 9", filled on open with
         // the current slot names.
-        menu.addItem(.separator())
         let parent = NSMenuItem(title: "Set as Destination", action: nil, keyEquivalent: "")
         parent.submenu = destinationMenu
         destinationMenu.delegate = self
         menu.addItem(parent)
+        menu.addItem(.separator())
+        let package = NSMenuItem(title: "Show Package Contents", action: #selector(menuPackageContents(_:)), keyEquivalent: "")
+        package.target = self
+        menu.addItem(package)
+        menu.addItem(.separator())
+        let eject = NSMenuItem(title: SidebarCopy.ejectMenu(""), action: #selector(menuEject(_:)), keyEquivalent: "")
+        eject.target = self
+        menu.addItem(eject)
         return menu
     }
 
@@ -659,7 +894,11 @@ public final class FolderTreeViewController: NSViewController {
         destinationSlots.set(sender.tag, folder: folder)
     }
 
+    /// Test seam: stands in for the right-clicked row.
+    var menuTargetForTesting: FolderTreeNode?
+
     private var menuTargetNode: FolderTreeNode? {
+        if let menuTargetForTesting { return menuTargetForTesting }
         let row = outlineView.clickedRow
         if row < 0 { return nil }
         return outlineView.item(atRow: row) as? FolderTreeNode
@@ -668,6 +907,23 @@ public final class FolderTreeViewController: NSViewController {
     @objc private func menuPackageContents(_ sender: Any?) {
         guard let node = menuTargetNode, node.isPackage, let url = node.url else { return }
         delegate?.folderTreeDidSelect(FolderSelection(url: url))
+    }
+
+    @objc private func menuOpenInNewWindow(_ sender: Any?) {
+        guard let url = menuTargetNode?.url else { return }
+        delegate?.folderTreeRequestOpenInNewWindow(url)
+    }
+
+    @objc private func menuCopyPath(_ sender: Any?) {
+        guard let url = menuTargetNode?.url else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(url.standardizedFileURL.path, forType: .string)
+    }
+
+    @objc private func menuEject(_ sender: Any?) {
+        guard let volume = menuTargetNode?.volume, volume.isEjectable else { return }
+        eject(volume)
     }
 
     @objc private func menuReveal(_ sender: Any?) {
@@ -695,39 +951,39 @@ public final class FolderTreeViewController: NSViewController {
     /// Saved open folders whose parent has not loaded yet.
     private var pendingExpandPaths: Set<String> = []
 
-    private var expandedSections: Set<String> {
-        if let saved = ShrikeDefaults.store.stringArray(forKey: expansionKey + ".sections") { return Set(saved) }
-        return ShrikeDefaults.store.object(forKey: expansionKey) == nil ? [] : ["Locations", "Folders"]
+    private func persistOpenedPaths() {
+        ShrikeDefaults.store.set(openedPaths, forKey: expansionKey)
     }
 
-    private func saveExpandedState(includePending: Bool = true) {
-        ShrikeDefaults.store.set(dataSource.roots.filter { outlineView.isItemExpanded($0) }.map(\.title), forKey: expansionKey + ".sections")
-        var paths: [String] = includePending ? Array(pendingExpandPaths) : []
-        for i in 0..<outlineView.numberOfRows {
-            guard let node = outlineView.item(atRow: i) as? FolderTreeNode,
-                  let url = node.url else { continue }
-            // Policy changes cancel unfinished expansion intent; only already
-            // loaded open folders are restored, without eagerly restarting reads.
-            if outlineView.isItemExpanded(node), includePending || node.childrenLoaded {
-                paths.append(url.standardizedFileURL.path)
-            }
+    /// The user opened a row by hand (chevron, → or ⌥→): remember it.
+    func noteUserOpened(_ path: String) {
+        openedPaths.removeAll { $0 == path }
+        openedPaths.append(path)
+        if openedPaths.count > Self.openedPathsLimit {
+            openedPaths.removeFirst(openedPaths.count - Self.openedPathsLimit)
         }
-        ShrikeDefaults.store.set(paths, forKey: expansionKey)
+        persistOpenedPaths()
+    }
+
+    private func noteUserClosed(_ path: String) {
+        pendingExpandPaths.remove(path)
+        guard openedPaths.contains(path) else { return }
+        openedPaths.removeAll { $0 == path }
+        persistOpenedPaths()
     }
 
     private func restoreExpandedState() {
-        guard let paths = ShrikeDefaults.store.array(forKey: expansionKey) as? [String] else {
-            return
-        }
-        pendingExpandPaths = Set(paths)
+        pendingExpandPaths = Set(openedPaths).union(reopenPaths)
+        reopenPaths = []
+        guard !pendingExpandPaths.isEmpty else { return }
         // Breadth-first over what is loaded: expand anything whose path
         // matches. An unloaded folder reads its children off the main
         // thread first; its own saved children open when they arrive.
         var queue: [FolderTreeNode] = dataSource.roots
         while !queue.isEmpty {
             let node = queue.removeFirst()
-            if let url = node.url, pendingExpandPaths.contains(url.standardizedFileURL.path) {
-                outlineView.expandItem(node)
+            if let url = node.url, node.kind != .favorite, pendingExpandPaths.contains(url.standardizedFileURL.path) {
+                expandProgrammatically(node)
             }
             queue.append(contentsOf: node.children)
         }
@@ -739,10 +995,13 @@ public final class FolderTreeViewController: NSViewController {
 // MARK: - Set as Destination ▸
 
 extension FolderTreeViewController: NSMenuItemValidation {
-    /// "Add to Favorites" shows for folders not yet in Favorites; "Remove
-    /// from Favorites" only on a favorite row. Section headers get nothing.
+    /// Items that do not apply are hidden (not greyed): "Add to Favorites"
+    /// for folders not yet in Favorites, "Remove from Favorites" on a
+    /// favorite row, the package item on packages, Eject on ejectable
+    /// volumes. Section headers get nothing.
     public func validateMenuItem(_ item: NSMenuItem) -> Bool {
         let node = menuTargetNode
+        let usable = node?.url != nil && node?.isMissing == false
         switch item.action {
         case #selector(menuPackageContents(_:)):
             item.isHidden = node?.isPackage != true
@@ -754,8 +1013,13 @@ extension FolderTreeViewController: NSMenuItemValidation {
         case #selector(menuRemoveFavorite(_:)):
             item.isHidden = node?.kind != .favorite
             return node?.kind == .favorite
-        case #selector(menuNewFolder(_:)):
-            return node?.url != nil && node?.isMissing == false
+        case #selector(menuEject(_:)):
+            let volume = node?.kind == .volume ? node?.volume : nil
+            item.isHidden = volume?.isEjectable != true
+            if let volume { item.title = SidebarCopy.ejectMenu(volume.name) }
+            return volume?.isEjectable == true
+        case #selector(menuNewFolder(_:)), #selector(menuOpenInNewWindow(_:)):
+            return usable
         default:
             return node?.url != nil
         }
@@ -764,8 +1028,29 @@ extension FolderTreeViewController: NSMenuItemValidation {
 
 extension FolderTreeViewController: NSMenuDelegate {
     public func menuNeedsUpdate(_ menu: NSMenu) {
-        guard menu === destinationMenu else { return }
-        fillDestinationMenu(for: menuTargetNode?.url)
+        if menu === destinationMenu {
+            fillDestinationMenu(for: menuTargetNode?.url)
+            return
+        }
+        guard menu === outlineView.menu else { return }
+        for item in menu.items where !item.isSeparatorItem { item.isEnabled = validateMenuItem(item) }
+        hideRedundantSeparators(in: menu)
+    }
+
+    /// A separator shows only between two visible items.
+    private func hideRedundantSeparators(in menu: NSMenu) {
+        var lastVisibleWasItem = false
+        var pending: NSMenuItem?
+        for item in menu.items {
+            if item.isSeparatorItem {
+                item.isHidden = true
+                if lastVisibleWasItem { pending = item }
+            } else if !item.isHidden {
+                if let pending { pending.isHidden = false }
+                pending = nil
+                lastVisibleWasItem = true
+            }
+        }
     }
 }
 
@@ -826,8 +1111,10 @@ extension FolderTreeViewController: NSOutlineViewDataSource {
         if !isReorder, let transfer = imageDrop(pb, mask: info.draggingSourceOperationMask,
                                                 item: item, childIndex: index) {
             outlineView.setDropItem(transfer.node, dropChildIndex: NSOutlineViewDropOnItemIndex)
+            springLoad(transfer.node)
             return BrowserDropRules.operation(for: transfer.verb)
         }
+        springLoad(nil)
         if !isReorder, !BrowserDropRules.droppedGroups(pb).isEmpty,
            Self.droppedFolders(pb).isEmpty {
             return []
@@ -845,6 +1132,7 @@ extension FolderTreeViewController: NSOutlineViewDataSource {
         childIndex index: Int
     ) -> Bool {
         let pb = info.draggingPasteboard
+        springLoad(nil)
         if (info.draggingSource as? NSOutlineView) === outlineView,
            let raw = pb.string(forType: Self.favoriteRowType), let from = Int(raw) {
             moveFavorite(from: from, to: index < 0 ? Int.max : index)
@@ -863,6 +1151,28 @@ extension FolderTreeViewController: NSOutlineViewDataSource {
         return !folders.isEmpty
     }
 
+    /// A drag that rests on a closed folder row opens it, so the target
+    /// can be a subfolder. The row is opened like a reveal: not saved as
+    /// opened by the user. `nil` (another target, a drop) cancels.
+    func springLoad(_ node: FolderTreeNode?) {
+        guard let node else {
+            springTask?.cancel(); springTask = nil; springNode = nil
+            return
+        }
+        if springNode == ObjectIdentifier(node) { return }
+        springTask?.cancel()
+        springNode = ObjectIdentifier(node)
+        guard !outlineView.isItemExpanded(node), dataSource.isExpandable(node) else { springTask = nil; return }
+        let delay = springLoadDelay
+        springTask = Task { @MainActor [weak self, weak node] in
+            try? await Task.sleep(for: delay)
+            guard let self, let node, !Task.isCancelled, self.springNode == ObjectIdentifier(node),
+                  self.isDragInProgress(), !self.outlineView.isItemExpanded(node) else { return }
+            self.springNode = nil
+            self.expandProgrammatically(node)
+        }
+    }
+
     /// A drop of images ON a folder row (not between rows): the row, the
     /// groups and the verb by the Finder rules. Path only:
     /// the volume is found by prefix, nothing is read while dragging.
@@ -870,7 +1180,7 @@ extension FolderTreeViewController: NSOutlineViewDataSource {
         -> (node: FolderTreeNode, groups: [ImageGroup], verb: FileVerb)? {
         guard childIndex == NSOutlineViewDropOnItemIndex,
               let node = item as? FolderTreeNode, !node.isSection, !node.isMissing,
-              let folder = node.url else { return nil }
+              let folder = node.url, isFolderWritable(folder) else { return nil }
         let groups = BrowserDropRules.droppedGroups(pb)
         guard let first = groups.first else { return nil }
         let sameVolume = BrowserDropRules.volumeRoot(first.primary) == BrowserDropRules.volumeRoot(folder)
@@ -913,9 +1223,12 @@ extension FolderTreeViewController: NSOutlineViewDelegate {
             cell.setAccessibilityRole(.group)
             return cell
         }
-        let cell = SidebarRowCell(node: node)
+        updateIndentation()
+        let cell = SidebarRowCell(node: node, iconSide: SidebarRowCell.iconSide(for: outlineView.effectiveRowSizeStyle))
         cell.onEject = { [weak self] volume in self?.eject(volume) }
         cell.isRowSelected = outlineView.selectedRowIndexes.contains(outlineView.row(forItem: node))
+        cell.isCurrent = isCurrent(node)
+        if loadingNodes.contains(ObjectIdentifier(node)) { cell.setLoading(true) }
         return cell
     }
 
@@ -928,11 +1241,26 @@ extension FolderTreeViewController: NSOutlineViewDelegate {
 
     public func outlineViewItemWillExpand(_ notification: Notification) {
         if viewportUpdateDepth == 0 { supersedeViewportRestoration() }
-        guard let node = notification.userInfo?["NSObject"] as? FolderTreeNode,
-              !node.isSection, !node.childrenLoaded else { return }
+        guard let node = notification.userInfo?["NSObject"] as? FolderTreeNode, !node.isSection else { return }
+        // Rows that the outline re-opens by itself under a row the user opens
+        // (it remembers them) are not the user's own opening: only the first.
+        if isUserToggle, userExpandTarget == nil, let path = node.url?.standardizedFileURL.path {
+            userExpandTarget = ObjectIdentifier(node)
+            noteUserOpened(path)
+            // Everything the outline re-opens for this click happens before
+            // this turn of the run loop ends.
+            DispatchQueue.main.async { [weak self] in self?.userExpandTarget = nil }
+        }
+        guard !node.childrenLoaded else { return }
         let intent = UUID()
         expansionIntents[ObjectIdentifier(node)] = intent
         loadThenExpand(node, intent: intent)
+    }
+
+    /// The user opens or closes a row by hand (chevron, → or ⌥→): only
+    /// those are remembered. Reveal and auto-expand pass `programmaticExpandDepth`.
+    private var isUserToggle: Bool {
+        programmaticExpandDepth == 0 && !isRestoringExpansionState && !isRefreshingHiddenPolicy
     }
 
     public func outlineViewItemWillCollapse(_ notification: Notification) {
@@ -943,6 +1271,15 @@ extension FolderTreeViewController: NSOutlineViewDelegate {
 
     public func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
         (item as? FolderTreeNode)?.isSection ?? false
+    }
+
+    /// Section headers do not collapse (spec 22-sidebar §4.1).
+    public func outlineView(_ outlineView: NSOutlineView, shouldShowOutlineCellForItem item: Any) -> Bool {
+        (item as? FolderTreeNode)?.isSection != true
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, shouldCollapseItem item: Any) -> Bool {
+        (item as? FolderTreeNode)?.isSection != true
     }
 
     public func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
@@ -969,21 +1306,17 @@ extension FolderTreeViewController: NSOutlineViewDelegate {
         guard row >= 0,
               let node = outlineView.item(atRow: row) as? FolderTreeNode,
               let url = node.url else { return }
+        // A key moved here: the reveal that follows must not open the folder
+        // (so ↓ steps through siblings, never into children).
+        keyboardPath = outlineView.selectionCameFromKeyboard ? url.standardizedFileURL.path : nil
         delegate?.folderTreeDidSelect(FolderSelection(url: url))
     }
 
-    public func outlineViewItemDidExpand(_ notification: Notification) {
-        guard !isRefreshingHiddenPolicy, !isRestoringExpansionState else { return }
-        saveExpandedState()
-    }
-
     public func outlineViewItemDidCollapse(_ notification: Notification) {
-        guard !isRefreshingHiddenPolicy, !isRestoringExpansionState else { return }
-        if let node = notification.userInfo?["NSObject"] as? FolderTreeNode,
-           let path = node.url?.standardizedFileURL.path {
-            pendingExpandPaths.remove(path)
-        }
-        saveExpandedState()
+        guard isUserToggle,
+              let node = notification.userInfo?["NSObject"] as? FolderTreeNode,
+              let path = node.url?.standardizedFileURL.path else { return }
+        noteUserClosed(path)
     }
 }
 
@@ -993,12 +1326,34 @@ extension FolderTreeViewController: NSOutlineViewDelegate {
 final class SidebarOutlineView: NSOutlineView {
     var onDelete: (() -> Bool)?
     var onScroll: (() -> Void)?
+    /// The drag left the sidebar or ended.
+    var onDragEnd: (() -> Void)?
     /// Tab / ⇧Tab move to the next pane of the window's focus ring.
     var onTab: ((Bool) -> Bool)?
+    /// Return, Enter and ⌘↓: focus goes to the photos.
+    var onFocusPhotos: (() -> Void)?
+    /// True while a key press (not the mouse) changes the selection. Read
+    /// by the delegate to decide whether the reveal opens the folder.
+    private(set) var selectionCameFromKeyboard = false
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        onDragEnd?()
+        super.draggingExited(sender)
+    }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        onDragEnd?()
+        super.draggingEnded(sender)
+    }
 
     override func scrollWheel(with event: NSEvent) {
         onScroll?()
         super.scrollWheel(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        selectionCameFromKeyboard = false
+        super.mouseDown(with: event)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -1006,7 +1361,49 @@ final class SidebarOutlineView: NSOutlineView {
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
         // 51 = Delete (⌫), 117 = Forward Delete.
         if mods.isEmpty, event.keyCode == 51 || event.keyCode == 117, onDelete?() == true { return }
+        // 36 = Return, 76 = Enter, 125 = Down: with ⌘ it goes to the photos.
+        if (mods.isEmpty && (event.keyCode == 36 || event.keyCode == 76)) || (mods == .command && event.keyCode == 125) {
+            onFocusPhotos?()
+            return
+        }
+        // 49 = Space: nothing in the sidebar. Unhandled, it would travel up to
+        // the Browser's key map, where Space is "Open in Viewer".
+        if mods.isEmpty, event.keyCode == 49 { return }
+        // 123 = Left, 124 = Right. ⌥ is the same as plain: one level only
+        // (AppKit's ⌥→ would open a whole subtree, which is a disk walk).
+        if mods.isEmpty || mods == .option, event.keyCode == 123 || event.keyCode == 124 {
+            selectionCameFromKeyboard = true
+            defer { selectionCameFromKeyboard = false }
+            if moveHorizontally(left: event.keyCode == 123) { return }
+        }
+        selectionCameFromKeyboard = true
+        defer { selectionCameFromKeyboard = false }
         super.keyDown(with: event)
+    }
+
+    /// → opens a closed row, or moves to the first child of an open one; ←
+    /// closes an open row, or moves to the parent. Returns false when there
+    /// is nothing to do.
+    @discardableResult
+    func moveHorizontally(left: Bool) -> Bool {
+        let row = selectedRow
+        guard row >= 0, let node = item(atRow: row) as? FolderTreeNode, !node.isSection else { return true }
+        let expandable = (dataSource?.outlineView?(self, isItemExpandable: node)) ?? false
+        if left {
+            if expandable, isItemExpanded(node) { collapseItem(node); return true }
+            if let parent = node.parent, !parent.isSection {
+                let parentRow = self.row(forItem: parent)
+                if parentRow >= 0 { selectRowIndexes(IndexSet(integer: parentRow), byExtendingSelection: false); scrollRowToVisible(parentRow) }
+            }
+            return true
+        }
+        guard expandable else { return true }
+        if !isItemExpanded(node) { expandItem(node); return true }
+        if let first = node.children.first {
+            let childRow = self.row(forItem: first)
+            if childRow >= 0 { selectRowIndexes(IndexSet(integer: childRow), byExtendingSelection: false); scrollRowToVisible(childRow) }
+        }
+        return true
     }
 }
 
@@ -1020,11 +1417,37 @@ final class SidebarRowCell: NSTableCellView {
     let node: FolderTreeNode
     var onEject: ((SidebarVolume) -> Void)?
     let ejectButton: NSButton?
+    private let spinner = NSProgressIndicator()
+    private var loadingGap: NSLayoutConstraint?
+    private let iconView: NSImageView
 
     var isRowSelected = false { didSet { updateEject() } }
+    /// The row of the folder the Browser shows: VoiceOver says so.
+    /// A table cell exposes no AXValue to assistive tools, so the words are
+    /// in the label too ("screenshots, current folder").
+    var isCurrent = false {
+        didSet {
+            setAccessibilityValue(isCurrent ? SidebarCopy.currentFolderValue : nil)
+            setAccessibilityLabel(isCurrent ? spokenName + ", " + SidebarCopy.currentFolderValue : spokenName)
+        }
+    }
+    private var spokenName = ""
     private var isHovering = false { didSet { updateEject() } }
 
-    init(node: FolderTreeNode) {
+    /// The icon box side for a row size: the size AppKit gives the source
+    /// list image view at Small, Medium and Large (16, 20 and 24 pt in
+    /// System Settings › Appearance › Sidebar icon size). Every icon sits in
+    /// a box of this width and height, so the names of one level start at
+    /// one x position whatever each symbol's own width is.
+    static func iconSide(for style: NSTableView.RowSizeStyle) -> CGFloat {
+        switch style {
+        case .small: return 16
+        case .large: return 24
+        default: return 20
+        }
+    }
+
+    init(node: FolderTreeNode, iconSide: CGFloat = 20) {
         self.node = node
         if let volume = node.volume, volume.isEjectable {
             let label = SidebarCopy.ejectLabel(volume.name)
@@ -1038,13 +1461,14 @@ final class SidebarRowCell: NSTableCellView {
         } else {
             ejectButton = nil
         }
+        // Template image, no tint set in code; the source list tints it.
+        let icon = NSImageView(image: NSImage(systemSymbolName: node.symbolName, accessibilityDescription: nil) ?? NSImage())
+        icon.imageScaling = .scaleProportionallyDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        iconView = icon
         super.init(frame: .zero)
         identifier = NSUserInterfaceItemIdentifier("FolderTree.Row")
 
-        // No symbol configuration, no tint; the source list
-        // sizes and tints the icon.
-        let icon = NSImageView(image: NSImage(systemSymbolName: node.symbolName, accessibilityDescription: nil) ?? NSImage())
-        icon.translatesAutoresizingMaskIntoConstraints = false
         let label = NSTextField(labelWithString: node.title)
         label.translatesAutoresizingMaskIntoConstraints = false
         // A long name ends in "…" ("Macintosh H…"), never a
@@ -1052,6 +1476,7 @@ final class SidebarRowCell: NSTableCellView {
         label.lineBreakMode = .byTruncatingTail
         label.usesSingleLineMode = true
         label.cell?.truncatesLastVisibleLine = true
+        label.allowsExpansionToolTips = true
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(icon)
         addSubview(label)
@@ -1060,8 +1485,23 @@ final class SidebarRowCell: NSTableCellView {
         var constraints = [
             icon.leadingAnchor.constraint(equalTo: leadingAnchor),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: iconSide),
+            icon.heightAnchor.constraint(equalToConstant: iconSide),
             label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ]
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isIndeterminate = true
+        spinner.isDisplayedWhenStopped = false
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.isHidden = true
+        addSubview(spinner)
+        constraints += [
+            spinner.widthAnchor.constraint(equalToConstant: 12),
+            spinner.heightAnchor.constraint(equalToConstant: 12),
+            spinner.centerYAnchor.constraint(equalTo: centerYAnchor),
+            spinner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
         ]
         if let ejectButton {
             ejectButton.target = self
@@ -1080,19 +1520,50 @@ final class SidebarRowCell: NSTableCellView {
         }
         NSLayoutConstraint.activate(constraints)
 
+        // The cell is not an accessibility "row": the outline's row view is
+        // already the row and gives level, state and position.
+        var spoken = node.title
         if node.isMissing {
             alphaValue = 0.5
             toolTip = SidebarCopy.notAvailableTooltip
-            setAccessibilityLabel(node.title + ", " + SidebarCopy.notAvailableTooltip)
-        } else {
-            setAccessibilityLabel(node.title)
+            spoken += ", " + SidebarCopy.notAvailableTooltip
         }
-        setAccessibilityRole(.row)
+        if node.isDimmed {
+            // Hidden folders and path rows: icon and name at 50 %, like Finder.
+            icon.alphaValue = 0.5
+            label.alphaValue = 0.5
+            if node.isHidden { spoken += ", " + SidebarCopy.hiddenValue }
+        }
+        if node.isUnreadable {
+            toolTip = SidebarCopy.cantReadTooltip
+            spoken += ", " + SidebarCopy.cantReadValue
+        }
+        spokenName = spoken
+        setAccessibilityLabel(spoken)
         updateEject()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Test seam.
+    var iconViewForTesting: NSImageView { iconView }
+
+    func setLoading(_ loading: Bool) {
+        // The name gives way to the spinner only while a read is slow.
+        if loading, loadingGap == nil {
+            let gap = textField!.trailingAnchor.constraint(lessThanOrEqualTo: spinner.leadingAnchor, constant: -4)
+            gap.isActive = true
+            loadingGap = gap
+        } else if !loading, let gap = loadingGap {
+            gap.isActive = false
+            loadingGap = nil
+        }
+        spinner.isHidden = !loading
+        if loading { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+    }
+
+    var isShowingSpinner: Bool { !spinner.isHidden }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

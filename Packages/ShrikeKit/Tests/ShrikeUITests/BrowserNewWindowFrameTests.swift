@@ -21,7 +21,7 @@ final class BrowserNewWindowFrameTests: XCTestCase {
     private var controllers: [BrowserWindowController] = []
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-browser-frame-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

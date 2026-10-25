@@ -895,6 +895,7 @@ public final class BrowserContentViewController: NSViewController {
     private var folderLoadingState: URL?
     private var folderReadErrorState: (folder: URL, reason: String, retry: () -> Void, openPrivacy: (() -> Void)?)?
     private var folderGoneState: (folder: URL, action: () -> Void)?
+    var isShowingFolderGone: Bool { folderGoneState != nil }
 
     /// Names the disk when the folder was on one that is no longer there (audit L11).
     static func folderGoneSubtitle(for folder: URL) -> String {

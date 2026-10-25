@@ -56,7 +56,7 @@ final class SettingsPopupTests: XCTestCase {
     func testChoosingAGridSizeChangesTheOpenBrowser() throws {
         let before = Prefs.thumbnailSizePt
         defer { Prefs.thumbnailSizePt = before }
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-gridsize-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

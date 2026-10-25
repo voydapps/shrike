@@ -41,7 +41,7 @@ final class PredictiveHairlineIntegrationTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        tempDir = FileManager.default.temporaryDirectory
+        tempDir = TestScratch.directory
             .appendingPathComponent("PredictiveHairlineIntegrationTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
             at: tempDir,

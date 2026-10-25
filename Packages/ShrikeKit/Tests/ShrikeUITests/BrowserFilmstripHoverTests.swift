@@ -21,7 +21,7 @@ final class BrowserFilmstripHoverTests: XCTestCase {
 
     override func setUp() async throws {
         ReduceMotion.overrideForTesting = true
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-bhover-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

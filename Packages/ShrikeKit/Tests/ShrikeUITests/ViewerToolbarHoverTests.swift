@@ -154,7 +154,7 @@ final class ViewerToolbarHoverTests: XCTestCase {
 
     func testTheBrowserToolbarHasTheSameHover() async throws {
         guard ToolbarHover.isNeeded else { throw XCTSkip("macOS 26 draws it") }
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-hovertb-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

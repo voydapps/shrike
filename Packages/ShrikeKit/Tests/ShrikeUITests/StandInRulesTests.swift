@@ -26,7 +26,7 @@ final class StandInRulesTests: XCTestCase {
         // file-system events arrive later (late under load) and make the
         // watcher redraw the shown photo, a second paint of the same file.
         ViewerWindow.watchFoldersForTesting = false
-        tempDir = FileManager.default.temporaryDirectory
+        tempDir = TestScratch.directory
             .appendingPathComponent("shrike-standin-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     }

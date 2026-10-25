@@ -11,7 +11,7 @@ final class FineRotationWorkflowTests: XCTestCase {
     private var root: URL!
     private var savedAutoCrop = false
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-fine-rotate-\(UUID())")
+        root = TestScratch.directory.appendingPathComponent("shrike-fine-rotate-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         savedAutoCrop = Prefs.editAutoCropOnFreeRotate
     }

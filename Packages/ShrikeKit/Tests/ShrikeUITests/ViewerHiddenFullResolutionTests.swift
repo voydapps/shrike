@@ -24,7 +24,7 @@ final class ViewerHiddenFullResolutionTests: XCTestCase {
     private var browser: BrowserWindowController?
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-hiddenfull-\(UUID())")
+        root = TestScratch.directory.appendingPathComponent("shrike-hiddenfull-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         savedEdge = Prefs.maxDisplayLongEdge; Prefs.maxDisplayLongEdge = 1024
         savedDelay = ViewerWindow.hiddenTrimDelay

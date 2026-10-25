@@ -19,7 +19,7 @@ final class BrowserWatchTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-watch-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try Data([0xFF, 0xD8, 0xFF]).write(to: dir.appendingPathComponent("a.jpg"))
@@ -122,7 +122,7 @@ final class BrowserWatchTests: XCTestCase {
 @MainActor
 final class BrowserContentChangeTests: XCTestCase {
     func testOnlyAChangedContentCountsAsModified() throws {
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-contentchange-ui-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -148,7 +148,7 @@ final class BrowserContentChangeTests: XCTestCase {
 @MainActor
 final class BrowserListedContentChangeTests: XCTestCase {
     func testListedItemKeepsItsStampThroughARatingWrite() async throws {
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-contentchange-list-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

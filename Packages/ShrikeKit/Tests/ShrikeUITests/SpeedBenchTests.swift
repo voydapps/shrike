@@ -78,7 +78,7 @@ final class SpeedBenchTests: XCTestCase {
         rows.append(("MetadataStore open, existing DB", ms(t)))
         _ = reopened
 
-        let scratch = FileManager.default.temporaryDirectory
+        let scratch = TestScratch.directory
             .appendingPathComponent("bench-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
         t = DispatchTime.now()
@@ -179,7 +179,7 @@ final class SpeedBenchTests: XCTestCase {
     func testFullResolutionRotatedPaths() throws {
         let jpgs = try files("jpg", ext: "jpg")
         guard let jpg = jpgs.first else { throw XCTSkip("no jpg folder") }
-        let tmp = FileManager.default.temporaryDirectory
+        let tmp = TestScratch.directory
             .appendingPathComponent("bench-rot-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmp) }

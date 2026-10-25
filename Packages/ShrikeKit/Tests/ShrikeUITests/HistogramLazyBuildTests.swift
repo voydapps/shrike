@@ -23,7 +23,7 @@ final class HistogramLazyBuildTests: XCTestCase {
     private var savedFilmstrip = false
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-histlazy-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedHistogram = Prefs.viewerHistogramVisible

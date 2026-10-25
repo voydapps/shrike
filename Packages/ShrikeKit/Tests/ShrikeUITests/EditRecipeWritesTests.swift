@@ -611,7 +611,7 @@ final class EditRecipeWritesTests: XCTestCase {
     // MARK: The frame on the displayed image
 
     func testCropFrameSitsOnTheDisplayedImageAndRefitsAfterRotate() async throws {
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-cropframe-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

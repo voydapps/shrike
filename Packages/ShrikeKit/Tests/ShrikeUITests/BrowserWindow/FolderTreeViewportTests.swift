@@ -12,7 +12,7 @@ final class FolderTreeViewportTests: XCTestCase {
 
     override func setUp() async throws {
         for key in keys { saved[key] = ShrikeDefaults.store.object(forKey: key); ShrikeDefaults.store.removeObject(forKey: key) }
-        ownedRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-viewport-\(UUID())", isDirectory: true).standardizedFileURL
+        ownedRoot = TestScratch.directory.appendingPathComponent("shrike-viewport-\(UUID())", isDirectory: true).standardizedFileURL
         for name in [".HiddenOne", ".HiddenTwo", "AOpen", "Closed/DoNotRead", "B"]
             + (0..<60).map({ String(format: "Row%02d", $0) })
             + (0..<20).map({ String(format: "AOpen/Child%02d", $0) }) {
@@ -42,7 +42,7 @@ final class FolderTreeViewportTests: XCTestCase {
     }
 
     private func root(_ tree: FolderTreeViewController) throws -> FolderTreeNode {
-        try XCTUnwrap(tree.dataSource.roots.first { $0.section == .currentFolder }?.children.first)
+        try XCTUnwrap(tree.dataSource.locationsSection?.children.first { $0.kind == .volume })
     }
 
     private func node(_ title: String, tree: FolderTreeViewController) throws -> FolderTreeNode {
@@ -50,16 +50,14 @@ final class FolderTreeViewportTests: XCTestCase {
     }
 
     private func fixture(duplicateFavorite: Bool = false) async throws -> (FolderTreeViewController, NSWindow) {
-        let tree = FolderTreeViewController(favorites: .inMemory(), volumes: .none)
-        tree.dataSource.roots = []
+        // The owned folder is the one Locations root (an injected volume), so
+        // the reveal lists only the fixture, never Home or "/".
+        let volume = SidebarVolume(url: ownedRoot, name: "Fixture", kind: .external, isEjectable: false)
+        let favorites: FavoritesStore = duplicateFavorite
+            ? .inMemory([SidebarFavorite(path: ownedRoot.appendingPathComponent("Row25").path)])
+            : .inMemory()
+        let tree = FolderTreeViewController(favorites: favorites, volumes: VolumeSource(list: { [volume] }, eject: { _ in }))
         tree.dataSource.showHiddenFiles = false
-        if duplicateFavorite {
-            let section = FolderTreeNode(url: nil, title: "Favorites", section: .favorites)
-            let favorite = FolderTreeNode(url: ownedRoot.appendingPathComponent("Row25"), title: "Duplicate Row25")
-            favorite.kind = .favorite; favorite.childrenLoaded = true; favorite.parent = section
-            section.children = [favorite]; section.childrenLoaded = true
-            tree.dataSource.roots = [section]
-        }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 700),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -123,7 +121,7 @@ final class FolderTreeViewportTests: XCTestCase {
             let selected = try XCTUnwrap(outline.item(atRow: outline.selectedRow) as? FolderTreeNode)
             XCTAssertEqual(selected.url?.standardizedFileURL, ownedRoot)
             if hidden { XCTAssertGreaterThan(outline.visibleRect.minY, oldY, "Two inserted rows must change y while preserving visible identity") }
-            // Real same-folder first paint replaces the Current Folder root again.
+            // Real same-folder first paint: the reveal runs again on the same row.
             tree.select(ownedRoot, preservingViewportOnReload: true)
             await tree.selectTask?.value; await drain(tree)
             try assertTop("Row25", offset: initial.1, tree: tree)
@@ -189,12 +187,16 @@ final class FolderTreeViewportTests: XCTestCase {
         if navigate {
             let other = ownedRoot.appendingPathComponent("B")
             tree.select(other); await tree.selectTask?.value
-            let origin = tree.outlineViewForTesting.visibleRect.origin
+            let outline = tree.outlineViewForTesting
+            // Where the new folder's row sits in the visible area.
+            func rowOffset() -> CGFloat { outline.rect(ofRow: outline.selectedRow).minY - outline.visibleRect.minY }
+            let before = rowOffset()
             gate.release(); await pending.value
             XCTAssertEqual(tree.dataSource.currentFolder, other)
-            XCTAssertEqual(tree.outlineViewForTesting.visibleRect.origin, origin)
-            let selected = try XCTUnwrap(tree.outlineViewForTesting.item(atRow: tree.outlineViewForTesting.selectedRow) as? FolderTreeNode)
-            XCTAssertEqual(selected.url, other)
+            XCTAssertEqual(rowOffset(), before, accuracy: 0.5, "late rows above must not move the new folder away")
+            XCTAssertTrue(outline.visibleRect.intersects(outline.rect(ofRow: outline.selectedRow)))
+            let selected = try XCTUnwrap(outline.item(atRow: outline.selectedRow) as? FolderTreeNode)
+            XCTAssertEqual(selected.url?.standardizedFileURL, other.standardizedFileURL)
         } else {
             try position("Row40", tree: tree, offset: 7)
             let latest = try top(tree)

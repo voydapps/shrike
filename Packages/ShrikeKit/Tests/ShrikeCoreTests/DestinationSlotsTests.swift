@@ -18,7 +18,7 @@ final class DestinationSlotsTests: XCTestCase {
         try super.setUpWithError()
         defaults = makeTestDefaults()
         slots = DestinationSlots(defaults: defaults)
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("DestinationSlots-\(UUID().uuidString)", isDirectory: true)
             .resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

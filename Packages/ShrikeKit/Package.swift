@@ -84,7 +84,7 @@ let package = Package(
         // a Metal device (skipped on CI runners without one).
         .testTarget(
             name: "ShrikeRenderingTests",
-            dependencies: ["ShrikeRendering"],
+            dependencies: ["ShrikeRendering", "ShrikeCore"],
             path: "Tests/ShrikeRenderingTests",
             resources: [
                 .process("Fixtures"),

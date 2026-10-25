@@ -21,7 +21,7 @@ final class BrowserToolbarTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-toolbar-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Holiday", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

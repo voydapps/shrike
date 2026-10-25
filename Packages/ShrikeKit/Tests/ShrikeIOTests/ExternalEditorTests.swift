@@ -45,7 +45,7 @@ final class ExternalEditorTests: XCTestCase {
     private var photo: URL!
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("ShrikeExternalEditorTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defaults = makeTestDefaults()

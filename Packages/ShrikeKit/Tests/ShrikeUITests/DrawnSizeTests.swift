@@ -27,7 +27,7 @@ final class DrawnSizeTests: XCTestCase {
     private var store: BackupStore!
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-drawn-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Photos", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

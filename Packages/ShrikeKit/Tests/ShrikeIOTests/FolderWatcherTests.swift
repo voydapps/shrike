@@ -35,7 +35,7 @@ final class FolderWatcherTests: XCTestCase {
     private var root: URL!
 
     override func setUpWithError() throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("ShrikeFolderWatcherTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
@@ -179,7 +179,7 @@ final class FolderWatcherTests: XCTestCase {
         // other.jpg at the same time.
         watcher.ignore(paths: [root.appendingPathComponent("own.jpg"),
                                root.appendingPathComponent("own-copy.jpg"),
-                               FileManager.default.temporaryDirectory.appendingPathComponent("x.jpg")])
+                               TestScratch.directory.appendingPathComponent("x.jpg")])
         try Data(repeating: 0xCD, count: 4096)
             .write(to: root.appendingPathComponent("own.jpg"), options: .atomic)
         try touch("own-copy.jpg")

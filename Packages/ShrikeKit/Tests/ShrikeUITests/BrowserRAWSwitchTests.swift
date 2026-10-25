@@ -25,7 +25,7 @@ final class BrowserRAWSwitchTests: XCTestCase {
     override func setUp() async throws {
         savedMode = Prefs.browserViewMode
         BrowserWindowController.restoresViewModeUnderTests = true
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-brawsw-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

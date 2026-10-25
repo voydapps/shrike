@@ -23,7 +23,7 @@ final class CompareWindowTests: XCTestCase {
     private var fakeTrash: URL!
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-compare-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Italy 2026", isDirectory: true)
         fakeTrash = root.appendingPathComponent("FakeTrash", isDirectory: true)

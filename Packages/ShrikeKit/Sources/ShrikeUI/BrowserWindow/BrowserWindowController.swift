@@ -551,6 +551,7 @@ public final class BrowserWindowController: NSWindowController {
         contentController.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
         contentController.onTab = { [weak self] backward in self?.moveFocus(from: self?.window?.firstResponder, backward: backward) ?? false }
         inspectorController.onTab = { [weak self] backward in self?.moveFocus(from: self?.window?.firstResponder, backward: backward) ?? false }
+        treeController.onFocusPhotos = { [weak self] in self?.focusPhotosFromSidebar() }
         treeController.onTab = { [weak self] backward in self?.moveFocus(from: self?.window?.firstResponder, backward: backward) ?? false }
         contentController.onSortProgress = { [weak self] text in self?.sortProgressText = text }
         contentController.onClearFilter = { [weak self] in self?.clearFilterAndSearch() }
@@ -948,6 +949,8 @@ public final class BrowserWindowController: NSWindowController {
         // follow/drop selection still targets the destination and stays intact.
         if currentFolder != std { pendingReselection = [] }
         currentFolder = std
+        // The sidebar stops pointing at the previous folder at once.
+        if !isReload { treeController.willNavigate(to: std) }
         pairedViewer?.refreshBrowserReturnContext()
         if !isReload {
             contentController.showFolderLoading(std)
@@ -2128,11 +2131,40 @@ extension BrowserWindowController: FolderTreeDelegate {
             try FileManager.default.createDirectory(
                 at: url, withIntermediateDirectories: false
             )
-            treeController.reload()
-            treeController.select(url)
+            treeController.folderCreated(url)
         } catch {
             flashToast("Couldn't create folder: \(error.localizedDescription)")
         }
+    }
+
+    /// A disk came or went. If the folder on screen was on a disk that is no
+    /// longer mounted, the Browser says "folder gone" (spec 22-sidebar §4.9);
+    /// the sidebar has already cleared its selection.
+    public func folderTreeVolumesDidChange() {
+        checkCurrentVolumeStillThere()
+        // The mount point can outlive the notification by a moment.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1200))
+            self?.checkCurrentVolumeStillThere()
+        }
+    }
+
+    private func checkCurrentVolumeStillThere() {
+        guard !browserDidClose, let folder = currentFolder, Self.goneVolumeName(of: folder) != nil,
+              !contentController.isShowingFolderGone else { return }
+        showFolderGone(folder)
+    }
+
+    public func folderTreeRequestOpenInNewWindow(_ url: URL) {
+        WindowCoordinator.shared.openBrowser(at: url, selecting: nil, services: services).window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Return, Enter and ⌘↓ in the sidebar: the photos take the keys, with
+    /// the first photo selected if none is. Nothing opens in the viewer.
+    func focusPhotosFromSidebar() {
+        guard let window, window.attachedSheet == nil else { return }
+        window.makeFirstResponder(contentController.focusView)
+        if contentController.selectedItems.isEmpty { contentController.selectFirstOnOpen() }
     }
 
     public func folderTreeRequestAddBookmark(_ url: URL) {
@@ -2217,6 +2249,7 @@ extension BrowserWindowController: NSWindowDelegate {
         subfolderCheckTask = nil
         subtitleLoadingTask?.cancel()
         subtitleLoadingTask = nil
+        treeController.shutDown()
         stopWatching()
         // Give the autosave name back, so the next new Browser
         // can own it (saves its size) even while this object lives on.

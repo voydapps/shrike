@@ -23,7 +23,7 @@ final class EditToolsTopBarTests: XCTestCase {
     private var savedPreset: ShortcutPreset = .macNative
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-edit-topbar-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         store = BackupStore(root: root.appendingPathComponent("Backups", isDirectory: true))

@@ -622,7 +622,7 @@ final class FilmstripViewControllerTests: XCTestCase {
         // target has no bundled fixtures of its own. 64×48 mirrors the
         // FileImageSourceTests fixtures in spirit (small enough that
         // any request ≥ 64 exercises the clamp).
-        let tmp = FileManager.default.temporaryDirectory
+        let tmp = TestScratch.directory
             .appendingPathComponent("shrike-ioThumbnail-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: tmp) }
         let image = Self.solidRGBA(width: 64, height: 48)

@@ -51,7 +51,7 @@ final class BatchResultClassificationTests: XCTestCase {
     }
 
     func testRetryPlanAgreesWithTheHint() {
-        let runner = BatchRunner(fileOps: FileOps(metadata: nil, backups: BackupStore(root: FileManager.default.temporaryDirectory.appendingPathComponent("shrike-classify-\(UUID().uuidString)")), watchers: nil))
+        let runner = BatchRunner(fileOps: FileOps(metadata: nil, backups: BackupStore(root: TestScratch.directory.appendingPathComponent("shrike-classify-\(UUID().uuidString)")), watchers: nil))
         for reason in [BatchSkipReason.cancelled, .unreadable, .diskFull, .nameExists, .cannotRotateLosslessly,
                        .cannotSaveInPlace, .emptyName] {
             let r = result([.skipped(reason)])
@@ -68,7 +68,7 @@ final class BatchResultClassificationTests: XCTestCase {
 final class BatchRememberedFormTests: XCTestCase {
 
     private func model(_ defaults: UserDefaults) -> BatchModel {
-        let backups = BackupStore(root: FileManager.default.temporaryDirectory
+        let backups = BackupStore(root: TestScratch.directory
             .appendingPathComponent("shrike-batch-remember-\(UUID().uuidString)"))
         return BatchModel(runner: BatchRunner(fileOps: FileOps(metadata: nil, backups: backups, watchers: nil), backups: backups),
                           defaults: defaults)
@@ -116,7 +116,7 @@ final class BatchRememberedFormTests: XCTestCase {
 
     func testRunRemembersTheForm() async throws {
         let defaults = makeTestDefaults()
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-batch-remember-run-\(UUID().uuidString)")
+        let dir = TestScratch.directory.appendingPathComponent("shrike-batch-remember-run-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let photo = dir.appendingPathComponent("a.jpg")

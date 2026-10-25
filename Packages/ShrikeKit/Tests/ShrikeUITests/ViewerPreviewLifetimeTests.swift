@@ -55,7 +55,7 @@ final class ViewerPreviewLifetimeTests: XCTestCase {
     }
 
     private func exercise(_ path: Path, closeWhileHeld: Bool) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-preview-lifetime-\(UUID())")
+        let root = TestScratch.directory.appendingPathComponent("shrike-preview-lifetime-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let fullGate = HeldPreviewWork(), embeddedGate = HeldPreviewWork(), thumbnailGate = HeldPreviewWork()

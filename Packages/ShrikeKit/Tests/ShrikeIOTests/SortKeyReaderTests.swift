@@ -17,7 +17,7 @@ final class SortKeyReaderTests: XCTestCase {
     private var folder: URL!
 
     override func setUpWithError() throws {
-        folder = FileManager.default.temporaryDirectory
+        folder = TestScratch.directory
             .appendingPathComponent("sortkeys-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     }

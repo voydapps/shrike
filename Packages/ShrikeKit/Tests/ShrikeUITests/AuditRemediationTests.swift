@@ -13,7 +13,7 @@ final class AuditRemediationTests: XCTestCase {
     private var root: URL!
     override func setUp() async throws {
         ShrikeDefaults.store.removeObject(forKey: BatchModel.lastFormKey)
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-remediation-\(UUID().uuidString)")
+        root = TestScratch.directory.appendingPathComponent("shrike-remediation-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         Prefs.resetAll(); CompareWindow.presentsWindows = false
     }
@@ -55,18 +55,31 @@ final class AuditRemediationTests: XCTestCase {
         XCTAssertEqual(value.removing(.search).minimumRating, 4)
         XCTAssertEqual(value.removing(.kinds).excludedKinds, [])
     }
-    func testKnownCurrentFolderSelectionDoesNotListItsAncestors() async throws {
+    /// Spec 22-sidebar §4.4: the reveal lists exactly the ancestor chain
+    /// (root down to the target's parent), never a sibling, never the target.
+    func testRevealListsOnlyTheAncestorChain() async throws {
         let tree = FolderTreeDataSource()
         let target = root.appendingPathComponent("deep/path/photos")
-        var walked: [URL] = []; tree.didListFolder = { walked.append($0) }
+        // A sibling at every level that must never be listed.
+        for sibling in ["other", "deep/side", "deep/path/more", "deep/path/photos"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(sibling), withIntermediateDirectories: true)
+        }
+        let volume = SidebarVolume(url: root, name: "Fixture", kind: .external, isEjectable: false)
+        tree.rebuildRoots(favorites: [], volumes: [volume])
+        var walked: [URL] = []; tree.didListFolder = { walked.append($0.standardizedFileURL) }
         tree.setCurrentFolder(target)
         let node = await tree.node(for: target)
-        XCTAssertEqual(node?.url, target); XCTAssertTrue(walked.isEmpty)
-        XCTAssertEqual(tree.roots.first?.section, .currentFolder)
-        tree.rebuildRoots(favorites: [.init(url: target, isMissing: false)], volumes: [])
-        XCTAssertNil(tree.roots.first { $0.section == .currentFolder })
-        let favorite = await tree.node(for: target)
-        XCTAssertEqual(favorite?.kind, .favorite)
+        XCTAssertEqual(node?.url?.standardizedFileURL.path, target.standardizedFileURL.path)
+        XCTAssertEqual(walked.map(\.path), [root, root.appendingPathComponent("deep"), root.appendingPathComponent("deep/path")].map { $0.standardizedFileURL.path })
+        // The target is listed only when it is opened.
+        _ = await tree.loadChildren(try XCTUnwrap(node))
+        XCTAssertEqual(walked.last?.path, target.standardizedFileURL.path)
+        XCTAssertEqual(walked.count, 4)
+        // With a Favorite at the target, the answer is still the tree row.
+        tree.rebuildRoots(favorites: [.init(url: target, isMissing: false)], volumes: [volume])
+        let again = await tree.node(for: target)
+        XCTAssertEqual(again?.kind, .folder)
+        XCTAssertEqual(again?.parent?.url?.lastPathComponent, "path")
     }
     func testLargeChromeChangesOpenTextAndResetOwnsMovedControls() {
         let label = NSTextField(labelWithString: "Action text"); label.font = ChromeTypography.font(12)

@@ -22,7 +22,7 @@ final class BrowserCullingSelectionTests: XCTestCase {
     private var dir: URL!
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-cullsel-\(UUID().uuidString)", isDirectory: true)
             .appendingPathComponent("Shoot", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

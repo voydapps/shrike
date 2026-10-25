@@ -197,7 +197,7 @@ final class PreferencesResetTests: XCTestCase {
 
     @MainActor
     private func thumbnailResetBrowser(includeResetAllFiles: Bool = false) async throws -> BrowserWindowController {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-thumbnail-reset-\(UUID())")
+        let root = TestScratch.directory.appendingPathComponent("shrike-thumbnail-reset-\(UUID())")
         ownedThumbnailRoots.append(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let context = try XCTUnwrap(CGContext(data: nil, width: 64, height: 48, bitsPerComponent: 8,
@@ -434,7 +434,7 @@ final class PreferencesResetTests: XCTestCase {
 
     @MainActor
     private func hiddenPolicyFixture() throws -> (folder: URL, visible: URL, hidden: URL) {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-hidden-policy-\(UUID())", isDirectory: true).standardizedFileURL
+        let folder = TestScratch.directory.appendingPathComponent("shrike-hidden-policy-\(UUID())", isDirectory: true).standardizedFileURL
         ownedThumbnailRoots.append(folder)
         for name in ["VisibleBranch/Nested", ".HiddenFolder", "Collapsed/DoNotWalk"] {
             try FileManager.default.createDirectory(at: folder.appendingPathComponent(name), withIntermediateDirectories: true)
@@ -493,21 +493,35 @@ final class PreferencesResetTests: XCTestCase {
                        "writing the unchanged policy must not start another listing")
     }
 
+    /// The sidebar's Locations hold exactly the owned folders as volume roots
+    /// (so the reveal lists only them, never Home or "/"). Returns the first.
+    @MainActor
+    private func ownFoldersAsRoots(_ tree: FolderTreeViewController, _ folders: [URL]) -> FolderTreeNode {
+        let volumes = folders.enumerated().map {
+            SidebarVolume(url: $1, name: "Owned \($0)", kind: .external, isEjectable: false)
+        }
+        tree.dataSource.rebuildRoots(favorites: [], volumes: volumes)
+        tree.reload()
+        return tree.dataSource.locationsSection!.children.first { $0.kind == .volume }!
+    }
+
+    /// A row opened by the user's own hand (collapse first: the reveal may
+    /// already have opened it, and only a real open is saved).
+    @MainActor
+    private func userOpen(_ outline: NSOutlineView, _ node: FolderTreeNode) {
+        if outline.isItemExpanded(node) { outline.collapseItem(node) }
+        outline.expandItem(node)
+    }
+
     @MainActor
     private func ownedHiddenSidebar(_ browser: BrowserWindowController, folder: URL) -> FolderTreeNode {
         let tree = browser.treeControllerForTesting
-        let favorites = FolderTreeNode(url: nil, title: "Favorites", section: .favorites)
-        favorites.childrenLoaded = true
-        let favorite = FolderTreeNode(url: folder, title: "Owned current folder")
-        favorite.kind = .favorite; favorite.childrenLoaded = true; favorite.parent = favorites
-        favorites.children = [favorite]
-        let section = FolderTreeNode(url: nil, title: "Locations", section: .locations)
-        section.childrenLoaded = true
-        let root = FolderTreeNode(url: folder, title: "Owned folders")
-        root.parent = section; section.children = [root]
-        tree.dataSource.roots = [favorites, section]
-        tree.reload(); tree.outlineViewForTesting.expandItem(section)
-        return root
+        // A Favorite at the same folder must not take the selection.
+        let root = ownFoldersAsRoots(tree, [folder])
+        tree.dataSource.rebuildRoots(favorites: [SidebarFavoriteRow(url: folder, isMissing: false)],
+                                     volumes: [SidebarVolume(url: folder, name: "Owned 0", kind: .external, isEjectable: false)])
+        tree.reload()
+        return tree.dataSource.locationsSection!.children.first { $0.kind == .volume } ?? root
     }
 
     @MainActor
@@ -583,7 +597,9 @@ final class PreferencesResetTests: XCTestCase {
         XCTAssertEqual(tree.dataSource.currentFolder, hiddenFolder)
         let selected = try XCTUnwrap(outline.item(atRow: outline.selectedRow) as? FolderTreeNode)
         XCTAssertEqual(selected.url, hiddenFolder)
-        XCTAssertEqual(selected.parent?.section, .currentFolder)
+        XCTAssertTrue(selected.isPathRow, "the hidden folder stays on the path as a 50 % row")
+        XCTAssertTrue(selected.parent === root, "the selected row's parent chain reaches the tree root")
+        XCTAssertEqual(selected.kind, .folder)
     }
 
     private actor SidebarFirstPaintGate {
@@ -631,9 +647,8 @@ final class PreferencesResetTests: XCTestCase {
             folderEnumerator: { _, hidden in await listing.scan(hidden) })
         defer { browser.close() }
         let tree = browser.treeControllerForTesting, outline = tree.outlineViewForTesting
-        // No exact Favorite: the real first paint must create/replace Current Folder.
-        tree.dataSource.roots = []
-        tree.reload()
+        // The owned folder is the one tree root: the reveal lists only it.
+        _ = ownFoldersAsRoots(tree, [fixture.folder])
         var reads: [URL] = [], paints = 0
         tree.dataSource.didListFolder = { reads.append($0.standardizedFileURL) }
         browser.onFolderPaintedForTesting = { paints += 1 }
@@ -641,13 +656,13 @@ final class PreferencesResetTests: XCTestCase {
         let collapsedURL = fixture.folder.appendingPathComponent("Collapsed", isDirectory: true).standardizedFileURL
         let expansionKey = "shrike.browser.tree.expanded"
         func root() throws -> FolderTreeNode {
-            try XCTUnwrap(tree.dataSource.roots.first { $0.section == .currentFolder }?.children.first)
+            try XCTUnwrap(tree.dataSource.locationsSection?.children.first { $0.kind == .volume })
         }
         func child(_ url: URL, of parent: FolderTreeNode) throws -> FolderTreeNode {
             try XCTUnwrap(parent.children.first { $0.url?.standardizedFileURL == url })
         }
         func loadedOpenState(_ collapsedOpen: Bool, hidden: Bool) -> Bool {
-            guard let current = tree.dataSource.roots.first(where: { $0.section == .currentFolder })?.children.first,
+            guard let current = tree.dataSource.locationsSection?.children.first(where: { $0.kind == .volume }),
                   current.childrenLoaded, outline.isItemExpanded(current),
                   let branch = current.children.first(where: { $0.url?.standardizedFileURL == branchURL }),
                   branch.childrenLoaded, outline.isItemExpanded(branch),
@@ -686,11 +701,11 @@ final class PreferencesResetTests: XCTestCase {
             await tree.selectTask?.value
             try selectHiddenPolicyControl(fixture.visible, browser: browser)
             let initial = try root()
-            XCTAssertEqual(initial.parent?.section, .currentFolder)
-            XCTAssertFalse(tree.dataSource.roots.contains { $0.section == .favorites }, "no Favorite bypasses root replacement")
-            outline.expandItem(initial); await finishSidebarCallbacks()
-            outline.expandItem(try child(branchURL, of: initial)); await finishSidebarCallbacks()
-            outline.expandItem(try child(collapsedURL, of: initial)); await finishSidebarCallbacks()
+            XCTAssertEqual(initial.parent?.section, .locations)
+            XCTAssertFalse(tree.dataSource.roots.contains { $0.section == .favorites })
+            userOpen(outline, initial); await finishSidebarCallbacks()
+            userOpen(outline, try child(branchURL, of: initial)); await finishSidebarCallbacks()
+            userOpen(outline, try child(collapsedURL, of: initial)); await finishSidebarCallbacks()
             XCTAssertTrue(loadedOpenState(true, hidden: false))
             browser.window?.contentView?.layoutSubtreeIfNeeded()
             let scroll = try XCTUnwrap(outline.enclosingScrollView)
@@ -715,16 +730,14 @@ final class PreferencesResetTests: XCTestCase {
                 XCTAssertTrue(saved.contains(fixture.folder.path))
                 XCTAssertTrue(saved.contains(branchURL.path))
                 XCTAssertEqual(saved.contains(collapsedURL.path), collapsedOpen)
-                let beforeReplacement = try root()
                 await listing.open()
                 await browser.listingTask?.value
                 await tree.selectTask?.value
-                try await requireSidebarState("normal first paint preserves already loaded/open Current Folder paths") {
+                try await requireSidebarState("normal first paint preserves already loaded/open paths") {
                     paints == beforePaint + 1 && loadedOpenState(collapsedOpen, hidden: showHidden)
                         && !browser.contentController.isHydratingMarks
                 }
                 await finishSidebarCallbacks()
-                XCTAssertFalse(try root() === beforeReplacement, "exercise replacement of the real Current Folder node")
                 XCTAssertGreaterThan(browser.folderRequestGeneration, beforeGeneration)
                 XCTAssertEqual(scroll.contentView.bounds.origin, origin)
                 try assertPhoto(showHidden)
@@ -763,19 +776,19 @@ final class PreferencesResetTests: XCTestCase {
             folderEnumerator: { _, hidden in await listing.scan(hidden) })
         defer { browser.close() }
         let tree = browser.treeControllerForTesting, outline = tree.outlineViewForTesting
-        tree.dataSource.roots = []; tree.reload()
+        _ = ownFoldersAsRoots(tree, [fixture.folder])
         let branchURL = fixture.folder.appendingPathComponent("VisibleBranch").standardizedFileURL
         let closedURL = fixture.folder.appendingPathComponent("Collapsed").standardizedFileURL
         var reads: [URL] = []
         tree.dataSource.didListFolder = { reads.append($0.standardizedFileURL) }
         func root() throws -> FolderTreeNode {
-            try XCTUnwrap(tree.dataSource.roots.first { $0.section == .currentFolder }?.children.first)
+            try XCTUnwrap(tree.dataSource.locationsSection?.children.first { $0.kind == .volume })
         }
         func finishCallbacks() async {
             while let task = tree.loadTask { await task.value; if tree.loadTask == task { return } }
         }
         func restored(_ hidden: Bool) -> Bool {
-            guard let current = tree.dataSource.roots.first(where: { $0.section == .currentFolder })?.children.first,
+            guard let current = tree.dataSource.locationsSection?.children.first(where: { $0.kind == .volume }),
                   current.childrenLoaded, outline.isItemExpanded(current),
                   let branch = current.children.first(where: { $0.url?.standardizedFileURL == branchURL }),
                   branch.childrenLoaded, outline.isItemExpanded(branch) else { return false }
@@ -804,9 +817,9 @@ final class PreferencesResetTests: XCTestCase {
             }
             await tree.selectTask?.value
             try selectHiddenPolicyControl(fixture.visible, browser: browser)
-            outline.expandItem(try root()); await finishCallbacks()
+            userOpen(outline, try root()); await finishCallbacks()
             let branch = try XCTUnwrap(try root().children.first { $0.url?.standardizedFileURL == branchURL })
-            outline.expandItem(branch); await finishCallbacks()
+            userOpen(outline, branch); await finishCallbacks()
             browser.window?.contentView?.layoutSubtreeIfNeeded()
             let target = try XCTUnwrap(try root().children.first { $0.title == "Row25" })
             let scroll = try XCTUnwrap(outline.enclosingScrollView)
@@ -865,15 +878,15 @@ final class PreferencesResetTests: XCTestCase {
             })
         defer { browser.close() }
         let tree = browser.treeControllerForTesting, outline = tree.outlineViewForTesting
-        tree.dataSource.roots = []; tree.reload()
+        _ = ownFoldersAsRoots(tree, [a.folder, b.folder])
         var paints = 0
         var obsoleteListing: Task<Void, Never>?
         browser.onFolderPaintedForTesting = { paints += 1 }
         func root() throws -> FolderTreeNode {
-            try XCTUnwrap(tree.dataSource.roots.first { $0.section == .currentFolder }?.children.first)
+            try XCTUnwrap(tree.dataSource.locationsSection?.children.first { $0.kind == .volume })
         }
         func aLoadedOpen(_ hidden: Bool) -> Bool {
-            guard let current = tree.dataSource.roots.first(where: { $0.section == .currentFolder })?.children.first,
+            guard let current = tree.dataSource.locationsSection?.children.first(where: { $0.kind == .volume }),
                   current.url?.standardizedFileURL == a.folder, current.childrenLoaded,
                   outline.isItemExpanded(current) else { return false }
             return current.children.contains { $0.title == ".HiddenFolder" } == hidden
@@ -885,7 +898,7 @@ final class PreferencesResetTests: XCTestCase {
             }
             await tree.selectTask?.value
             try selectHiddenPolicyControl(a.visible, browser: browser)
-            outline.expandItem(try root()); await tree.loadTask?.value
+            userOpen(outline, try root()); await tree.loadTask?.value
             XCTAssertTrue(aLoadedOpen(false))
             browser.window?.contentView?.layoutSubtreeIfNeeded()
             let scroll = try XCTUnwrap(outline.enclosingScrollView)

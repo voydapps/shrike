@@ -23,6 +23,22 @@ public enum ShrikeAccent {
     /// "The button": the one filled accent button.
     public static var fill: NSColor { .controlAccentColor }
 
+    /// How far `linkText` is darkened toward black on a light surface.
+    public static let linkDarkening: CGFloat = 0.45
+
+    /// `mark` for text on the system's own window colour: lightened toward
+    /// white in a dark window (as `mark`), darkened toward black in a light
+    /// one, where the lightened accent was nearly unreadable (the Browser
+    /// info panel's "Clear" link).
+    public static var linkText: NSColor {
+        NSColor(name: nil) { appearance in
+            let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return dark ? mark : (NSColor.controlAccentColor.blended(withFraction: linkDarkening, of: .black) ?? .controlAccentColor)
+        }
+    }
+
+    public static var linkTextColor: Color { Color(nsColor: linkText) }
+
     /// SwiftUI twin of `mark` for links in the inspectors.
     public static var markColor: Color { Color(nsColor: mark) }
 }

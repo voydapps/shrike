@@ -24,7 +24,7 @@ final class Fixes027dTests: XCTestCase {
     private var savedFilmstrip = true
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-fix027d-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedPreset = Prefs.shortcutPreset

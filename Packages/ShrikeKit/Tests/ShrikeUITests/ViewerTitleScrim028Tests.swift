@@ -26,7 +26,7 @@ final class ViewerTitleScrim028Tests: XCTestCase {
     private var savedFilmstripPreference: Any?
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-scrim-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedAutoHide = Prefs.viewerToolbarAutoHide

@@ -22,7 +22,7 @@ final class BrowserFilterPopoverTests: XCTestCase {
     override func setUp() async throws {
         Prefs.browserSortKey = "name"
         Prefs.browserSortAscending = true
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-filter-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }

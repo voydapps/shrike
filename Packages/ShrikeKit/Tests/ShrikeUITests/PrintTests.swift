@@ -22,7 +22,7 @@ final class PrintTests: XCTestCase {
     private var defaults: UserDefaults!
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-print-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Italy 2026", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

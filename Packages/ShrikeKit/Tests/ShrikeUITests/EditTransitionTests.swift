@@ -452,7 +452,7 @@ final class EditTransitionTests: XCTestCase {
     }
 
     private func editingViewer(highPrecision: Bool = false, failingBackup: Bool = false) async throws -> (ViewerWindow, [URL]) {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-transitions-\(UUID())")
+        let root = TestScratch.directory.appendingPathComponent("shrike-transitions-\(UUID())")
         ownedRoots.append(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let urls = (0..<3).map { root.appendingPathComponent("photo-\($0).png") }

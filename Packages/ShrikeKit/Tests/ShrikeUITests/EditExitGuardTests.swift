@@ -28,7 +28,7 @@ final class EditExitGuardTests: XCTestCase {
 
     override func setUp() async throws {
         EditToolTransitionModal.responderForTesting = { _ in .keep }
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-editguard-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         asked = []

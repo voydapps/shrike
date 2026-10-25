@@ -39,7 +39,7 @@ enum LifetimeDiagnostics {
     /// so a large output cannot fill a pipe while this thread waits.
     private static func run(_ tool: String, _ arguments: [String]) -> String {
         guard FileManager.default.isExecutableFile(atPath: tool) else { return "(\(tool) not available)\n" }
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-diag-\(UUID().uuidString).txt")
+        let file = TestScratch.directory.appendingPathComponent("shrike-diag-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: file) }
         guard FileManager.default.createFile(atPath: file.path, contents: nil),
               let handle = try? FileHandle(forWritingTo: file) else { return "(no output file)\n" }

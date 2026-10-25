@@ -16,7 +16,7 @@ import AppKit
 final class ViewerInspectorPositionTests: XCTestCase {
 
     func testInspectorCountFollowsTheTitleWhenTheListGrows() throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = TestScratch.directory
             .appendingPathComponent("shrike-inspos-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -48,7 +48,7 @@ final class ViewerInspectorPositionTests: XCTestCase {
 final class ListSyncDuringNavigationTests: XCTestCase {
 
     func testFolderChangeDuringASlowNavigationStillArrives() async throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = TestScratch.directory
             .appendingPathComponent("ListSyncNav-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }

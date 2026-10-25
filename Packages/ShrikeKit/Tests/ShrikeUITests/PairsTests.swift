@@ -20,7 +20,7 @@ final class PairsTests: XCTestCase {
     private var savedPref: Any?
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-pairs-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedPref = ShrikeDefaults.store.object(forKey: ImageGroupingPreference.key)

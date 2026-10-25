@@ -33,7 +33,7 @@ final class SlideshowTests: XCTestCase {
     private var savedSettings = SlideshowSettings()
 
     override func setUp() async throws {
-        tempDir = FileManager.default.temporaryDirectory
+        tempDir = TestScratch.directory
             .appendingPathComponent("shrike-slideshow-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         savedSettings = SlideshowSettings.fromPrefs()

@@ -27,7 +27,7 @@ final class BrowserSelectionFollow028Tests: XCTestCase {
         Prefs.browserSortKey = "name"
         Prefs.browserSortAscending = true
         BrowserWindowController.restoresViewModeUnderTests = true
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-selfollow-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         for i in 0..<1000 {

@@ -40,7 +40,7 @@ final class BrowserReturnContextTests: XCTestCase {
     private var savedMotion: Bool?
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-return-context-\(UUID())")
+        root = TestScratch.directory.appendingPathComponent("shrike-return-context-\(UUID())")
         a = root.appendingPathComponent("Folder-A", isDirectory: true)
         b = root.appendingPathComponent("CorruptOnly-B", isDirectory: true)
         for folder in [a!, b!] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }

@@ -21,7 +21,7 @@ final class TrashFlowTests: XCTestCase {
     private var fakeTrash: URL!
 
     override func setUp() async throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = TestScratch.directory
             .appendingPathComponent("shrike-trash-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Italy 2026", isDirectory: true)
         fakeTrash = root.appendingPathComponent("FakeTrash", isDirectory: true)

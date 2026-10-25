@@ -95,7 +95,7 @@ final class InspectorRowsTests: XCTestCase {
     // The viewer inspector's Culling row acts on the displayed item and
     // mirrors the pill marks; the File rows follow the displayed file.
     func testViewerInspectorRowsFollowTheDisplayedItem() async throws {
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-insp-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -133,7 +133,7 @@ final class InspectorRowsTests: XCTestCase {
 
     /// A file change (rotate) keeps the old rows until the new ones are read.
     func testFileChangeKeepsTheRowsUntilTheNewInfoArrives() async throws {
-        let dir = FileManager.default.temporaryDirectory
+        let dir = TestScratch.directory
             .appendingPathComponent("shrike-insp-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }

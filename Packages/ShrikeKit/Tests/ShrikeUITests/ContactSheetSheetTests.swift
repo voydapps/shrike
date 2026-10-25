@@ -23,7 +23,7 @@ final class ContactSheetSheetTests: XCTestCase {
     private var out: URL!
 
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-contact-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Italy 2026", isDirectory: true)
         out = root.appendingPathComponent("out", isDirectory: true)

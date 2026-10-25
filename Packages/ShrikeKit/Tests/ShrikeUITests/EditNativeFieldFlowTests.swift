@@ -14,7 +14,7 @@ final class EditNativeFieldFlowTests: XCTestCase {
     private var savedPreset: ShortcutPreset!
     override func setUp() async throws {
         EditToolTransitionModal.responderForTesting = { _ in .keep }
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-native-edit-\(UUID())")
+        root = TestScratch.directory.appendingPathComponent("shrike-native-edit-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         savedPreset = Prefs.shortcutPreset; Prefs.shortcutPreset = .macNative
     }

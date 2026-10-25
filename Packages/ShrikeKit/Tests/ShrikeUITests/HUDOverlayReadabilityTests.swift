@@ -15,7 +15,7 @@ final class HUDOverlayReadabilityTests: XCTestCase {
     private var contents: [ViewerContentView] = []
     private var caches: [ThumbnailCache] = []
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-overlay-\(UUID())")
+        root = TestScratch.directory.appendingPathComponent("shrike-overlay-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         savedReview = Prefs.reviewControlsVisible; savedLarge = Prefs.largerChrome
         savedStrip = Prefs.filmstripVisibleInWindowed; savedPin = Prefs.filmstripPinnedFullscreen

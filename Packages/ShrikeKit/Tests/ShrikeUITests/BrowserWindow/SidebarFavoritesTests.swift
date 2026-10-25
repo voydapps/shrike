@@ -22,7 +22,7 @@ final class SidebarFavoritesTests: XCTestCase {
     override func setUp() async throws {
         savedExpansion = [:]
         for key in expansionKeys { savedExpansion[key] = ShrikeDefaults.store.object(forKey: key) }
-        root = FileManager.default.temporaryDirectory
+        root = TestScratch.directory
             .appendingPathComponent("shrike-fav-\(UUID().uuidString)", isDirectory: true)
         for name in ["Client", "Italy", "Seed1", "Seed2"] {
             try FileManager.default.createDirectory(at: root.appendingPathComponent(name),
@@ -157,19 +157,19 @@ final class SidebarFavoritesTests: XCTestCase {
         tree.delegate = delegate
         _ = tree.view
         let locations = try XCTUnwrap(tree.dataSource.roots.first { $0.section == .locations })
-        XCTAssertEqual(locations.children.map(\.title), ["SD CARD", "Macintosh HD", "Backup"])
-        XCTAssertEqual(locations.children.map(\.symbolName), ["sdcard", "internaldrive", "externaldrive"])
+        XCTAssertEqual(locations.children.map(\.title), ["Home", "SD CARD", "Macintosh HD", "Backup"])
+        XCTAssertEqual(locations.children.map(\.symbolName), ["house", "sdcard", "internaldrive", "externaldrive"])
 
         let outline = tree.outlineViewForTesting
         outline.expandItem(locations)
-        let sdRow = outline.row(forItem: locations.children[0])
+        let sdRow = outline.row(forItem: locations.children[1])
         let sdCell = try XCTUnwrap(tree.cellForTesting(row: sdRow))
         let eject = try XCTUnwrap(sdCell.ejectButton)
         XCTAssertEqual(eject.accessibilityLabel(), "Eject SD CARD")
         XCTAssertTrue(eject.isHidden, "hidden until hover or selection")
         sdCell.isRowSelected = true
         XCTAssertFalse(eject.isHidden)
-        XCTAssertNil(tree.cellForTesting(row: outline.row(forItem: locations.children[1]))?.ejectButton,
+        XCTAssertNil(tree.cellForTesting(row: outline.row(forItem: locations.children[2]))?.ejectButton,
                      "the boot disk has no eject button")
 
         eject.performClick(nil)
@@ -180,18 +180,24 @@ final class SidebarFavoritesTests: XCTestCase {
         XCTAssertEqual(onMain, [false])
     }
 
-    // The boot volume is not a lookup root: selecting a temp folder does
-    // not walk from "/" (it matches no sidebar root).
-    func testBootVolumeIsNotALookupRoot() async {
+    // The startup disk ("/") is a tree root like any volume (spec 22-sidebar
+    // §4.1), the last choice: a folder outside Home resolves under it.
+    func testBootVolumeIsTheLastChoiceLookupRoot() async throws {
         let ds = FolderTreeDataSource()
         ds.rebuildRoots(favorites: [], volumes: [
             SidebarVolume(url: URL(fileURLWithPath: "/"), name: "Macintosh HD", kind: .internal, isEjectable: false),
         ])
-        var listed: [URL] = []
-        ds.didListFolder = { listed.append($0) }
-        let awaited1 = await ds.node(for: url("Italy"))
-        XCTAssertNil(awaited1)
-        XCTAssertTrue(listed.isEmpty)
+        ds.lister = { _, _ in [] }
+        let outside = await ds.node(for: URL(fileURLWithPath: "/Applications/Fake"))
+        var top = outside
+        while let parent = top?.parent, !parent.isSection { top = parent }
+        XCTAssertEqual(top?.title, "Macintosh HD")
+        XCTAssertEqual(top?.kind, .volume)
+        let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Pictures/Italy")
+        let inHome = await ds.node(for: home)
+        var homeTop = inHome
+        while let parent = homeTop?.parent, !parent.isSection { homeTop = parent }
+        XCTAssertEqual(homeTop?.isHome, true, "Home wins over the startup disk by longest path prefix")
     }
 
     // ⌘D adds the Browser's current folder.

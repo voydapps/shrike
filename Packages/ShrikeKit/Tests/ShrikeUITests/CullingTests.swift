@@ -19,7 +19,7 @@ final class CullingTests: XCTestCase {
     private var store: MetadataStore!
 
     override func setUp() async throws {
-        tempDir = FileManager.default.temporaryDirectory
+        tempDir = TestScratch.directory
             .appendingPathComponent("shrike-culling-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         store = try MetadataStore(databaseURL: tempDir.appendingPathComponent("meta.sqlite"),

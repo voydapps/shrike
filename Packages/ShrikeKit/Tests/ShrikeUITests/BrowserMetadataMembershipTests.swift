@@ -19,7 +19,7 @@ final class BrowserMetadataMembershipTests: XCTestCase {
     private var savedMotion: Bool?
     private var heldHydration: CheckedContinuation<Void, Never>?
     override func setUp() async throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("shrike-membership-\(UUID())")
+        root = TestScratch.directory.appendingPathComponent("shrike-membership-\(UUID())")
         folder = root.appendingPathComponent("Photos")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         services = ShrikeServices(thumbnailCache: try ThumbnailCache(diskURL: root.appendingPathComponent("thumbs")),

@@ -15,7 +15,7 @@ final class FinderTagsTests: XCTestCase {
     private var file: URL!
 
     override func setUpWithError() throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("ShrikeFinderTagsTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         file = dir.appendingPathComponent("photo.jpg")

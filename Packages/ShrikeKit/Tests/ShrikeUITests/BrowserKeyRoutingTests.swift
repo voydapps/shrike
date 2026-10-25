@@ -65,7 +65,7 @@ final class BrowserKeyRoutingTests: XCTestCase {
     }
 
     func testWelcomeReturnOnFocusedRecentRowOpensIt() throws {
-        let first = FileManager.default.temporaryDirectory
+        let first = TestScratch.directory
         let second = first.appendingPathComponent("shrike-recent-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: second) }

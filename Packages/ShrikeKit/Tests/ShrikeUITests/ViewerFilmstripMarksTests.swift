@@ -21,7 +21,7 @@ final class ViewerFilmstripMarksTests: XCTestCase {
     private var savedFilmstrip = true
 
     override func setUp() async throws {
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-marks-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         savedFilmstrip = Prefs.filmstripVisibleInWindowed

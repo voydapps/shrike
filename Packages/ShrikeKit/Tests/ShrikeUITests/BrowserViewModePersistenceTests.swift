@@ -24,7 +24,7 @@ final class BrowserViewModePersistenceTests: XCTestCase {
         savedMode = Prefs.browserViewMode
         BrowserWindowController.restoresViewModeUnderTests = true
         Prefs.browserViewMode = 0
-        dir = FileManager.default.temporaryDirectory
+        dir = TestScratch.directory
             .appendingPathComponent("shrike-bvm-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let cs = CGColorSpace(name: CGColorSpace.sRGB)!

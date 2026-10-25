@@ -1,6 +1,6 @@
 # Shrike interface screenshots
 
-These are actual Shrike captures taken from a 0.2.12 development build, made on 17 October 2026 using local arm64 builds on macOS 26.5.2 in Dark appearance. Later releases, including 0.2.29, may differ in small details. Five captures use source dc95509; Browser, Compare and Contact Sheet use source a65854d. Earlier captures are not relabelled as the later build.
+These are actual Shrike captures taken from a 0.2.12 development build, made on 17 October 2026 using local arm64 builds on macOS 26.5.2 in Dark appearance. Later releases, including 0.2.30, may differ in small details. Five captures use source dc95509; Browser, Compare and Contact Sheet use source a65854d. Earlier captures are not relabelled as the later build.
 
 Sample imagery: NASA/JSC. No NASA affiliation or endorsement is implied. Three distinct Earth observations are used:
 
