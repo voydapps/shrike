@@ -356,7 +356,7 @@ final class SidebarNavigationTests: XCTestCase {
         let menu = try XCTUnwrap(tree.outlineViewForTesting.menu)
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
                        ["Open in New Window", "Reveal in Finder", "Copy Path", "New Folder…", "Add to Favorites",
-                        "Remove from Favorites", "Set as Destination", "Show Package Contents", "Eject “”"])
+                        "Remove from Favorites", "Set as Workspace", "Clear Workspace", "Set as Destination", "Show Package Contents", "Eject “”"])
         XCTAssertTrue(menu.items.allSatisfy { $0.keyEquivalent.isEmpty }, "no ⌘N on New Folder")
         // Eject: title follows the volume row.
         let locations = try XCTUnwrap(tree.dataSource.locationsSection)

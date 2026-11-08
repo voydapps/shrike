@@ -125,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.onMessage = { [weak self] message in self?.showWelcome(message: message) }
         // An open that produced no window leaves the app empty: show Welcome.
         coordinator.onOpenSettled = { [weak self] in
-            self?.showWelcomeIfIdle()
+            self?.showStartWindowIfIdle(settled: true)
             self?.settleLaunchWithoutPhotoIfAppropriate()
         }
 
@@ -139,7 +139,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ShrikeSignposts.launch.end("replayOpenRequests", replayState)
 
         launchFinished = true
-        showWelcomeIfIdle()
+        // With a Workspace set this waits for the deferred call below.
+        showStartWindowIfIdle(settled: false)
 
         if let didFinishSignpost {
             ShrikeSignposts.launch.end("didFinishLaunching", didFinishSignpost)
@@ -150,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // NEVER manufactures a presented frame. Later user opens are ordinary
         // navigation and cannot reopen the completed cold-launch interval.
         DispatchQueue.main.async { [weak self] in
-            self?.showWelcomeIfIdle()
+            self?.showStartWindowIfIdle(settled: true)
             self?.settleLaunchWithoutPhotoIfAppropriate()
         }
         // A corrupt/blocked first photo must not leave an infinite interval.
@@ -243,13 +244,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
-    /// Dock click with no Viewer or Browser open → Welcome.
+    /// Dock click with no Viewer or Browser open → the Workspace, else Welcome.
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
         guard !coordinator.hasWindows else { return true }
-        showWelcome()
+        switch startWindowDecision(settled: true) {
+        case .browser(let url): coordinator.openFolders([url])
+        case .welcome(let message): showWelcome(message: message)
+        case .wait: showWelcome()
+        }
         return false
     }
 
@@ -290,12 +295,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         welcome = nil
     }
 
-    /// Welcome only when launch is done, nothing is open and nothing is
-    /// still opening.
-    private func showWelcomeIfIdle() {
-        guard launchFinished, !coordinator.hasWindows,
-              coordinator.pendingOpens == 0, !openQueue.hasPending else { return }
-        showWelcome()
+    private func startWindowDecision(settled: Bool) -> WindowCoordinator.StartWindow {
+        WindowCoordinator.startWindow(
+            workspace: coordinator.workspaceStore,
+            idle: launchFinished && !coordinator.hasWindows
+                && coordinator.pendingOpens == 0 && !openQueue.hasPending,
+            settled: settled)
+    }
+
+    /// The start window when launch is done, nothing is open and nothing is
+    /// still opening: the Workspace's Browser when one is set and there,
+    /// else Welcome (with a message when the Workspace is gone). The
+    /// Workspace is only opened from the deferred call (`settled`), after a
+    /// Finder open event had its chance (spec 23-workspace §3).
+    private func showStartWindowIfIdle(settled: Bool) {
+        switch startWindowDecision(settled: settled) {
+        case .wait: break
+        case .welcome(let message): showWelcome(message: message)
+        case .browser(let url): coordinator.openFolders([url])
+        }
     }
 
     // MARK: - Settings

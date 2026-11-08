@@ -1781,7 +1781,7 @@ public final class BrowserWindowController: NSWindowController {
     private func goUpOneFolder() {
         guard let current = currentFolder else { return }
         let parent = current.deletingLastPathComponent()
-        guard parent.path != current.path else { return }
+        guard parent.path != current.path, !isAtWorkspaceRoot else { return }
         navigate(to: parent)
     }
 

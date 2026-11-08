@@ -107,6 +107,8 @@ public final class ViewerWindow: NSWindow {
     var returnToBrowserAfterFullScreenExit = false
     /// Go ▸ Go to Folder… while its sheet is up.
     var goToFolderSheet: GoToFolderSheet?
+    /// The pinned folder (spec 23-workspace); tests inject their own.
+    var workspaceStore: WorkspaceStore = .standard()
     /// The user's toolbar setting, read as full screen starts and
     /// put back in `didExitFullScreen`. AppKit restores the
     /// toolbar it saw at the start of the transition (already hidden by

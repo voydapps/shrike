@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.31 - 2026-11-08
+
+### New
+- You can pick one folder as your Workspace. Right-click a folder in the sidebar and choose Set as Workspace, or use File > Choose Workspace…
+- The Workspace folder and its subfolders show first in the sidebar, under a Workspace heading.
+- When Shrike starts with nothing to open, it opens your Workspace instead of the Welcome window.
+- New Browser Window (⌘N) opens at your Workspace.
+- Go > Go to Workspace (⌃⌘W) takes you back to it. File > Clear Workspace removes it.
+- ⌘↑ (Enclosing Folder) stops at the Workspace folder. You can still leave it with the sidebar, the path bar, Back or Go to Folder.
+
 ## 0.2.30 - 2026-10-25
 
 ### New

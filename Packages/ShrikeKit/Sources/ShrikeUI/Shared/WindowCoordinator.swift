@@ -24,6 +24,30 @@ public final class WindowCoordinator {
     public private(set) var viewers: [ViewerWindow] = []
     public private(set) var browsers: [BrowserWindowController] = []
 
+    /// The pinned folder (spec 23-workspace). App-wide; tests swap it.
+    public var workspaceStore: WorkspaceStore = .standard()
+
+    /// What the app shows when it has nothing to open (spec 23-workspace §3).
+    public enum StartWindow: Equatable {
+        /// Not yet (a window is open or opening, or launch has not settled).
+        case wait
+        case welcome(message: String?)
+        case browser(URL)
+    }
+
+    /// The idle-launch rule. `settled` is false for the synchronous call in
+    /// `didFinishLaunching`: a Finder open event can still arrive on the next
+    /// turn, so with a Workspace set that call only waits (no Welcome flash,
+    /// and no bookmark is resolved on the photo-open launch path).
+    public static func startWindow(workspace: WorkspaceStore, idle: Bool, settled: Bool) -> StartWindow {
+        guard idle else { return .wait }
+        guard workspace.isSet else { return .welcome(message: nil) }
+        guard settled else { return .wait }
+        guard let row = workspace.row() else { return .welcome(message: nil) }
+        if row.isMissing { return .welcome(message: SidebarCopy.workspaceNamedUnavailable(row.title)) }
+        return .browser(row.url)
+    }
+
     // MARK: - Quit (a pending rotate is written on quit)
 
     /// True while a rotate / flip write is waiting or running.
@@ -119,9 +143,13 @@ public final class WindowCoordinator {
     }
 
     /// File ▸ New Browser Window (⌘N).
+    /// With a Workspace that is there, the new window shows its root (always
+    /// a new window, never de-duplicated); else it has no folder.
     public func newBrowserWindow() {
         guard let services else { return }
-        openBrowser(at: nil, selecting: nil, services: services).window?.makeKeyAndOrderFront(nil)
+        let root = workspaceStore.row().flatMap { $0.isMissing ? nil : $0.url }
+        openBrowser(at: root, selecting: nil, services: services, reuseExisting: false)
+            .window?.makeKeyAndOrderFront(nil)
     }
 
     public var hasWindows: Bool { !viewers.isEmpty || !browsers.isEmpty }
@@ -320,10 +348,13 @@ public final class WindowCoordinator {
         viewer.makeKeyAndOrderFront(nil)
     }
 
-    private func report(_ message: String) {
-        if let window = NSApp.mainWindow as? ViewerWindow {
-            window.contentRoot.toast(ToastContent(message, kind: .error))
-        } else if let browser = browsers.first(where: { $0.window === NSApp.mainWindow }) {
+    private func report(_ message: String) { reportToFrontWindow(message) }
+
+    /// A toast on the front Viewer or Browser, else on Welcome.
+    func reportToFrontWindow(_ message: String, isError: Bool = true) {
+        if let window = NSApp?.mainWindow as? ViewerWindow {
+            window.contentRoot.toast(ToastContent(message, kind: isError ? .error : .text))
+        } else if let browser = browsers.first(where: { $0.window === NSApp?.mainWindow }) {
             browser.toast(message)
         } else {
             onMessage?(message)
@@ -409,9 +440,9 @@ public final class WindowCoordinator {
     /// makes a new window.
     @discardableResult
     public func openBrowser(
-        at folder: URL?, selecting: URL?, services: ShrikeServices
+        at folder: URL?, selecting: URL?, services: ShrikeServices, reuseExisting: Bool = true
     ) -> BrowserWindowController {
-        if let folder, let existing = browser(showing: folder) {
+        if reuseExisting, let folder, let existing = browser(showing: folder) {
             if let window = existing.window {
                 if window.isMiniaturized { window.deminiaturize(nil) }
                 window.makeKeyAndOrderFront(nil)

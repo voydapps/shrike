@@ -30,6 +30,30 @@ extension BrowserWindowController {
         }
     }
 
+    // MARK: Go to Workspace (⌃⌘W)
+
+    /// The Workspace root's URL, or nil when none is set or the folder is
+    /// gone (a toast says so).
+    var availableWorkspaceRoot: URL? {
+        guard let row = treeController.workspace.row() else { return nil }
+        if row.isMissing { toast(SidebarCopy.workspaceUnavailable); return nil }
+        return row.url.standardizedFileURL
+    }
+
+    /// Shows the Workspace root like a sidebar pick (no search carried
+    /// over, joins Back/Forward). Nothing happens when it is on screen.
+    public func goToWorkspace() {
+        guard let root = availableWorkspaceRoot, currentFolder?.standardizedFileURL != root else { return }
+        clearSearchForNewFolder()
+        navigate(to: root)
+    }
+
+    /// True when the Browser shows the Workspace root: ⌘↑ stops here.
+    var isAtWorkspaceRoot: Bool {
+        guard let folder = currentFolder, let row = treeController.workspace.row() else { return false }
+        return row.url.standardizedFileURL.path == folder.standardizedFileURL.path
+    }
+
     // MARK: Go to Folder…
 
     /// ⇧⌘G: the Go to Folder sheet on this window.

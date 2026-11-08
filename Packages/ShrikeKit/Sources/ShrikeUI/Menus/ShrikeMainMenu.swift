@@ -410,7 +410,8 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         (.welcome, "macwindow"),                                                   // Window
         (.settings, "gearshape"),                                                  // Shrike
         (.newBrowserWindow, "macwindow.badge.plus"), (.open, "doc"),               // File
-        (.openFolder, "folder"), (.save, "square.and.arrow.down"),
+        (.openFolder, "folder"), (.chooseWorkspace, "folder.badge.plus"), (.clearWorkspace, "folder.badge.minus"),
+        (.save, "square.and.arrow.down"),
         (.saveAs, "square.and.arrow.down.on.square"), (.revertToOriginal, "arrow.uturn.backward"),
         (.rename, "pencil"), (.copyToFolder, "doc.on.doc"), (.moveToFolder, "arrowshape.turn.up.right"),
         (.tags, "tag"), (.addToFavorites, "star"), (.revealInFinder, "arrow.up.forward.app"),
@@ -546,6 +547,8 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         add(.newBrowserWindow, to: m, action: #selector(AppCommands.newBrowserWindow(_:)), target: appCommands)
         add(.open, to: m, action: #selector(AppCommands.openFiles(_:)), target: appCommands)
         add(.openFolder, to: m, action: #selector(AppCommands.openFolder(_:)), target: appCommands)
+        add(.chooseWorkspace, to: m, action: #selector(AppCommands.chooseWorkspace(_:)), target: appCommands)
+        add(.clearWorkspace, to: m, action: #selector(AppCommands.clearWorkspace(_:)), target: appCommands)
         addSubmenu(openRecentMenu, to: m, lazy: true)
         m.addItem(.separator())
         add(.close, to: m, action: #selector(NSWindow.performClose(_:)))
@@ -699,6 +702,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         add(.back, to: m, .browser)
         add(.forward, to: m, .browser)
         add(.goToFolder, to: m)
+        add(.goToWorkspace, to: m)
         m.addItem(.separator())
         add(.showInBrowser, to: m, .viewer)
         return m

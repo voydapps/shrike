@@ -466,6 +466,17 @@ extension ViewerWindow {
         }
     }
 
+    /// Go ▸ Go to Workspace ⌃⌘W: the paired Browser (or a new one) shows
+    /// the Workspace root and comes forward.
+    func goToWorkspace() {
+        guard let row = workspaceStore.row() else { return }
+        if row.isMissing {
+            contentRoot.toast(ToastContent(SidebarCopy.workspaceUnavailable, kind: .error))
+            return
+        }
+        go(to: .folder(row.url.standardizedFileURL))
+    }
+
     /// Sends the paired Browser to `target`, or opens a Browser there
     /// and pairs it; then brings it forward.
     func go(to target: GoToFolderTarget) {

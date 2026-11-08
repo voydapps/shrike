@@ -20,15 +20,18 @@ import Foundation
 
 /// Root-level grouping in the source list. Renders as a header row in the
 /// `NSOutlineView` (styled via `.sourceList`); headers do not collapse.
-/// Order: Favorites (flat jumps, shown while there is at least one), then
-/// Locations (Home first, then the volumes; each a tree root).
+/// Order: Workspace (one tree root, only while one is set; spec
+/// 23-workspace §2), Favorites (flat jumps, shown while there is at least
+/// one), then Locations (Home first, then the volumes; each a tree root).
 /// Spec 22-sidebar §4.1.
 public enum FolderTreeSection: Sendable, Hashable, CaseIterable {
+    case workspace
     case favorites
     case locations
 
     public var title: String {
         switch self {
+        case .workspace: return "Workspace"
         case .favorites: return "Favorites"
         case .locations: return "Locations"
         }
@@ -77,6 +80,8 @@ public final class FolderTreeNode: NSObject {
     public var symbolName = "folder"
     /// The Home root under Locations.
     public var isHome = false
+    /// The root row of the Workspace section (spec 23-workspace).
+    public var isWorkspaceRoot = false
     /// A row inserted for one path part that the parent's listing did not
     /// show (hidden while "Show hidden files" is off, or a listing that
     /// failed). Path only, drawn at 50 % (spec 22-sidebar §4.4 rule 5).
@@ -147,8 +152,28 @@ public final class FolderTreeDataSource {
                      volumes: [])
     }
 
-    public func rebuildRoots(favorites: [SidebarFavoriteRow], volumes: [SidebarVolume]) {
+    public func rebuildRoots(favorites: [SidebarFavoriteRow], volumes: [SidebarVolume],
+                             workspace: SidebarWorkspaceRow? = nil) {
         var roots: [FolderTreeNode] = []
+
+        if let workspace {
+            // The root row keeps its node (loaded children, open rows) while
+            // the folder stays the same.
+            let section = workspaceSection ?? Self.section(.workspace)
+            let path = workspace.url.standardizedFileURL.path
+            let old = section.children.first { $0.url?.standardizedFileURL.path == path }
+            let node = old ?? FolderTreeNode(url: workspace.url, title: workspace.title)
+            node.title = workspace.title
+            let wasMissing = node.isMissing
+            node.isWorkspaceRoot = true
+            node.symbolName = "folder.fill"
+            node.isMissing = workspace.isMissing
+            if workspace.isMissing { node.children = []; node.childrenLoaded = true }
+            else if wasMissing { node.childrenLoaded = false }
+            node.parent = section
+            section.children = [node]
+            roots.append(section)
+        }
 
         if !favorites.isEmpty {
             let section = Self.section(.favorites)
@@ -198,6 +223,10 @@ public final class FolderTreeDataSource {
         return node
     }
 
+    /// The Workspace section, when one is set.
+    public var workspaceSection: FolderTreeNode? { roots.first { $0.section == .workspace } }
+    /// The Workspace root row, when one is set.
+    public var workspaceRoot: FolderTreeNode? { workspaceSection?.children.first }
     /// The Favorites section, when shown.
     public var favoritesSection: FolderTreeNode? { roots.first { $0.section == .favorites } }
     /// The Locations section: Home and the volumes. Always there.
@@ -256,7 +285,7 @@ public final class FolderTreeDataSource {
     @discardableResult
     public func loadChildren(_ node: FolderTreeNode) async -> [FolderTreeNode] {
         if node.isSection || node.childrenLoaded { return node.children }
-        guard let url = node.url, node.isFolder, !node.isPackage, node.kind != .favorite else {
+        guard let url = node.url, node.isFolder, !node.isPackage, node.kind != .favorite, !node.isMissing else {
             node.childrenLoaded = true
             return []
         }
@@ -341,7 +370,10 @@ public final class FolderTreeDataSource {
         let target = Self.lookupComponents(url)
         var best: FolderTreeNode?
         var bestDepth = -1
-        for root in locationsSection?.children ?? [] {
+        // The Workspace root comes first: on a tie in depth (the Workspace
+        // is Home or a volume) the first one found wins.
+        let candidates = (workspaceRoot.map { $0.isMissing ? [] : [$0] } ?? []) + (locationsSection?.children ?? [])
+        for root in candidates {
             guard let rootURL = root.url else { continue }
             let prefix = Self.lookupComponents(rootURL)
             guard prefix.count <= target.count,
@@ -393,7 +425,7 @@ public final class FolderTreeDataSource {
     /// `isItemExpandable` even for leaves; this returns false for them.
     public func isExpandable(_ node: FolderTreeNode) -> Bool {
         if node.isSection { return !node.children.isEmpty }
-        guard node.isFolder, !node.isPackage, node.kind != .favorite else { return false }
+        guard node.isFolder, !node.isPackage, node.kind != .favorite, !node.isMissing else { return false }
         // If we haven't loaded yet, assume expandable so the disclosure
         // triangle shows. Expanding starts the read (off main); the row
         // opens when the children arrive.

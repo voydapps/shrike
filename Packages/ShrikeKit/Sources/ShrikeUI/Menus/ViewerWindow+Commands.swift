@@ -133,6 +133,8 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         case .toggleInspector, .toggleHistogram,
              .toggleFullScreen, .showInBrowser, .goToFolder:
             return true
+        case .goToWorkspace:
+            return workspaceStore.isSet
         case .unpinAllPanels:
             return contentRoot.windowMode == .fullscreen && contentRoot.hasPinnedPanels
         case .toggleRAWFile:
@@ -180,6 +182,7 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         case .revertToOriginal: revertDisplayedToOriginal()
         case .showInMaps: showDisplayedInMaps()
         case .goToFolder: showGoToFolderSheet()
+        case .goToWorkspace: goToWorkspace()
         case .pageSetup: PrintController.runPageSetup(on: self)
         default:
             let context: ShortcutContext = contentRoot.isEditModeActive ? .editMode : .viewer

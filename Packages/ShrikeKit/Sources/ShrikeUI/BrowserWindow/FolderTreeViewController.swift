@@ -46,6 +46,7 @@ public final class FolderTreeViewController: NSViewController {
 
     /// Sources.
     public let favorites: FavoritesStore
+    public let workspace: WorkspaceStore
     public let volumes: VolumeSource
     /// The folder the Browser shows; kept selected across a rebuild.
     private var currentURL: URL?
@@ -125,18 +126,21 @@ public final class FolderTreeViewController: NSViewController {
         ])
     }
 
-    public init(favorites: FavoritesStore? = nil, volumes: VolumeSource = .system) {
+    public init(favorites: FavoritesStore? = nil, volumes: VolumeSource = .system,
+                workspace: WorkspaceStore? = nil) {
         self.dataSource = FolderTreeDataSource()
         self.outlineView = SidebarOutlineView()
         self.scrollView = NSScrollView()
         self.favorites = favorites ?? .standard()
+        self.workspace = workspace ?? .standard()
         self.volumes = volumes
         super.init(nibName: nil, bundle: nil)
 
         configureOutlineView()
 
         dataSource.showHiddenFiles = Prefs.showHiddenFiles
-        dataSource.rebuildRoots(favorites: self.favorites.rows(), volumes: volumes.list())
+        dataSource.rebuildRoots(favorites: self.favorites.rows(), volumes: volumes.list(),
+                                workspace: self.workspace.row())
         // The section open/closed state is gone: headers do not collapse.
         ShrikeDefaults.store.removeObject(forKey: expansionKey + ".sections")
         openedPaths = (ShrikeDefaults.store.array(forKey: expansionKey) as? [String]) ?? []
@@ -149,6 +153,17 @@ public final class FolderTreeViewController: NSViewController {
                            name: NSWorkspace.didMountNotification, object: nil)
         center.addObserver(self, selector: #selector(volumesDidChange(_:)),
                            name: NSWorkspace.didUnmountNotification, object: nil)
+        // Another window set or cleared the Workspace.
+        NotificationCenter.default.addObserver(self, selector: #selector(workspaceDidChange(_:)),
+                                               name: .shrikeWorkspaceDidChange, object: nil)
+    }
+
+    @objc nonisolated private func workspaceDidChange(_ note: Notification) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { rebuild() }
+        } else {
+            Task { @MainActor [weak self] in self?.rebuild() }
+        }
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -191,13 +206,38 @@ public final class FolderTreeViewController: NSViewController {
     /// selected. `volumes` nil lists them again synchronously.
     func rebuild(volumes newVolumes: [SidebarVolume]? = nil) {
         expansionIntents.removeAll()
-        dataSource.rebuildRoots(favorites: favorites.rows(), volumes: newVolumes ?? volumes.list())
+        let workspaceBefore = dataSource.workspaceRoot?.url?.standardizedFileURL.path
+        dataSource.rebuildRoots(favorites: favorites.rows(), volumes: newVolumes ?? volumes.list(),
+                                workspace: workspace.row())
         guard isViewLoaded else { return }
         reload()
+        // A new Workspace opens one level (one read; spec 23-workspace §1)
+        // and the sidebar shows its heading and root row: scrolled to the top,
+        // and kept there when the reveal of the current folder finishes.
+        let workspaceChanged = dataSource.workspaceRoot.map {
+            $0.url?.standardizedFileURL.path != workspaceBefore } ?? false
+        if workspaceChanged, let root = dataSource.workspaceRoot {
+            if !root.isMissing { openCurrentFolder(root) }
+            scrollSidebarToTop()
+        }
         // A rebuild (⌘D, a disk mounted) shows the same place again; it does
         // not open a folder the user may have closed.
-        if let currentURL { select(currentURL, scrollToSelection: true, autoExpand: false) }
+        if let currentURL {
+            select(currentURL, scrollToSelection: true, autoExpand: false, scrollToTop: workspaceChanged)
+        }
     }
+
+    /// Shows the first row (the "Workspace" heading).
+    private func scrollSidebarToTop() {
+        guard isViewLoaded, outlineView.numberOfRows > 0 else { return }
+        supersedeViewportRestoration()
+        outlineView.scrollRowToVisible(0)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: -scrollView.contentInsets.top))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    /// Test seam: the sidebar's vertical scroll offset.
+    var scrollOffsetForTesting: CGFloat { scrollView.contentView.bounds.origin.y + scrollView.contentInsets.top }
 
     /// Follow the Browser's hidden-file policy without rebuilding global roots
     /// or listing collapsed folders. Only already-instantiated caches are invalidated.
@@ -378,6 +418,26 @@ public final class FolderTreeViewController: NSViewController {
     public func moveFavorite(from: Int, to: Int) {
         favorites.move(from: from, to: to)
         rebuild()
+    }
+
+    // MARK: - Workspace editing (spec 23-workspace §1)
+
+    /// Makes `url` the Workspace: every sidebar rebuilds, the root opens one
+    /// level, a toast says so. "/" is refused.
+    @discardableResult
+    public func setWorkspace(_ url: URL) -> Bool {
+        guard workspace.set(url) else {
+            delegate?.folderTreeToast(SidebarCopy.chooseSmallerFolder)
+            return false
+        }
+        delegate?.folderTreeToast(SidebarCopy.workspaceIs(url.standardizedFileURL.lastPathComponent))
+        return true
+    }
+
+    public func clearWorkspace() {
+        guard workspace.isSet else { return }
+        workspace.clear()
+        delegate?.folderTreeToast(SidebarCopy.workspaceCleared)
     }
 
     /// Index of `node` in the Favorites section.
@@ -593,7 +653,7 @@ public final class FolderTreeViewController: NSViewController {
 
     private func select(_ url: URL, scrollToSelection: Bool, preserveViewport: Bool = false,
                         viewportAnchor: ViewportAnchor? = nil, reloadFirst: Bool = false,
-                        autoExpand: Bool? = nil) {
+                        autoExpand: Bool? = nil, scrollToTop: Bool = false) {
         let policy = hiddenPolicyGeneration
         let anchor = preserveViewport ? (viewportAnchor ?? viewportAnchorToPreserve()) : nil
         selectionGeneration &+= 1
@@ -635,7 +695,7 @@ public final class FolderTreeViewController: NSViewController {
             let node = await self.dataSource.node(for: url)
             guard !Task.isCancelled, self.currentURL == url,
                   self.hiddenPolicyGeneration == policy else { return }
-            self.applySelection(node, scrollToSelection: scrollToSelection, autoExpand: expand)
+            self.applySelection(node, scrollToSelection: scrollToSelection, autoExpand: expand, scrollToTop: scrollToTop)
         }
     }
 
@@ -670,7 +730,10 @@ public final class FolderTreeViewController: NSViewController {
     }
 
     /// Expands `node`'s loaded ancestor chain and selects its row.
-    private func applySelection(_ node: FolderTreeNode?, scrollToSelection: Bool, autoExpand: Bool) {
+    /// `scrollToTop`: the Workspace was just set or changed, so the reveal ends
+    /// at the top of the sidebar (heading and root row), not on the row.
+    private func applySelection(_ node: FolderTreeNode?, scrollToSelection: Bool, autoExpand: Bool,
+                                scrollToTop: Bool = false) {
         if scrollToSelection { supersedeViewportRestoration() }
         else if validViewport() == nil { beginViewportRestoration(captureViewportAnchor()) }
         viewportUpdateDepth += 1
@@ -702,7 +765,10 @@ public final class FolderTreeViewController: NSViewController {
         let row = outlineView.row(forItem: node)
         guard row >= 0 else { return }
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        if scrollToSelection {
+        // The Workspace root row always ends with its heading in view.
+        if scrollToTop || node.isWorkspaceRoot {
+            scrollSidebarToTop()
+        } else if scrollToSelection {
             outlineView.scrollRowToVisible(row)
             // A window that is still opening has no height yet: scroll again
             // when the sidebar is first laid out.
@@ -843,6 +909,8 @@ public final class FolderTreeViewController: NSViewController {
         menu.addItem(.separator())
         menu.addItem(withTitle: "Add to Favorites", action: #selector(menuAddBookmark(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "Remove from Favorites", action: #selector(menuRemoveFavorite(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: SidebarCopy.setAsWorkspace, action: #selector(menuSetWorkspace(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: SidebarCopy.clearWorkspace, action: #selector(menuClearWorkspace(_:)), keyEquivalent: "")
         for item in menu.items where !item.isSeparatorItem { item.target = self }
         // "Set as Destination ▸ 1 … 9", filled on open with
         // the current slot names.
@@ -941,6 +1009,15 @@ public final class FolderTreeViewController: NSViewController {
         addFavorite(url)
     }
 
+    @objc private func menuSetWorkspace(_ sender: Any?) {
+        guard let url = menuTargetNode?.url else { return }
+        setWorkspace(url)
+    }
+
+    @objc private func menuClearWorkspace(_ sender: Any?) {
+        clearWorkspace()
+    }
+
     @objc private func menuRemoveFavorite(_ sender: Any?) {
         guard let node = menuTargetNode, let index = favoriteIndex(of: node) else { return }
         removeFavorite(at: index)
@@ -1002,7 +1079,23 @@ extension FolderTreeViewController: NSMenuItemValidation {
     public func validateMenuItem(_ item: NSMenuItem) -> Bool {
         let node = menuTargetNode
         let usable = node?.url != nil && node?.isMissing == false
+        item.isHidden = false
+        // A missing Workspace root offers only Clear Workspace.
+        if node?.isWorkspaceRoot == true, node?.isMissing == true {
+            let keep = item.action == #selector(menuClearWorkspace(_:))
+            item.isHidden = !keep
+            return keep
+        }
         switch item.action {
+        case #selector(menuSetWorkspace(_:)):
+            let path = node?.url?.standardizedFileURL.path
+            let hide = node?.url == nil || node?.isMissing == true || node?.isWorkspaceRoot == true
+                || path == "/" || path == workspace.saved()?.path
+            item.isHidden = hide
+            return !hide
+        case #selector(menuClearWorkspace(_:)):
+            item.isHidden = node?.isWorkspaceRoot != true
+            return node?.isWorkspaceRoot == true
         case #selector(menuPackageContents(_:)):
             item.isHidden = node?.isPackage != true
             return node?.isPackage == true
@@ -1287,7 +1380,9 @@ extension FolderTreeViewController: NSOutlineViewDelegate {
         if node.isMissing {
             // A missing favorite says why and stays put.
             if !isSelectingProgrammatically {
-                delegate?.folderTreeToast(SidebarCopy.notAvailable(node.title))
+                delegate?.folderTreeToast(node.isWorkspaceRoot
+                    ? SidebarCopy.workspaceFolderUnavailable(node.title)
+                    : SidebarCopy.notAvailable(node.title))
             }
             return false
         }
@@ -1523,6 +1618,7 @@ final class SidebarRowCell: NSTableCellView {
         // The cell is not an accessibility "row": the outline's row view is
         // already the row and gives level, state and position.
         var spoken = node.title
+        if node.isWorkspaceRoot { spoken += ", " + SidebarCopy.workspaceValue }
         if node.isMissing {
             alphaValue = 0.5
             toolTip = SidebarCopy.notAvailableTooltip

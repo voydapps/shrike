@@ -197,12 +197,13 @@ final class MenuValidationTests: XCTestCase {
         let commands = AppCommands(coordinator: WindowCoordinator())
         let bar = ShrikeMainMenu(appCommands: commands)
         let appLevel: Set<ShrikeCommand> = [.newBrowserWindow, .open, .openFolder, .welcome,
-                                           .settings, .keyboardShortcuts]
+                                           .settings, .keyboardShortcuts, .chooseWorkspace, .clearWorkspace]
         for item in bar.allItems where item.submenu == nil {
             guard let command = item.shrikeCommand, let action = item.action else { continue }
             if appLevel.contains(command) {
                 XCTAssertTrue(item.target === commands, "\(command) targets the app")
-                XCTAssertTrue(commands.validateMenuItem(item))
+                // Clear Workspace is off while no Workspace is set (spec 23-workspace §1).
+                XCTAssertEqual(commands.validateMenuItem(item), command != .clearWorkspace, "\(command)")
             } else {
                 XCTAssertNil(item.target, "\(command) goes to the responder chain")
                 // Nothing outside a Browser or Viewer answers, so AppKit greys it.

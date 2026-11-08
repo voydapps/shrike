@@ -155,7 +155,8 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
             return count > 0
         case .enclosingFolder:
             guard let folder = currentFolder else { return false }
-            return folder.deletingLastPathComponent().path != folder.path
+            // ⌘↑ stops at the Workspace root (spec 23-workspace §4).
+            return folder.deletingLastPathComponent().path != folder.path && !isAtWorkspaceRoot
         case .addToFavorites:
             return currentFolder != nil
         case .toggleRAWFile:
@@ -177,6 +178,8 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
         case .goToFolder:
             //
             return true
+        case .goToWorkspace:
+            return treeController.workspace.isSet
         case .batch:
             // The selection, or the whole folder.
             return count > 0
@@ -230,6 +233,7 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
         case .nextFolder: goToAdjacentFolder(.next)
         case .previousFolder: goToAdjacentFolder(.previous)
         case .goToFolder: showGoToFolderSheet()
+        case .goToWorkspace: goToWorkspace()
         case .batch: openBatch(renameOn: false)
         case .pageSetup: PrintController.runPageSetup(on: window)
         case .exportContactSheet: showContactSheetSheet()

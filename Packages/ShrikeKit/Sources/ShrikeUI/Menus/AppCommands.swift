@@ -23,6 +23,18 @@ public struct OpenPanelRequest: Equatable, Sendable {
     public var canChooseFiles: Bool
     public var prompt: String
     public var directoryURL: URL?
+    /// The panel's message line, when it has one.
+    public var message: String?
+    public var allowsMultiple = true
+
+    public init(canChooseFiles: Bool, prompt: String, directoryURL: URL?,
+                message: String? = nil, allowsMultiple: Bool = true) {
+        self.canChooseFiles = canChooseFiles
+        self.prompt = prompt
+        self.directoryURL = directoryURL
+        self.message = message
+        self.allowsMultiple = allowsMultiple
+    }
 
     public static func open(in directory: URL?) -> OpenPanelRequest {
         OpenPanelRequest(canChooseFiles: true, prompt: "Open", directoryURL: directory)
@@ -50,7 +62,8 @@ public struct SystemOpenPanelRunner: OpenPanelRunning {
         let panel = NSOpenPanel()
         panel.canChooseFiles = request.canChooseFiles
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
+        panel.allowsMultipleSelection = request.allowsMultiple
+        if let message = request.message { panel.message = message }
         panel.prompt = request.prompt
         panel.directoryURL = request.directoryURL
         if request.canChooseFiles {
@@ -79,6 +92,11 @@ public final class AppCommands: NSObject, NSMenuItemValidation {
     public let coordinator: WindowCoordinator
     public var panelRunner: any OpenPanelRunning = SystemOpenPanelRunner()
     public var defaults: UserDefaults = ShrikeDefaults.store
+    /// The pinned folder (spec 23-workspace).
+    public var workspace: WorkspaceStore {
+        get { coordinator.workspaceStore }
+        set { coordinator.workspaceStore = newValue }
+    }
     public var onShowWelcome: (() -> Void)?
     /// Opens Settings, on a tab when given.
     /// Also opens Settings ▸ External Editors for the editor menus, keys
@@ -118,6 +136,40 @@ public final class AppCommands: NSObject, NSMenuItemValidation {
         runPanel(.openFolder(in: startDirectory()), asBrowsers: true)
     }
 
+    /// File ▸ Choose Workspace…: folders only, one result. The new
+    /// Workspace root opens in the front Browser (else a new one): the user
+    /// has just chosen it.
+    @objc public func chooseWorkspace(_ sender: Any?) {
+        let start = workspace.row().flatMap { $0.isMissing ? nil : $0.url } ?? startDirectory()
+        let request = OpenPanelRequest(canChooseFiles: false, prompt: "Choose",
+                                       directoryURL: start, message: "Choose a folder to keep the sidebar on.",
+                                       allowsMultiple: false)
+        panelRunner.run(request, sheetFor: nil) { [weak self] urls in
+            guard let self, let url = urls.first else { return }
+            self.setWorkspace(url)
+        }
+    }
+
+    /// Makes `url` the Workspace and shows its root.
+    func setWorkspace(_ url: URL) {
+        guard workspace.set(url) else {
+            coordinator.reportToFrontWindow(SidebarCopy.chooseSmallerFolder)
+            return
+        }
+        coordinator.reportToFrontWindow(SidebarCopy.workspaceIs(url.standardizedFileURL.lastPathComponent), isError: false)
+        if let browser = Self.target(of: NSApp?.mainWindow) as? BrowserWindowController {
+            browser.goToWorkspace()
+        } else {
+            route([url.standardizedFileURL], true)
+        }
+    }
+
+    @objc public func clearWorkspace(_ sender: Any?) {
+        guard workspace.isSet else { return }
+        workspace.clear()
+        coordinator.reportToFrontWindow(SidebarCopy.workspaceCleared, isError: false)
+    }
+
     @objc public func openRecentItem(_ sender: Any?) {
         guard let url = (sender as? NSMenuItem)?.representedObject as? URL else { return }
         route([url], false)
@@ -149,7 +201,10 @@ public final class AppCommands: NSObject, NSMenuItemValidation {
         NSWorkspace.shared.open(url)
     }
 
-    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { true }
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(clearWorkspace(_:)) { return workspace.isSet }
+        return true
+    }
 
     // MARK: Panels
 

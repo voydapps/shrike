@@ -149,11 +149,111 @@ public final class FavoritesStore {
         save(try? JSONEncoder().encode(list))
     }
 
-    private static func resolve(_ bookmark: Data) -> URL? {
+    static func resolve(_ bookmark: Data) -> URL? {
         guard !bookmark.isEmpty else { return nil }
         var stale = false
         return try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting],
                         relativeTo: nil, bookmarkDataIsStale: &stale)
+    }
+}
+
+// MARK: - Workspace
+
+extension Notification.Name {
+    /// The Workspace was set or cleared; every open sidebar rebuilds.
+    static let shrikeWorkspaceDidChange = Notification.Name("app.shrike.workspaceDidChange")
+}
+
+/// The Workspace as the sidebar shows it: where it is now and whether it
+/// is there at all.
+public struct SidebarWorkspaceRow: Equatable, Sendable {
+    public var url: URL
+    public var isMissing: Bool
+    public var title: String { url.lastPathComponent }
+}
+
+/// The one pinned folder (spec 23-workspace). Stored as one JSON object
+/// `{ "path", "bookmark" }` in `shrike.browser.workspace`; the bookmark only
+/// finds a moved folder (Shrike is not sandboxed, so no security scope).
+@MainActor
+public final class WorkspaceStore {
+
+    private let load: () -> Data?
+    private let save: (Data?) -> Void
+    private let exists: (URL) -> Bool
+
+    public init(
+        load: @escaping () -> Data?,
+        save: @escaping (Data?) -> Void,
+        exists: @escaping (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+    ) {
+        self.load = load
+        self.save = save
+        self.exists = exists
+    }
+
+    /// Backed by `Prefs.browserWorkspaceData` (so `ShrikeDefaults.store`).
+    public static func prefsBacked() -> WorkspaceStore {
+        WorkspaceStore(load: { Prefs.browserWorkspaceData }, save: { Prefs.browserWorkspaceData = $0 })
+    }
+
+    /// The app's store. Under XCTest it is an empty in-memory store.
+    public static func standard() -> WorkspaceStore {
+        ShrikeDataPaths.isRunningTests ? inMemory() : prefsBacked()
+    }
+
+    /// A store kept in memory (tests).
+    public static func inMemory(_ initial: SidebarFavorite? = nil) -> WorkspaceStore {
+        final class Box { var data: Data? }
+        let box = Box()
+        if let initial { box.data = try? JSONEncoder().encode(initial) }
+        return WorkspaceStore(load: { box.data }, save: { box.data = $0 })
+    }
+
+    /// True when a Workspace is saved. One defaults read: nothing is
+    /// resolved or touched on disk (the launch path calls this).
+    public var isSet: Bool { load() != nil }
+
+    public func saved() -> SidebarFavorite? {
+        guard let data = load() else { return nil }
+        return try? JSONDecoder().decode(SidebarFavorite.self, from: data)
+    }
+
+    /// The Workspace as the sidebar shows it: the saved path when it is
+    /// there; otherwise the bookmark's new place (renamed or moved; saved,
+    /// no message), else a missing row. A bookmark that now points into the
+    /// Trash counts as missing. Nil when none is set.
+    public func row() -> SidebarWorkspaceRow? {
+        guard var saved = saved() else { return nil }
+        let url = saved.url
+        if exists(url) { return SidebarWorkspaceRow(url: url, isMissing: false) }
+        if let moved = FavoritesStore.resolve(saved.bookmark), exists(moved),
+           !moved.standardizedFileURL.pathComponents.contains(".Trash") {
+            saved.path = moved.standardizedFileURL.path
+            write(saved)
+            return SidebarWorkspaceRow(url: moved, isMissing: false)
+        }
+        return SidebarWorkspaceRow(url: url, isMissing: true)
+    }
+
+    /// Makes `url` the Workspace (replacing any other). False for "/".
+    @discardableResult
+    public func set(_ url: URL) -> Bool {
+        let std = url.standardizedFileURL
+        guard std.path != "/" else { return false }
+        let bookmark = (try? std.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)) ?? Data()
+        write(SidebarFavorite(path: std.path, bookmark: bookmark))
+        return true
+    }
+
+    public func clear() {
+        save(nil)
+        NotificationCenter.default.post(name: .shrikeWorkspaceDidChange, object: nil)
+    }
+
+    private func write(_ value: SidebarFavorite) {
+        save(try? JSONEncoder().encode(value))
+        NotificationCenter.default.post(name: .shrikeWorkspaceDidChange, object: nil)
     }
 }
 
@@ -240,6 +340,16 @@ enum SidebarCopy {
     static let openInNewWindow = "Open in New Window"
     static let copyPath = "Copy Path"
     static let newFolder = "New Folder…"
+    static let setAsWorkspace = "Set as Workspace"
+    static let clearWorkspace = "Clear Workspace"
+    static let workspaceHeader = "Workspace"
+    static let workspaceValue = "Workspace"
+    static func workspaceIs(_ name: String) -> String { "Workspace is now “\(name)”." }
+    static let workspaceCleared = "Workspace cleared."
+    static let workspaceUnavailable = "The Workspace isn't available."
+    static func workspaceFolderUnavailable(_ name: String) -> String { "“\(name)” isn't available." }
+    static func workspaceNamedUnavailable(_ name: String) -> String { "Workspace “\(name)” isn't available." }
+    static let chooseSmallerFolder = "Choose a smaller folder."
     static let cantReadTooltip = "Shrike can't read this folder."
     static func cantRead(_ name: String) -> String { "Shrike can't read “\(name)”." }
     // VoiceOver

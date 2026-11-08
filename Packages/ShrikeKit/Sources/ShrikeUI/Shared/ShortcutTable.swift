@@ -23,7 +23,7 @@ import ShrikeCore
 /// Every command a key, a menu item or a toolbar button can trigger.
 public enum ShrikeCommand: String, CaseIterable, Sendable {
     // File
-    case newBrowserWindow, open, openFolder, close, save, saveAs, revertToOriginal
+    case newBrowserWindow, open, openFolder, chooseWorkspace, clearWorkspace, close, save, saveAs, revertToOriginal
     case rename, copyToFolder, moveToFolder, tags, addToFavorites, revealInFinder, share
     case openExternalEditor1, openExternalEditor2, openExternalEditor3, openExternalEditor4
     case openExternalEditor5, openExternalEditor6, openExternalEditor7, openExternalEditor8
@@ -47,7 +47,7 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
     case levels, autoContrast, autoColor, batch, showInMaps, toggleRAWFile
     // Go
     case nextImage, previousImage, firstImage, lastImage
-    case nextFolder, previousFolder, enclosingFolder, back, forward, goToFolder, showInBrowser
+    case nextFolder, previousFolder, enclosingFolder, back, forward, goToFolder, goToWorkspace, showInBrowser
     // Keys without a menu item
     case openSelection, escape, exitEditMode, editDone, editRotateStepLeft, editRotateStepRight
     // Compare window keys
@@ -63,6 +63,8 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
         case .newBrowserWindow: return "New Browser Window"
         case .open: return "Open…"
         case .openFolder: return "Open Folder…"
+        case .chooseWorkspace: return "Choose Workspace…"
+        case .clearWorkspace: return "Clear Workspace"
         case .close: return "Close"
         case .save: return "Save"
         case .saveAs: return "Save Copy…"
@@ -160,6 +162,7 @@ public enum ShrikeCommand: String, CaseIterable, Sendable {
         case .back: return "Back"
         case .forward: return "Forward"
         case .goToFolder: return "Go to Folder…"
+        case .goToWorkspace: return "Go to Workspace"
         case .showInBrowser: return "Show in Browser"
         case .openSelection: return "Open in Viewer"
         case .escape: return "Exit Full Screen, Return to Browser, or Close"
@@ -486,6 +489,7 @@ public enum ShortcutTable {
         add(.saveAs, v, k("s", cmdShift))
         add(.toggleToolbar, v, k("t", cmdOpt))
         add(.goToFolder, v, k("g", cmdShift))
+        add(.goToWorkspace, v, k("w", ctrlCmd))
         // Levels and its autos.
         add(.levels, v, fs ? k("l", .control) : k("l", cmdShift))
         if fs { add(.levels, v, k("l", cmdShift)) }
@@ -573,6 +577,7 @@ public enum ShortcutTable {
         add(.toggleInspector, b, k("i", cmd))
         add(.addToFavorites, b, k("d", cmd))
         add(.goToFolder, b, k("g", cmdShift))
+        add(.goToWorkspace, b, k("w", ctrlCmd))
         add(.undo, b, k("z", cmd))
         add(.redo, b, k("z", cmdShift))
         add(.rotateLeft, b, k("l", cmd))

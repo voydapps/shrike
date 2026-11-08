@@ -114,6 +114,7 @@ public enum Prefs {
         static let slideshowFill          = "shrike.slideshow.fill"
         static let slideshowLoop          = "shrike.slideshow.loop"
         static let browserFavorites       = "shrike.browser.favorites"
+        static let browserWorkspace       = "shrike.browser.workspace"
 
         /// Every `shrike.*` user-preference key. `resetAll()` walks this list.
         /// Add new keys here when adding new typed props.
@@ -158,6 +159,7 @@ public enum Prefs {
             slideshowFill,
             slideshowLoop,
             browserFavorites,
+            browserWorkspace,
             viewerToolbarAutoHide,
             viewerInspectorVisibleWindowed,
             // Declared next to their owners.
@@ -600,6 +602,18 @@ public enum Prefs {
         set {
             if let newValue { defaults.set(newValue, forKey: Key.browserFavorites) }
             else { defaults.removeObject(forKey: Key.browserFavorites) }
+        }
+    }
+
+    // MARK: - Browser workspace
+
+    /// One JSON object `{ "path": String, "bookmark": Data }`, or nil when
+    /// no Workspace is set (spec 23-workspace §6).
+    public static var browserWorkspaceData: Data? {
+        get { defaults.data(forKey: Key.browserWorkspace) }
+        set {
+            if let newValue { defaults.set(newValue, forKey: Key.browserWorkspace) }
+            else { defaults.removeObject(forKey: Key.browserWorkspace) }
         }
     }
 
