@@ -529,4 +529,23 @@ final class SidebarNavigationTests: XCTestCase {
         await tree.loadTask?.value
         XCTAssertFalse(tree.cellForTesting(row: outline.row(forItem: a))?.isShowingSpinner ?? false, "gone when the read ends")
     }
+
+    /// VoiceOver said "move" for every folder: an SF Symbol made with no
+    /// description is still named by AppKit ("folder" reads "move", "house"
+    /// reads "home"). The icon is decorative; the row says the name.
+    func testSidebarRowIconIsHiddenFromAccessibilityAndRowStillSpeaksItsName() {
+        let probe = NSImageView(image: NSImage(systemSymbolName: "folder", accessibilityDescription: nil)!)
+        XCTAssertEqual(probe.accessibilityLabel(), "move", "the system default this test guards against")
+        for symbol in ["folder", "house", "folder.fill"] {
+            let node = FolderTreeNode(url: URL(fileURLWithPath: "/tmp/Photos"), title: "Photos")
+            node.symbolName = symbol
+            let cell = SidebarRowCell(node: node)
+            XCTAssertFalse(cell.iconViewForTesting.isAccessibilityElement(), symbol)
+            XCTAssertNil(cell.iconViewForTesting.accessibilityLabel(), "\(symbol): no system word for the icon")
+            XCTAssertEqual(cell.accessibilityLabel(), "Photos")
+        }
+        let root = FolderTreeNode(url: URL(fileURLWithPath: "/tmp/Photos"), title: "Photos")
+        root.isWorkspaceRoot = true
+        XCTAssertEqual(SidebarRowCell(node: root).accessibilityLabel(), "Photos, " + SidebarCopy.workspaceValue)
+    }
 }

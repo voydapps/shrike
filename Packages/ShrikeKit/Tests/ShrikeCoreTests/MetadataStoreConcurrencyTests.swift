@@ -77,7 +77,13 @@ final class MetadataStoreConcurrencyTests: XCTestCase {
     }
 
     /// The narrowest form: one read after the database folder is removed.
-    func testReadAfterDatabaseFolderRemovedThrowsInsteadOfTrapping() async throws {
+    /// Whether that read throws is timing-dependent: the SQLite on macOS
+    /// reports SQLITE_IOERR (extended 6922) for the unlinked file on an idle
+    /// machine, but while the CPU is busy the still-open handle answers
+    /// instead (about half the reads in a local loaded run; the GitHub runner
+    /// hit this once). Both are fine. The guarantee is that the read does not
+    /// trap, and that the rating mirrored in the file's xattr still reads.
+    func testReadAfterDatabaseFolderRemovedDoesNotTrapAndXattrRatingStillReads() async throws {
         let dbDir = TempDir("meta-gone-db")
         let fileDir = TempDir("meta-gone-files")
         defer { dbDir.cleanup(); fileDir.cleanup() }
@@ -87,15 +93,17 @@ final class MetadataStoreConcurrencyTests: XCTestCase {
         try await store.setRating(4, for: url)
         let before = try await store.rating(for: url)
         XCTAssertEqual(before, 4)
+        XCTAssertEqual(FileAttributes.rating(at: url), 4, "the xattr was written before the folder went")
 
         dbDir.cleanup()
-        do {
-            _ = try await store.recentFolders(limit: 3)
-            XCTFail("reading a removed database should throw")
-        } catch {
-            // SQLITE_IOERR from `PRAGMA query_only = 1`.
-        }
-        // The rating mirrored into the file's xattr still reads.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dbDir.url.path),
+                       "the database folder must really be gone")
+        // May throw (SQLITE_IOERR from `PRAGMA query_only = 1`) or return
+        // from the open handle; only a trap would fail this test.
+        _ = try? await store.recentFolders(limit: 3)
+        // The rating mirrored into the file's xattr still reads. `records`
+        // can answer from the open database, so check the xattr directly too.
+        XCTAssertEqual(FileAttributes.rating(at: url), 4)
         let records = await store.records(for: [url])
         XCTAssertEqual(records[url]?.rating, 4)
     }

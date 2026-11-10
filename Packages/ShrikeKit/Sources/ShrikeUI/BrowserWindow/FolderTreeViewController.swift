@@ -217,13 +217,58 @@ public final class FolderTreeViewController: NSViewController {
         let workspaceChanged = dataSource.workspaceRoot.map {
             $0.url?.standardizedFileURL.path != workspaceBefore } ?? false
         if workspaceChanged, let root = dataSource.workspaceRoot {
-            if !root.isMissing { openCurrentFolder(root) }
+            if !root.isMissing {
+                collapseLocationsBranches(containing: root)
+                openCurrentFolder(root)
+            }
             scrollSidebarToTop()
         }
         // A rebuild (⌘D, a disk mounted) shows the same place again; it does
         // not open a folder the user may have closed.
         if let currentURL {
             select(currentURL, scrollToSelection: true, autoExpand: false, scrollToTop: workspaceChanged)
+        }
+    }
+
+    /// Spec 23-workspace §1: a new Workspace closes every open Locations row
+    /// whose folder is the Workspace root or holds it (Home, the disk, the
+    /// rows between), so the same path does not show twice. Other open
+    /// branches stay. Memory only: no disk read. The paths also leave the
+    /// saved open list, or the next rebuild would open them again. The reveal
+    /// of the current folder runs after this and reopens the branch when the
+    /// current folder is outside the Workspace and inside it.
+    private func collapseLocationsBranches(containing root: FolderTreeNode) {
+        guard let rootPath = root.url?.standardizedFileURL.path,
+              let locations = dataSource.locationsSection else { return }
+        let rootParts = URL(fileURLWithPath: rootPath).pathComponents
+        var closed: Set<String> = []
+        var queue = locations.children
+        while !queue.isEmpty {
+            let node = queue.removeFirst()
+            guard let path = node.url?.standardizedFileURL.path else { continue }
+            let parts = URL(fileURLWithPath: path).pathComponents
+            guard parts.count <= rootParts.count, Array(rootParts.prefix(parts.count)) == parts else { continue }
+            closed.insert(path)
+            queue.append(contentsOf: node.children)
+        }
+        guard !closed.isEmpty else { return }
+        programmaticExpandDepth += 1
+        for node in dataSource.locationsSection?.children ?? [] {
+            collapse(node, ifIn: closed)
+        }
+        programmaticExpandDepth -= 1
+        pendingExpandPaths.subtract(closed)
+        reopenPaths.subtract(closed)
+        if openedPaths.contains(where: closed.contains) {
+            openedPaths.removeAll { closed.contains($0) }
+            persistOpenedPaths()
+        }
+    }
+
+    private func collapse(_ node: FolderTreeNode, ifIn paths: Set<String>) {
+        for child in node.children { collapse(child, ifIn: paths) }
+        if let path = node.url?.standardizedFileURL.path, paths.contains(path), outlineView.isItemExpanded(node) {
+            outlineView.collapseItem(node)
         }
     }
 
@@ -1560,6 +1605,9 @@ final class SidebarRowCell: NSTableCellView {
         let icon = NSImageView(image: NSImage(systemSymbolName: node.symbolName, accessibilityDescription: nil) ?? NSImage())
         icon.imageScaling = .scaleProportionallyDown
         icon.translatesAutoresizingMaskIntoConstraints = false
+        // Decorative: the row already says the name. With no description
+        // AppKit still names the symbol ("folder" reads "move" to VoiceOver).
+        icon.markDecorative()
         iconView = icon
         super.init(frame: .zero)
         identifier = NSUserInterfaceItemIdentifier("FolderTree.Row")

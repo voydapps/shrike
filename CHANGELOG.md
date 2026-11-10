@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.32 - 2026-11-10
+
+### Fixed
+- When you set a Workspace, the same folder no longer also stays open under Home or your disk.
+- VoiceOver no longer says "move" for every folder in the sidebar. The folder icons are now skipped, and the row reads the folder name.
+
 ## 0.2.31 - 2026-11-08
 
 ### New

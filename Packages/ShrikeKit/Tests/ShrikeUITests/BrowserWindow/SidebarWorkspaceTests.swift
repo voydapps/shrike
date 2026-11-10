@@ -53,9 +53,9 @@ final class SidebarWorkspaceTests: XCTestCase {
         func folderTreeToast(_ message: String) { toasts.append(message) }
     }
 
-    private func makeTree(workspace: WorkspaceStore, favorites: [URL] = []) -> (FolderTreeViewController, NSWindow, Delegate) {
+    private func makeTree(workspace: WorkspaceStore, favorites: [URL] = [], extraVolumes: [SidebarVolume] = []) -> (FolderTreeViewController, NSWindow, Delegate) {
         let favs = FavoritesStore.inMemory(favorites.map { SidebarFavorite(path: $0.path) })
-        let list = [fixtureVolume]
+        let list = [fixtureVolume] + extraVolumes
         let tree = FolderTreeViewController(favorites: favs, volumes: VolumeSource(list: { list }, eject: { _ in }),
                                             workspace: workspace)
         let delegate = Delegate()
@@ -282,6 +282,72 @@ final class SidebarWorkspaceTests: XCTestCase {
         await tree.selectTask?.value
         window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(tree.scrollOffsetForTesting, 50, "other rows keep their behaviour")
+    }
+
+    private func locationNode(_ tree: FolderTreeViewController, _ path: String) -> FolderTreeNode? {
+        var queue = tree.dataSource.locationsSection?.children ?? []
+        let target = url(path).standardizedFileURL.path
+        while !queue.isEmpty {
+            let node = queue.removeFirst()
+            if node.url?.standardizedFileURL.path == target { return node }
+            queue.append(contentsOf: node.children)
+        }
+        return nil
+    }
+
+    /// Spec 23-workspace §1: setting a Workspace closes the open Locations
+    /// rows that are, or hold, the Workspace root; an unrelated open branch
+    /// stays open. The saved open list drops those paths too.
+    func testSettingWorkspaceCollapsesLocationsBranchesThatHoldIt() async throws {
+        // A second disk with its own open branch, which does not hold the Workspace.
+        let diskB = root.appendingPathComponent("DiskB", isDirectory: true)
+        try FileManager.default.createDirectory(at: diskB.appendingPathComponent("Albums/Deep"),
+                                                withIntermediateDirectories: true)
+        let volumeB = SidebarVolume(url: diskB, name: "DiskB", kind: .external, isEjectable: false)
+        let (tree, window, _) = makeTree(workspace: WorkspaceStore.inMemory(), extraVolumes: [volumeB])
+        defer { window.close() }
+        _ = tree.view
+        window.makeKeyAndOrderFront(nil)
+        let outline = tree.outlineViewForTesting
+        tree.select(diskB.appendingPathComponent("Albums/Deep"))
+        await tree.selectTask?.value
+        tree.select(url("Trips/Japan/Day1"))
+        await tree.selectTask?.value
+        let fixture = try XCTUnwrap(tree.dataSource.locationsSection?.children.first { $0.title == "Fixture" })
+        let diskBNode = try XCTUnwrap(tree.dataSource.locationsSection?.children.first { $0.title == "DiskB" })
+        let docs = try XCTUnwrap(diskBNode.children.first)
+        let trips = try XCTUnwrap(locationNode(tree, "Trips"))
+        let japan = try XCTUnwrap(locationNode(tree, "Trips/Japan"))
+        for node in [fixture, trips, japan, diskBNode, docs] { XCTAssertTrue(outline.isItemExpanded(node), node.title) }
+
+        XCTAssertTrue(tree.setWorkspace(url("Trips")))
+        await tree.selectTask?.value
+        XCTAssertFalse(outline.isItemExpanded(fixture), "the disk holds the Workspace")
+        XCTAssertFalse(outline.isItemExpanded(trips), "the Workspace folder itself")
+        XCTAssertTrue(outline.isItemExpanded(diskBNode), "an unrelated disk stays open")
+        XCTAssertTrue(outline.isItemExpanded(docs), "and its open rows")
+        let saved = tree.openedPaths
+        XCTAssertFalse(saved.contains(url("Trips").standardizedFileURL.path))
+        XCTAssertFalse(saved.contains(fixture.url!.standardizedFileURL.path))
+    }
+
+    /// The current folder is outside the Workspace but inside the branch that
+    /// holds it: the reveal opens that branch again ("you are here" wins).
+    func testWorkspaceSetWhileCurrentFolderIsOutsideReopensItsBranch() async throws {
+        let (tree, window, _) = makeTree(workspace: WorkspaceStore.inMemory()); defer { window.close() }
+        _ = tree.view
+        window.makeKeyAndOrderFront(nil)
+        let outline = tree.outlineViewForTesting
+        tree.select(url("Other/Inner"))
+        await tree.selectTask?.value
+        let fixture = try XCTUnwrap(tree.dataSource.locationsSection?.children.first { $0.title == "Fixture" })
+        XCTAssertTrue(outline.isItemExpanded(fixture))
+        XCTAssertTrue(tree.setWorkspace(url("Trips")))
+        await tree.selectTask?.value
+        XCTAssertTrue(outline.isItemExpanded(fixture), "the current folder lives here")
+        let other = try XCTUnwrap(locationNode(tree, "Other"))
+        XCTAssertTrue(outline.isItemExpanded(other))
+        XCTAssertGreaterThanOrEqual(outline.row(forItem: try XCTUnwrap(locationNode(tree, "Other/Inner"))), 0)
     }
 
     func testMissingWorkspaceRootLooksAndActsUnavailable() throws {

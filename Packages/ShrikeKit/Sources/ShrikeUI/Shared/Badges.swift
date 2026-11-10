@@ -225,3 +225,15 @@ public enum Badges {
         view.layer?.shadowRadius = 1
     }
 }
+
+extension NSImageView {
+    /// Hides a decorative symbol from VoiceOver. A symbol made with no
+    /// description is still named by AppKit ("folder" reads "move", "house"
+    /// reads "home"), and a parent cell lists its subviews as children even
+    /// when they are not accessibility elements. So the element flag is off
+    /// and the label is cleared too.
+    func markDecorative() {
+        setAccessibilityElement(false)
+        setAccessibilityLabel(nil)
+    }
+}

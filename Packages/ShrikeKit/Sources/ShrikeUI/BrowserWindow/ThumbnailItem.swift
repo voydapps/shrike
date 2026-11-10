@@ -133,6 +133,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
         imageBackground.addSubview(formatBadge)
 
         failureIcon.image = Badges.brokenFileGlyph(pointSize: 20)
+        failureIcon.markDecorative()
         failureIcon.contentTintColor = Badges.brokenFileTint
         failureLabel.font = ChromeTypography.font(11)
         failureLabel.textColor = .secondaryLabelColor
@@ -175,6 +176,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
 
         flagView.translatesAutoresizingMaskIntoConstraints = false
         flagView.image = Badges.symbol("flag.fill", pointSize: 12, color: Badges.flagColor)
+        flagView.markDecorative()
         flagView.isHidden = true
         Badges.applyThumbnailShadow(to: flagView)
         imageBackground.addSubview(flagView)
@@ -191,6 +193,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
         let onPhoto = NSColor.white.withAlphaComponent(0.9)
         rawChipView.image = Badges.rawChipImage(fontSize: 9, height: 14, color: onPhoto, backdrop: true)
         livePhotoView.image = Badges.symbol("livephoto", pointSize: 12, color: onPhoto)
+        livePhotoView.markDecorative()
         pencilView.image = Badges.editedChipImage()
         pencilView.toolTip = Badges.editedTooltip
         for view in [pencilView, livePhotoView, rawChipView] {

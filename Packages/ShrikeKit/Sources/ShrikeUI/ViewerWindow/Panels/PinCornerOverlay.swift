@@ -95,7 +95,7 @@ final class PinCornerOverlay: NSView {
             pointSize: 13, weight: .regular
         )
         imageView.image = NSImage(systemSymbolName: "pin", accessibilityDescription: nil)
-        imageView.setAccessibilityElement(false)
+        imageView.markDecorative()
         addSubview(imageView)
         NSLayoutConstraint.activate([
             imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -116,6 +116,7 @@ final class PinCornerOverlay: NSView {
     func setPinned(_ flag: Bool) {
         isPinned = flag
         imageView.image = NSImage(systemSymbolName: flag ? "pin.fill" : "pin", accessibilityDescription: nil)
+        imageView.markDecorative()
         setAccessibilityLabel("Pin \(panelName)")
         setAccessibilityValue(flag ? "Pinned" : "Not pinned")
         toolTip = flag ? "Unpin \(panelName)" : "Pin \(panelName)"

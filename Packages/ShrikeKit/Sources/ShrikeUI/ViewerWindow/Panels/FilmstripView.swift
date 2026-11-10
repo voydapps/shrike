@@ -1198,6 +1198,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
         addSubview(starsLabel)
         flagView.translatesAutoresizingMaskIntoConstraints = false
         flagView.image = Badges.symbol("flag.fill", pointSize: 9, color: Badges.flagColor)
+        flagView.markDecorative()
         flagView.isHidden = true
         Badges.applyThumbnailShadow(to: flagView)
         addSubview(flagView)
@@ -1431,6 +1432,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
     func showUnreadable() {
         isUnreadable = true
         brokenView.image = Badges.brokenFileGlyph(pointSize: min(20, heightPt * 0.3))
+        brokenView.markDecorative()
         brokenView.isHidden = false
         let name = (source as? FileImageSource)?.url.lastPathComponent
         if let name { toolTip = "\(name) — can't preview" }

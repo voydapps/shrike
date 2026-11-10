@@ -2128,6 +2128,7 @@ final class BrowserEmptyState: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         icon.symbolConfiguration = .init(pointSize: 32, weight: .regular)
+        icon.markDecorative()
         icon.contentTintColor = .secondaryLabelColor
         title.font = .systemFont(ofSize: 15, weight: .semibold)
         title.alignment = .center
