@@ -212,10 +212,23 @@ final class LivePhotoPlaybackTests: XCTestCase {
         let viewer = try await viewer()
         let content = viewer.contentRootForTesting
         let badge = content.livePhotoBadgeForTesting
+        // The delay itself is checked against the product constant, which
+        // does not depend on the machine's load.
+        let delay = type(of: badge).hoverDelay
+        XCTAssertEqual(delay, 0.3, accuracy: 0.001, "the hover rests 300 ms before playing")
+        let start = ContinuousClock.now
         badge.beginHover()
         XCTAssertTrue(badge.isHoverPending)
-        try await Task.sleep(nanoseconds: 150_000_000)
-        XCTAssertNil(content.livePhotoPlayback, "nothing before 300 ms")
+        try await Task.sleep(nanoseconds: UInt64(delay / 2 * 1_000_000_000))
+        // A loaded runner can oversleep past the delay, and then playback
+        // has legitimately started. Check "not yet" only if the measured
+        // time since beginHover is clearly under the delay (no await
+        // between the two reads, so the timer cannot fire in between).
+        let elapsed = ContinuousClock.now - start
+        let earlyPlayback = content.livePhotoPlayback
+        if elapsed < .seconds(delay - 0.05) {
+            XCTAssertNil(earlyPlayback, "nothing before 300 ms (elapsed \(elapsed))")
+        }
 
         try await waitUntilPlaying(content)
         let playback = try XCTUnwrap(content.livePhotoPlayback)
