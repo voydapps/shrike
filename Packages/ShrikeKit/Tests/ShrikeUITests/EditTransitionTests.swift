@@ -36,10 +36,11 @@ final class EditTransitionTests: XCTestCase {
         params.exposure = exposure
         panel.onParamsCommitted?(params)
     }
-    private func until(_ condition: () -> Bool) async throws {
-        let end = Date().addingTimeInterval(3)
+    private func until(timeout: TimeInterval = 3, file: StaticString = #filePath, line: UInt = #line,
+                       _ condition: () -> Bool) async throws {
+        let end = Date().addingTimeInterval(timeout)
         while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(5)) }
-        XCTAssertTrue(condition())
+        XCTAssertTrue(condition(), file: file, line: line)
     }
 
     private func stageGeometry(_ tool: EditTool, width target: Int, _ c: EditModeController,
@@ -1123,7 +1124,9 @@ final class EditTransitionTests: XCTestCase {
         viewer.navCoalescer.run { await navigationGate.hold() }
         XCTAssertFalse(viewer.navCoalescer.isIdle)
         await exportGate.open()
-        try await until { (try? Data(contentsOf: urls[0])) != original }
+        // Ends when the export's commit lands. 10 s: one 3 s wait in the closed-while-saving
+        // test ran out on the CI VM and which one is unknown (this helper is shared).
+        try await until(timeout: 10) { (try? Data(contentsOf: urls[0])) != original }
         return (save, navigationGate, original)
     }
 
@@ -1622,7 +1625,9 @@ final class EditTransitionTests: XCTestCase {
             let started = try await saveDuringNavigation(viewer, urls)
             save = started.0; navigationGate = started.1; original = started.2
             let saved = ToastContent(SaveCopy.saved(urls[0].lastPathComponent))
-            try await until { viewer.contentRootForTesting.toastHost.content == saved }
+            // Shown after the export returns plus the 50 ms ownership wait set above.
+            // 10 s: see saveDuringNavigation (which 3 s wait ran out on CI is unknown).
+            try await until(timeout: 10) { viewer.contentRootForTesting.toastHost.content == saved }
             viewer.contentRootForTesting.toastHost.dismiss(animated: false)
             viewer.close()
             let finished = await save?.value
@@ -1632,7 +1637,9 @@ final class EditTransitionTests: XCTestCase {
         }
         await navigationGate?.open()
         save = nil
-        try await until { weakViewer == nil }
+        // The likeliest of the three waits to have run out on CI (not proven); no holder
+        // bounded by a product constant was found. ViewerLifetimeTests gives a release 5 s.
+        try await until(timeout: 10) { weakViewer == nil }
         try await assertOriginalInBackup(urls[0], original)
     }
 

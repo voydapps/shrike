@@ -17,6 +17,7 @@ final class BrowserMetadataMembershipTests: XCTestCase {
     private var savedReview = false, savedAdvance = false
     private var savedSort = "", savedAscending = true, savedPresents = true
     private var savedMotion: Bool?
+    private var savedFollowSchedule: TrailingDebouncer.Schedule?
     private var heldHydration: CheckedContinuation<Void, Never>?
     override func setUp() async throws {
         root = TestScratch.directory.appendingPathComponent("shrike-membership-\(UUID())")
@@ -29,6 +30,13 @@ final class BrowserMetadataMembershipTests: XCTestCase {
         savedMotion = ReduceMotion.overrideForTesting; ReduceMotion.overrideForTesting = true
         savedPresents = CompareWindow.presentsWindows; CompareWindow.presentsWindows = false
         Prefs.browserSortKey = "name"; Prefs.browserSortAscending = true
+        // A paired viewer's "Browser follows the viewer" selection runs 150 ms after a
+        // photo change on the real clock. These tests assert the selection that
+        // membership changes leave, so the follow never fires on its own (on a slow
+        // runner it fired between Undo and Redo and left c-bright selected).
+        // BrowserFollowsViewerTests covers the follow itself.
+        savedFollowSchedule = ViewerWindow.browserFollowSchedule
+        ViewerWindow.browserFollowSchedule = { _, _ in {} }
     }
     override func tearDown() async throws {
         CullingUndo.beforeWriteForTesting = nil
@@ -41,12 +49,14 @@ final class BrowserMetadataMembershipTests: XCTestCase {
         Prefs.reviewControlsVisible = savedReview; Prefs.advanceAfterRating = savedAdvance
         Prefs.browserSortKey = savedSort; Prefs.browserSortAscending = savedAscending
         ReduceMotion.overrideForTesting = savedMotion; CompareWindow.presentsWindows = savedPresents
+        if let savedFollowSchedule { ViewerWindow.browserFollowSchedule = savedFollowSchedule }
         try? FileManager.default.removeItem(at: root)
     }
-    private func until(_ condition: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(3)
+    private func until(timeout: TimeInterval = 3, file: StaticString = #filePath, line: UInt = #line,
+                       _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
-        XCTAssertTrue(condition(), "Controlled Browser/Viewer work must finish")
+        XCTAssertTrue(condition(), "Controlled Browser/Viewer work must finish", file: file, line: line)
     }
     private func photos() throws -> [URL] {
         try ["a-bright.jpg", "b-dark.jpg", "c-bright.jpg"].map { name in
