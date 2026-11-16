@@ -2,7 +2,7 @@
 //  ColorAdjustPanel.swift
 //  ShrikeUI
 //
-//  Right-side Color Adjust tool panel. Spec
+//  Right-side Color Adjust tool panel.
 //  Three sliders (Brightness / Contrast / Saturation) covering
 //  -1.0 … +1.0 with 0 = identity. Continuous events drive the live-preview
 //  path (draft quality); drag-end / 16 ms idle flushes to full.
@@ -291,6 +291,7 @@ final class ColorAdjustPanel: NSView {
 
     private func refreshLabel(_ label: NSTextField, value: Double) {
         label.stringValue = EditValueText.text(value: value, step: 0.01, signed: true)
+        label.setAccessibilityValue(EditValueText.spoken(value: value, step: 0.01))
     }
 
     /// Fire `onParamsChanged` for draft preview, then arm the 16 ms idle

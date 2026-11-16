@@ -123,7 +123,7 @@ public class HUDSurfaceView: NSView {
     /// Called after the look changed (the pill re-stacks its hairline).
     var onLookChanged: (() -> Void)?
 
-    /// A host with its own flat look (the toast pill, spec 27 N6): fill,
+    /// A host with its own flat look (the toast pill): fill,
     /// hairline and a tight shadow instead of the panel tokens.
     struct SurfaceStyle: Equatable {
         var fill: NSColor
@@ -484,7 +484,13 @@ public class HUDSurfaceView: NSView {
     func applyContrastBorder() {
         guard let layer, look != .unbuilt else { return }
         let borderColor: CGColor
-        if ShrikeTokens.increaseContrast {
+        let reduce = ReduceTransparency.isOn
+        let strongBorder = ReduceTransparency.hudUsesSeparatorBorder(
+            increaseContrast: ShrikeTokens.increaseContrast, reduce: reduce)
+        if !ShrikeTokens.increaseContrast && reduce {
+            // Reduce Transparency, a 1 pt separator border.
+            borderColor = NSColor.separatorColor.resolvedCGColor(for: effectiveAppearance)
+        } else if ShrikeTokens.increaseContrast {
             borderColor = (increasedContrastBorderColor ?? (isFullScreenHUD
                 ? NSColor.white.withAlphaComponent(HUDGlass.fullScreenBorderAlpha)
                 : NSColor.separatorColor)).resolvedCGColor(for: effectiveAppearance)
@@ -498,13 +504,14 @@ public class HUDSurfaceView: NSView {
         defer { CATransaction.commit() }
         switch look {
         case .solid, .plain:
-            fillLayer?.backgroundColor = (look == .plain || usesOpaqueFill
+            fillLayer?.backgroundColor = (look == .plain || ReduceTransparency.hudUsesOpaqueFill(
+                callerOpaque: usesOpaqueFill, reduce: reduce)
                 ? HUDGlass.opaqueSurfaceColor : (surfaceStyle?.fill ?? HUDGlass.surfaceColor)).cgColor
             if look == .plain {
                 fillLayer?.borderWidth = 0
                 fillLayer?.borderColor = nil
             } else {
-                fillLayer?.borderWidth = ShrikeTokens.increaseContrast
+                fillLayer?.borderWidth = strongBorder
                     ? HUDGlass.contrastBorderWidth : (surfaceStyle?.hairlineWidth ?? HUDGlass.contrastBorderWidth)
                 fillLayer?.borderColor = borderColor
             }
@@ -522,6 +529,11 @@ public class HUDSurfaceView: NSView {
 
     /// The glass view (`NSGlassEffectView` on macOS 26), once built.
     var glassViewForTesting: NSView? { glassView }
+    /// True when the fill is the opaque one (caller flag or Reduce Transparency).
+    var drawsOpaqueFillForTesting: Bool {
+        guard let fill = fillLayer?.backgroundColor else { return false }
+        return NSColor(cgColor: fill)?.alphaComponent == 1
+    }
     /// The fill layer, once built.
     var fillLayerForTesting: CALayer? { fillLayer }
 }

@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.2.34 - 2026-11-16
+
+### New
+- If you quit while a Batch or a copy or move is running, Shrike says what is still running and asks first. Quit Anyway stops the work, and the photo being written is finished first. Cancel is the safe choice. Shrike also waits for saves and rotations that are still being written.
+- If a Batch rename was cut off, for example by a crash, Shrike puts the photos back under their real names the next time you start it. If it cannot, it tells you which photos need your help.
+- Names Shrike cannot use are refused with a reason: line breaks, a space at the start or end, a period at the end, and the like. Batch checks the new names in the same way.
+- Batch shows which other files a Replace will put in the Trash. The same note appears when you choose "Do this for the remaining conflicts" in Copy and Move.
+- Settings > Editing shows the backup limit next to the space the backups use.
+- The viewer toolbar has an Edit button with a word on it. The edit tools show their names when the window is wide enough, and icons when it is narrow.
+- Info is one panel, with the same words, in the Browser and in the viewer.
+- The grid's right-click menu now matches the viewer's menu. Edit Photo is in it, so you can start editing from the Browser.
+- The Tags popover has named color dots. A dot that is on shows a ring and a check, not only a color.
+- List view shows which column it is sorted by, with an arrow.
+- Compare shows the zoom of each photo in a small label on its pane. The Zoom commands in the View menu work in Compare.
+- The Browser follows the viewer: the photo you look at is the one selected in the grid.
+- The Settings window fits each tab.
+- You can move and resize the crop frame with the keyboard.
+- When you add a photo to Batch twice, for example through a link to it, Batch says how many duplicates it left out.
+
+### Faster
+- The sidebar, drags, the Tags popover, the Info panel and starting a copy no longer wait for the disk while they check a folder or a file.
+- Printing prepares the photos in the background. A sheet shows the progress, and Cancel stops it.
+- A viewer opened from the Browser of a big folder no longer waits while the Info panel reads the folder list.
+
+### Changed
+- The viewer is always dark, also when your Mac is in Light mode.
+- All buttons share one style.
+- Alert buttons keep the same order everywhere.
+- Deep folders are readable in a narrow sidebar.
+- In a deep folder, the path bar at the bottom of the Browser keeps the first folder and the last folders in full. The folders in between go behind a "…" item with a menu.
+- In edit mode, a crop, resize or levels change that you have not applied yet now shows as an unsaved change.
+- Esc in a number field of the edit panels puts the old number back.
+- Save Copy… is available in the menu and in the toolbar under the same rule: when there is something to save.
+- Changing the thumbnail size keeps the selected photo in view. When no photo is selected, or the selected one is scrolled out of view, the photo at the top of the grid stays at the top.
+- Command-Z in the Batch window undoes the finished batch from its result screen.
+- In edit mode, Apply and Reset say more clearly what they do, and the sliders read 0 at their start.
+- Return in a Batch field only confirms the field. A second Return runs the batch.
+- The Batch window fits its form, and its list of photos scrolls inside the window.
+- A stopped Batch shows a stop sign, not a green check. The question before a Batch changes your originals runs only the photos it named.
+- Every Undo button in a message undoes only its own action.
+- Words and spelling are the same everywhere: American spelling, the Photo menu, Info.
+- Errors show an icon and text, not only a red color.
+- With Reduce Transparency on, the viewer's overlays and badges are solid.
+- Backups of photos you replaced, with Replace in Copy, Move, Save Copy or Batch, are kept for up to the number of days set in Settings > Editing.
+
+### Fixed
+- The Filter button closes its popover when you click it again.
+- Unsaved edits to a photo are no longer lost without a question when you log out or restart the Mac.
+- A stopped Batch rename no longer leaves a photo under a temporary name.
+- Undo Batch puts a replaced photo back, with its history and rating, even when the Trash was emptied and its name was taken. In that case it comes back under a new name that ends in 2.
+- Revert in the Browser offers the same backup as the viewer does.
+- Backups that could not be saved after a rename, move, Trash or Undo are now reported, not hidden.
+- Shrike no longer stops at launch when it cannot save thumbnails. It keeps them in memory, and Settings > Thumbnails says so.
+- A copy or move that fails no longer touches a file that was already there. Copy and cross-disk Move write to a hidden name first and rename it when done, so a cut-off copy leaves no half photo.
+- On a Mac without graphics support, Shrike now shows a message and quits instead of crashing.
+- VoiceOver reads the photo, the crop frame, the toolbar groups and the Batch buttons with clear names and values.
+- The crop frame could stop reacting to the mouse after you left and re-entered edit mode.
+- The Info panel no longer offers a backup of the original after Undo already put the original back.
+- Command-S no longer saves a photo again when the edits were set back to no change.
+- Rotate left then right no longer counts as a change.
+- Undo or Redo while you type in a number field of the edit panels drops the typing, as Esc does. The fields then show the real values.
+- A save that ends while the viewer changes photos or reloads the folder now says "Saved", or says that it failed. Your edits are never applied twice. The original is in the backup, so File > Revert to Original brings it back.
+- The Filter popover in the Browser is no longer see-through in Light mode.
+
 ## 0.2.32 - 2026-11-10
 
 ### Fixed

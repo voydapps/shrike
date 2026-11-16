@@ -93,6 +93,8 @@ public enum ExportError: Error, Sendable, Equatable {
     /// The pre-overwrite backup failed, so the overwrite was not attempted.
     case backupFailed(underlying: String)
     case atomicReplaceFailed(underlying: String)
+    /// The disk is full (found by error code, not by the message text).
+    case diskFull
     case ioFailure(underlying: String)
 }
 
@@ -108,6 +110,7 @@ extension ExportError: LocalizedError {
         case .extensionMismatch: return "The output filename extension does not match the selected file format."
         case .backupFailed(let reason): return "The previous destination could not be backed up; nothing was overwritten. \(reason)"
         case .atomicReplaceFailed(let reason), .ioFailure(let reason): return "The output could not be committed. \(reason)"
+        case .diskFull: return "There is not enough disk space to write the output."
         }
     }
 }
@@ -178,6 +181,27 @@ public actor ImageExporter {
         resourceContext: ImageExportResourceContext? = nil,
         resourceCategory: ImageResourceCategory = .exportWork
     ) async throws -> BackupRecord? {
+        try await exportReporting(recipe: recipe, from: source, to: destination, format: format, quality: quality,
+                                  preserveEXIF: preserveEXIF, stripGPS: stripGPS, backupReason: backupReason,
+                                  resourceContext: resourceContext, resourceCategory: resourceCategory).record
+    }
+
+    /// Like `export`, and says how many photos' backup information could not be saved (0 or 1, from
+    /// putting a replaced photo's chain aside). `export` drops the count: its UI callers have no channel.
+    package func exportReporting(
+        recipe: EditRecipe,
+        from source: URL,
+        to destination: URL,
+        format: ExportFormat,
+        quality: Double = ImageExporter.defaultQuality,
+        preserveEXIF: Bool = true,
+        stripGPS: Bool = false,
+        backupReason: BackupReason = .save,
+        resourceContext: ImageExportResourceContext? = nil,
+        resourceCategory: ImageResourceCategory = .exportWork
+    ) async throws -> (record: BackupRecord?, backupsNotSaved: Int) {
+        let activeWork = ActiveWork.shared.begin(kind: .save, detail: destination.lastPathComponent)
+        defer { ActiveWork.shared.end(activeWork) }
         try Task.checkCancellation()
         // 1. Read the source.
         guard FileManager.default.fileExists(atPath: source.path) else {
@@ -237,7 +261,7 @@ public actor ImageExporter {
         // 2. Replay the recipe. `renderFinal` is the non-dropping variant
         // — we want a result, not a "maybe dropped" CGImage.
         // Core Image blocks for hundreds of ms per photo: run it on the export
-        // lane, not on a cooperative thread (audit MP-09).
+        // lane, not on a cooperative thread.
         let renderer = EditRenderer()
         let effective = EditRecipe.effectiveOperations(operations)
         let finalImage = try await Self.exportLane.run {
@@ -289,6 +313,7 @@ public actor ImageExporter {
         // overwrite.
         let replacing = FileManager.default.fileExists(atPath: destination.path)
         var record: BackupRecord?
+        var notSaved = 0
         if replacing, let backupStore {
             try await check(.beforeBackup)
             do {
@@ -309,18 +334,24 @@ public actor ImageExporter {
                 try FileManager.default.moveItem(at: tmpURL, to: destination)
             }
         } catch {
+            if BackupStore.isOutOfSpace(error) { throw ExportError.diskFull }
             throw ExportError.atomicReplaceFailed(underlying: "\(error)")
+        }
+
+        // 5a. Remember how the file looks now, so the chain applies only while it still does
+        // Not for a Save As onto another photo: that chain is moved away below.
+        if record != nil, let backupStore, FileIdentity.sameFile(source, destination) {
+            await backupStore.noteWritten(destination)
         }
 
         // 5b. A different photo was replaced (Save As onto another name,
         // Batch into a folder with Replace): the victim's backups follow
         // the victim, not the path. Otherwise "Revert to Original" on the
-        // new file at this path would bring back the replaced photo (FS-2).
+        // new file at this path would bring back the replaced photo.
         // Same shape as `FileOps.clearForReplace`, which re-keys to the Trash.
         if record != nil, let backupStore, !FileIdentity.sameFile(source, destination) {
-            let detached = destination.deletingLastPathComponent()
-                .appendingPathComponent(".shrike-replaced-\(UUID().uuidString)-\(destination.lastPathComponent)")
-            await backupStore.rekey(from: destination, to: detached)
+            let aside = await backupStore.detachForReplace(chainAt: destination)   // with a clock and the real path
+            if aside.failed > 0 { notSaved = 1 }
         }
 
         // 6. Keep the user's rating / flag / tags with the file. The file
@@ -332,7 +363,7 @@ public actor ImageExporter {
                 try? await metadataStore.copyMetadata(from: source, to: destination)
             }
         }
-        return record
+        return (record, notSaved)
     }
 
     private func check(_ point: Checkpoint) async throws {
@@ -390,36 +421,21 @@ public actor ImageExporter {
     ///
     /// The name starts with a dot, like the rotate and restore temps, so a
     /// crash or force-quit mid-save leaves a hidden file, not a full-size
-    /// junk photo in the folder (audit FS-10). Leftovers of earlier crashes
+    /// junk photo in the folder. Leftovers of earlier crashes
     /// (hidden or from older versions) are removed once per folder and run.
     private func temporaryURL(sameDirectoryAs destination: URL, format: ExportFormat) -> URL {
         let dir = destination.deletingLastPathComponent()
         Self.sweepStaleTemporaries(in: dir)
         let stem = destination.deletingPathExtension().lastPathComponent
-        let uuid = UUID().uuidString
-        return dir.appendingPathComponent(
-            ".\(stem).shrikeedit.\(uuid).\(format.fileExtension).tmp"
-        )
+        return dir.appendingPathComponent(TemporaryFileSweeper.hiddenTempName(
+            for: stem, marker: "shrikeedit", suffix: ".\(format.fileExtension).tmp"))
     }
 
-    private static let sweptFolders = OSAllocatedUnfairLock(initialState: Set<String>())
-
-    /// Deletes `*.shrikeedit.<uuid>.<ext>.tmp` files in `folder` that are
-    /// more than an hour old. Younger ones may belong to a save in progress
-    /// (a Batch writes many into one folder at once).
+    /// Deletes stale temp COPIES in `folder` (save, rotate, restore and transfer temps; see
+    /// `TemporaryFileSweeper`). Once per folder and run. Younger ones may belong to a save in
+    /// progress (a Batch writes many into one folder at once).
     static func sweepStaleTemporaries(in folder: URL, olderThan age: TimeInterval = 3600, now: Date = Date()) {
-        let first = sweptFolders.withLock { $0.insert(folder.path).inserted }
-        guard first else { return }
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: [.contentModificationDateKey],
-            options: []) else { return }
-        for url in entries {
-            let name = url.lastPathComponent
-            guard name.hasSuffix(".tmp"), name.contains(".shrikeedit.") else { continue }
-            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-            if let modified, now.timeIntervalSince(modified) > age { try? fm.removeItem(at: url) }
-        }
+        TemporaryFileSweeper.sweep(in: folder, olderThan: age, now: now)
     }
 
     /// Write `image` to `url` in `format`. Throws the appropriate

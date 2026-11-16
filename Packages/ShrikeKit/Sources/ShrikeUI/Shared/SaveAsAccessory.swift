@@ -97,7 +97,7 @@ final class SaveAsAccessory: NSView {
 
         let formatRow = Self.row("Format:", formatPopUp)
         qualityRow = Self.row("Quality:", qualitySlider, qualityField)
-        // The checkboxes sit in the controls' column (audit on-screen L8: they touched the panel edge).
+        // The checkboxes sit in the controls' column (before, they touched the panel edge).
         let stack = NSStackView(views: [messageLabel, formatRow, qualityRow,
                                         Self.row("", keepMetadata), Self.row("", removeLocation)])
         stack.orientation = .vertical

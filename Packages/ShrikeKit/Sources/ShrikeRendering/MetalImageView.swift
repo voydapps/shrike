@@ -727,7 +727,7 @@ public final class MetalImageView: NSView {
         needsDisplay = true
     }
 
-    /// Fit from ANY prior state (spec 27 B1): a running zoom animation lands
+    /// Fit from ANY prior state: a running zoom animation lands
     /// first (its finish block writes `contentMode`, and would put the old
     /// zoom back after this call), then the presentation and pan are cleared
     /// and the fit zoom is applied whether or not the mode value changed.
@@ -828,7 +828,6 @@ public final class MetalImageView: NSView {
             NotificationCenter.default.post(name: Notification.Name("shrike.firstImagePresented"), object: nil, userInfo: ["presentedUptime": presentedUptime])
         }
     }
-    private var displayLink: CVDisplayLink?
     private var firstDrawableFired = false
     public var onFirstImagePresented: (@MainActor () -> Void)?
     private var firstPhotoPresented = false
@@ -1007,14 +1006,15 @@ public final class MetalImageView: NSView {
     // MARK: - Init
 
     public override init(frame frameRect: NSRect) {
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            fatalError("MetalImageView: no Metal device available")
+        // No usable Metal device means no viewer at all.
+        // Tell the user and quit instead of crashing. Only reached when a
+        // viewer is built, so nothing is added to the launch path.
+        guard let resolved = MetalDeviceCheck.resolve(MetalDeviceCheck.lookup) else {
+            MetalDeviceCheck.quitWithNotice()
         }
+        let device = resolved.0
         self.device = device
-        guard let queue = device.makeCommandQueue() else {
-            fatalError("MetalImageView: could not create command queue")
-        }
-        self.commandQueue = queue
+        self.commandQueue = resolved.1
 
         let layer = CAMetalLayer()
         layer.device = device
@@ -1112,12 +1112,6 @@ public final class MetalImageView: NSView {
         fatalError("MetalImageView is programmatic only.")
     }
 
-    // CVDisplayLink teardown would live in deinit, but the display link is
-    // unused (we redraw on-demand). If it is ever used, tear it
-    // down via an explicit `invalidate()` call from ViewerWindow before the
-    // view is released, since deinit is nonisolated and can't touch
-    // main-actor state under Swift 6 strict concurrency.
-
     // MARK: - NSView lifecycle
 
     public override var isFlipped: Bool { false }
@@ -1128,7 +1122,6 @@ public final class MetalImageView: NSView {
         super.viewDidMoveToWindow()
         guard !isPermanentlyDisposed else { return }
         updateDrawableSize()
-        startDisplayLink()
         window?.makeFirstResponder(self)
         NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
         if let window {
@@ -1852,14 +1845,6 @@ public final class MetalImageView: NSView {
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
 
-    // MARK: - Display link (optional, for pan/zoom smoothness)
-
-    private func startDisplayLink() {
-        // The viewer redraws on demand via `needsDisplay`; the display link is
-        // not used today. This is the hook if zoom/pan easing is ever
-        // driven by a display link.
-    }
-
     // MARK: - Input
 
     private func registerForTrackingAndKeys() {
@@ -1886,7 +1871,8 @@ public final class MetalImageView: NSView {
         if event.clickCount == 2 {
             lastDragPoint = nil
             dragStartPoint = nil
-            toggleZoom(at: convert(event.locationInWindow, from: nil))
+            // A broken file (error card): nothing to zoom.
+            if !canvasIsEmptyBehindCard { toggleZoom(at: convert(event.locationInWindow, from: nil)) }
             return
         }
         lastDragPoint = event.locationInWindow
@@ -2073,6 +2059,8 @@ public final class MetalImageView: NSView {
 
     /// One pinch step (`magnify(with:)`), testable without a gesture event.
     internal func handleMagnify(magnification: Double, phase: NSEvent.Phase, anchor: CGPoint) {
+        // A broken file (error card): pinch does nothing, like the zoom keys.
+        guard !canvasIsEmptyBehindCard else { return }
         guard currentTexture != nil else { return }
         finishZoomAnimation()
         if phase == .began || pinch == nil {
@@ -2096,7 +2084,7 @@ public final class MetalImageView: NSView {
     }
 
     public override func smartMagnify(with event: NSEvent) {
-        guard !isPermanentlyDisposed else { return }
+        guard !isPermanentlyDisposed, !canvasIsEmptyBehindCard else { return }
         toggleZoom(at: convert(event.locationInWindow, from: nil))
     }
 
@@ -2110,8 +2098,8 @@ public final class MetalImageView: NSView {
 
     public override func scrollWheel(with event: NSEvent) {
         guard !isPermanentlyDisposed else { return }
-        // No photo (a folder whose first photos cannot be opened, 0.2.10 audit
-        // item 7): only changing the image makes sense, so the wheel still does
+        // No photo (a folder whose first photos cannot be opened):
+        // only changing the image makes sense, so the wheel still does
         // that. Zoom, pan and swipe need a texture.
         let hasTexture = currentTexture != nil && !canvasIsEmptyBehindCard
         // Land a running double-click / smart-zoom animation on its end
@@ -2600,6 +2588,54 @@ extension MetalImageView: NSDraggingSource {
         case .outsideApplication: return [.copy]
         case .withinApplication:  return []
         @unknown default:         return [.copy]
+        }
+    }
+}
+
+/// The Metal device for a viewer, or the alert and quit
+/// when this Mac (or virtual machine) has none. The decision and the texts
+/// are testable without a GPU: `resolve` takes the device lookup.
+@MainActor
+public enum MetalDeviceCheck {
+    public static let title = "This Mac can't show photos in Shrike"
+    public static let body = "Shrike needs graphics support (Metal). This Mac, or this virtual machine, does not have it. Shrike will quit."
+    public static let button = "Quit"
+
+    /// The device lookup (tests put a fake one here).
+    static var lookup: () -> (any MTLDevice)? = { MTLCreateSystemDefaultDevice() }
+
+    /// The device and its command queue, or nil when either is missing.
+    static func resolve(_ lookup: () -> (any MTLDevice)?) -> (any MTLDevice, any MTLCommandQueue)? {
+        guard let device = lookup(), let queue = device.makeCommandQueue() else { return nil }
+        return (device, queue)
+    }
+
+    /// App-modal alert (the viewer window is never shown), then quit through
+    /// `NSApp.terminate`, so running work still gets the quit question.
+    /// How the "no Metal" notice is given: an alert for a person, or a line on
+    /// stderr where nobody can answer an alert (tests, CI), so a run never hangs.
+    enum NoticeStyle: Equatable, Sendable { case alert, stderr }
+    static func noticeStyle(runningTests: Bool, environment: [String: String]) -> NoticeStyle {
+        runningTests || environment["GITHUB_ACTIONS"] == "true" ? .stderr : .alert
+    }
+
+    static func quitWithNotice() -> Never {
+        if noticeStyle(runningTests: ShrikeDataPaths.isRunningTests,
+                       environment: ProcessInfo.processInfo.environment) == .stderr {
+            FileHandle.standardError.write(Data("\(title). \(body)\n".utf8))
+            fatalError("MetalImageView: no Metal device available")   // as before: the run fails, it does not wait
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = title
+        alert.informativeText = body
+        alert.addButton(withTitle: button)
+        // `terminate` returns only when a quit question was answered Cancel
+        // (work still running): ask again, never kill that work.
+        while true {
+            alert.runModal()
+            NSApp?.terminate(nil)
+            if NSApp == nil { exit(0) }
         }
     }
 }

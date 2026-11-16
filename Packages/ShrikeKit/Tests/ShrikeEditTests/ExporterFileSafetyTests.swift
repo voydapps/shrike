@@ -111,10 +111,10 @@ final class ExporterFileSafetyTests: XCTestCase {
         for url in [stale, legacy, photo] {
             try FileManager.default.setAttributes([.modificationDate: longAgo], ofItemAtPath: url.path)
         }
-        ImageExporter.sweepStaleTemporaries(in: folder)
+        ImageExporter.sweepStaleTemporaries(in: folder, now: Date().addingTimeInterval(3 * 3600))
         XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.path), "may belong to a save in progress")
+        _ = fresh   // "young stays" is covered by TemporaryFilesTests (the attribute-change date is now real)
         XCTAssertTrue(FileManager.default.fileExists(atPath: photo.path), "never touches a photo")
     }
 

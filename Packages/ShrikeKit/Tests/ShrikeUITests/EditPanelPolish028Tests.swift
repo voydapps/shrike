@@ -18,11 +18,11 @@ final class EditPanelPolish028Tests: XCTestCase {
     }
 
     func testValueTextTable() {
-        XCTAssertEqual(EditValueText.text(value: 0, step: 0.01, signed: true), "+0.00")
-        XCTAssertEqual(EditValueText.text(value: -0.254, step: 0.01, signed: true), "-0.25")
+        XCTAssertEqual(EditValueText.text(value: 0, step: 0.01, signed: true), "0")
+        XCTAssertEqual(EditValueText.text(value: -0.254, step: 0.01, signed: true), "\u{2212}0.25")
         XCTAssertEqual(EditValueText.text(value: 12.5, step: 0.5, unit: "°"), "12.5°")
         XCTAssertEqual(EditValueText.text(value: 0, step: 1), "0")
-        XCTAssertEqual(EditValueText.text(value: 0, step: 1, signed: true), "+0")
+        XCTAssertEqual(EditValueText.text(value: 0, step: 1, signed: true), "0")
         XCTAssertEqual(EditValueText.text(value: 0, step: 0.5, unit: "°"), "0°")
         XCTAssertEqual(EditValueText.text(value: 12, step: 1, signed: true, unit: "°"), "+12°")
         XCTAssertEqual(EditValueText.decimals(forStep: 0.01), 2)

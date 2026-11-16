@@ -60,7 +60,7 @@ extension ViewerWindow: ViewerToolbarHost {
 
     /// The View menu reads "Hide Inspector" while it shows.
     func inspectorMenuTitle() -> String {
-        toolbarInspectorShown ? "Hide Inspector" : "Show Inspector"
+        toolbarInspectorShown ? "Hide Info" : "Show Info"
     }
 
     // MARK: Auto-hide
@@ -167,7 +167,7 @@ extension ViewerWindow: ViewerToolbarHost {
 
     // MARK: Frames
 
-    static let frameAutosaveName = "shrike.viewer"
+    static let frameAutosaveName = FrameAutosave.name("shrike.viewer")
 
     /// A viewer from Finder, Open…, Open Recent or a Dock drop: the saved
     /// frame, or a cascade from the last viewer so two never overlap.
@@ -182,7 +182,7 @@ extension ViewerWindow: ViewerToolbarHost {
     }
 }
 
-/// The backing of the revealed title bar and toolbar (spec 21b §2): a translucent
+/// The backing of the revealed title bar and toolbar: a translucent
 /// system-colour band with a 0.5 pt separator, so the photo shows softly through it and
 /// the bar is no longer a solid block over the sky. Title and buttons stay readable
 /// (the fill is 85 % opaque). It exists only while the bar is revealed; the photo's
@@ -190,11 +190,22 @@ extension ViewerWindow: ViewerToolbarHost {
 /// independently of its parent.
 @MainActor
 final class TitlebarScrimView: NSView {
-    /// Spec 21b §2 fallback: `NSVisualEffectView` does not sample a `CAMetalLayer`, so the
+    /// Fallback: `NSVisualEffectView` does not sample a `CAMetalLayer`, so the
     /// band is a translucent fill instead of the `.titlebar` material.
     static let fillAlpha: CGFloat = 0.85
     override var isOpaque: Bool { false }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// The band is solid under Reduce Transparency.
+    static var currentFillAlpha: CGFloat {
+        ReduceTransparency.titlebarScrimAlpha(reduce: ReduceTransparency.isOn)
+    }
+    private var colorObserver: LiveColorObserver?
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        colorObserver = LiveColorObserver(view: self)
+    }
+    required init?(coder: NSCoder) { fatalError() }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -204,7 +215,7 @@ final class TitlebarScrimView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         // Resolve in the native titlebar's inherited effective appearance.
         // A dark canvas / HUD token would mismatch native light chrome.
-        NSColor.windowBackgroundColor.withAlphaComponent(Self.fillAlpha).setFill()
+        NSColor.windowBackgroundColor.withAlphaComponent(Self.currentFillAlpha).setFill()
         bounds.fill(using: .copy)
         NSColor.separatorColor.setFill()
         NSRect(x: 0, y: 0, width: bounds.width, height: 0.5).fill()

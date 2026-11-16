@@ -75,10 +75,32 @@ final class FolderWatcherTests: XCTestCase {
         return await predicate()
     }
 
+    /// Writes `name` and waits until the watcher reports it. Everything that
+    /// happened before the write has been delivered by then, so a "this must
+    /// not be reported" check made afterwards needs no fixed wait.
+    private func flushed(by name: String, _ collector: ChangeCollector) async throws {
+        try touch(name)
+        let seen = await waitUntil(timeout: .seconds(30)) { await collector.added.contains(name) }
+        XCTAssertTrue(seen, "the sentinel \(name) was never reported")
+    }
+
     /// FSEvents may still flush fixture writes made just before the stream
     /// started; give the fixtures time to settle first.
     private func settle() async {
-        try? await Task.sleep(for: .milliseconds(300))
+        // Event-based: a throwaway watcher on the folder reports a sentinel file.
+        // FSEvents delivers in order, so every fixture write made before it has
+        // been flushed by then, and a watcher started afterwards (the one under
+        // test) is not handed those old events.
+        guard let probe = try? FolderWatcher(folder: root, options: fastOptions()) else { return }
+        let (collector, task) = startCollecting(probe)
+        defer { task.cancel(); probe.stop() }
+        let name = "settle-\(UUID().uuidString).tmp"
+        try? touch(name)
+        let seen = await waitUntil(timeout: .seconds(30)) { await collector.added.contains(name) }
+        XCTAssertTrue(seen, "the settle sentinel was never reported")
+        try? FileManager.default.removeItem(at: root.appendingPathComponent(name))
+        // The removal is an event too: wait for it so it cannot land in the test.
+        _ = await waitUntil(timeout: .seconds(30)) { await collector.removed.contains(name) }
     }
 
     private func fastOptions() -> FolderWatcher.Options {
@@ -159,7 +181,9 @@ final class FolderWatcherTests: XCTestCase {
 
         let sawModify = await waitUntil { await collector.modified.contains("photo.jpg") }
         XCTAssertTrue(sawModify, "atomic save should surface as modified")
-        try? await Task.sleep(for: .milliseconds(400))
+        // Nothing else may follow for photo.jpg. A sentinel written now and
+        // seen proves the watcher has delivered everything that came before.
+        try await flushed(by: "sentinel.jpg", collector)
         let added = await collector.added
         let removed = await collector.removed
         XCTAssertFalse(added.contains("photo.jpg"))
@@ -177,9 +201,13 @@ final class FolderWatcherTests: XCTestCase {
 
         // Shrike saves own.jpg and creates own-copy.jpg; someone else edits
         // other.jpg at the same time.
+        // A window long enough that a loaded machine cannot deliver the
+        // events after it has ended; the test waits it out below.
+        let window: Duration = .seconds(3)
+        let ignoreStart = ContinuousClock.now
         watcher.ignore(paths: [root.appendingPathComponent("own.jpg"),
                                root.appendingPathComponent("own-copy.jpg"),
-                               TestScratch.directory.appendingPathComponent("x.jpg")])
+                               TestScratch.directory.appendingPathComponent("x.jpg")], for: window)
         try Data(repeating: 0xCD, count: 4096)
             .write(to: root.appendingPathComponent("own.jpg"), options: .atomic)
         try touch("own-copy.jpg")
@@ -187,14 +215,16 @@ final class FolderWatcherTests: XCTestCase {
 
         let sawOther = await waitUntil { await collector.modified.contains("other.jpg") }
         XCTAssertTrue(sawOther)
-        try? await Task.sleep(for: .milliseconds(400))
+        try await flushed(by: "sentinel.jpg", collector)
         let all = await collector.added + collector.removed + collector.modified
         XCTAssertFalse(all.contains("own.jpg"), "own save must be suppressed: \(all)")
         XCTAssertFalse(all.contains("own-copy.jpg"), "own copy must be suppressed: \(all)")
 
         // Once the window is over, the file is reported again, and the
         // suppressed add was still recorded (a delete is "removed").
-        try? await Task.sleep(for: .milliseconds(700))
+        // Sleep until the window has certainly ended (a sleep never returns
+        // early, so a slow machine only makes this safer).
+        try await Task.sleep(until: ignoreStart + window + .milliseconds(100), clock: .continuous)
         try FileManager.default.removeItem(at: root.appendingPathComponent("own-copy.jpg"))
         let sawRemove = await waitUntil { await collector.removed.contains("own-copy.jpg") }
         XCTAssertTrue(sawRemove, "changes after the window are reported")
@@ -218,9 +248,11 @@ final class FolderWatcherTests: XCTestCase {
 
         let sawAll = await waitUntil(timeout: .seconds(10)) { await Set(collector.added).count == 1_000 }
         XCTAssertTrue(sawAll, "expected all 1,000 adds")
-        try? await Task.sleep(for: .milliseconds(400))
+        // All adds have arrived, so the batches so far are the whole burst.
         let changes = await collector.changes
-        let added = await collector.added
+        // A sentinel flushes anything late; a duplicate would show up now.
+        try await flushed(by: "sentinel.jpg", collector)
+        let added = await collector.added.filter { $0 != "sentinel.jpg" }
         XCTAssertEqual(added.count, 1_000, "each file reported once")
         // One batch expected; allow a second if the writes straddled the
         // max-latency deadline on a slow machine.
@@ -242,7 +274,7 @@ final class FolderWatcherTests: XCTestCase {
         try touch("sentinel.jpg")
         let sawSentinel = await waitUntil { await collector.added.contains("sentinel.jpg") }
         XCTAssertTrue(sawSentinel)
-        try? await Task.sleep(for: .milliseconds(300))
+        try await flushed(by: "sentinel2.jpg", collector)
 
         let names = await collector.allNames
         XCTAssertFalse(names.contains { $0.contains("/sub/") }, "nested file leaked: \(names)")

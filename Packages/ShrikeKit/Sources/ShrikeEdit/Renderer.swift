@@ -172,7 +172,7 @@ public actor EditRenderer {
 
     /// The same replay for already-resolved operations. Synchronous and not
     /// bound to the actor, so a caller can run it on its own queue instead
-    /// of blocking a cooperative thread (audit MP-09).
+    /// of blocking a cooperative thread.
     public nonisolated func renderFinal(effectiveOperations ops: [EditOperation], from original: CGImage) -> CGImage {
         var current = original
         for op in ops {
@@ -184,14 +184,14 @@ public actor EditRenderer {
     /// `renderFinal` for the save path: throws `ExportError.recipeApplyFailed`
     /// when a Color Adjust or Levels step that should change the picture
     /// handed its input back, so a save never says "Saved" for an edit it
-    /// did not make (audit COR-1). Size changes are checked by the exporter.
+    /// did not make. Size changes are checked by the exporter.
     func renderVerified(recipe: EditRecipe, from original: CGImage) async throws -> CGImage {
         let ops = EditRecipe.effectiveOperations(await recipe.snapshot())
         return try renderVerified(effectiveOperations: ops, from: original)
     }
 
     /// The same check for already-resolved operations, off this actor so the
-    /// exporter can run it on its own queue (audit MP-09).
+    /// exporter can run it on its own queue.
     nonisolated func renderVerified(effectiveOperations ops: [EditOperation], from original: CGImage) throws -> CGImage {
         var current = original
         for op in ops {

@@ -28,6 +28,9 @@ extension ViewerWindow {
         coordinator.dismissProgressToast = { [weak self] ticket in
             self?.contentRoot.toastHost.dismissProgress(matching: ticket)
         }
+        coordinator.ownsProgressToast = { [weak self] ticket in
+            self?.contentRoot.toastHost.ownsProgress(ticket) ?? false
+        }
         coordinator.onHUDPick = { [weak self] verb, choice in
             self?.clearChord()
             self?.fileToFolder(verb, choice)
@@ -47,19 +50,34 @@ extension ViewerWindow {
             transfer(verb, item.group, to: folder)
             return
         }
+        let coordinator = transfers
+        let group = item.group
         Task { @MainActor [weak self] in
-            guard let self, let folder = await self.transfers.resolve(resolution) else { return }
-            self.transfer(verb, item.group, to: folder)
+            // Reserved in the panel's OK turn: ⌘Q right after asks.
+            let box = ReservationBox()
+            let folder = await coordinator.resolve(resolution) { _ in
+                box.reservation = FileTransferCoordinator.reserve(verb, total: 1)
+            }
+            guard let self, let folder else { FileTransferCoordinator.release(box.reservation); return }
+            self.transfer(verb, group, to: folder, reservation: box.reservation)
         }
     }
 
-    /// Runs the copy / move of `group` into `folder`.
-    func transfer(_ verb: FileVerb, _ group: ImageGroup, to folder: URL) {
+    /// Runs the copy / move of `group` into `folder`. A plain path
+    /// comparison settles "already there" on the main thread; the check
+    /// through symbolic links (`canonical`, disk calls; test seam) runs off
+    /// the main thread, and a photo found already there goes back.
+    func transfer(_ verb: FileVerb, _ group: ImageGroup, to folder: URL,
+                  reservation: FileTransferCoordinator.TransferReservation? = nil,
+                  canonical: @escaping @Sendable (URL) -> String = { GroupList.canonical($0) }) {
         let source = group.primary.deletingLastPathComponent()
-        if GroupList.canonical(source) == GroupList.canonical(folder) {
+        if source.standardizedFileURL.path == folder.standardizedFileURL.path {
+            FileTransferCoordinator.release(reservation)
             contentRoot.toast(ToastContent(FileTransferCopy.alreadyIn([group], folder: folder)))
             return
         }
+        // Counts as running from here, while it waits for earlier work.
+        let reserved = reservation ?? FileTransferCoordinator.reserve(verb, total: 1)
         transfers.slots.setLast(folder, for: verb)
 
         var removed: [RemovedGroup] = []
@@ -77,7 +95,14 @@ extension ViewerWindow {
         let groups = [current]
         let task = Task { @MainActor [weak self] in
             await previous?.value
-            let outcome = await coordinator.run(verb, groups, to: folder, ops: ops)
+            let inside = await Task.detached(priority: .userInitiated) { canonical(source) == canonical(folder) }.value
+            if inside {
+                FileTransferCoordinator.release(reserved)
+                if !removed.isEmpty { self?.reinsert(removed) }
+                self?.contentRoot.toast(ToastContent(FileTransferCopy.alreadyIn(groups, folder: folder)))
+                return
+            }
+            let outcome = await coordinator.run(verb, groups, to: folder, ops: ops, reservation: reserved)
             self?.finishTransfer(verb, outcome, folder: folder, removed: removed, fallback: current)
         }
         trashChain = task
@@ -113,9 +138,31 @@ extension ViewerWindow {
         let text = outcome.cancelled
             ? FileTransferCopy.cancelled(verb, done: receipt.items.count, total: outcome.total)
             : FileTransferCopy.done(verb, receipt.items.map(\.source), folder: folder)
-        contentRoot.toast(ToastContent(text, actionTitle: "Undo")) { [weak self] in
-            self?.performUndo()
+        // The count of the LAST progress receipt.
+        var content = BackupNotice.toast(ToastContent(text, actionTitle: "Undo"),
+                                         notSaved: receipt.backupsNotSaved, of: receipt.items.count)
+        // The other same-name files Replace moved to the Trash.
+        if receipt.extraFilesTrashed > 0 {
+            let opening = FileTransferCopy.opening(text, cancelled: outcome.cancelled,
+                                                   replacedPhotos: FileTransferCopy.replacedPhotos(receipt),
+                                                   extraFilesTrashed: receipt.extraFilesTrashed)
+            content.message = FileTransferCopy.resultLine(opening, backupsNotSaved: receipt.backupsNotSaved,
+                                                          of: receipt.items.count, extraFilesTrashed: receipt.extraFilesTrashed)
+            content.customDuration = max(content.customDuration ?? 0, 6.0)
         }
+        showUndoToast(content)
+    }
+
+    /// A file action's Undo toast: it undoes that action only, and goes away
+    /// once anything else changes the undo stack or edit mode starts. In edit
+    /// mode it has no Undo button (⌘Z there undoes edit steps).
+    func showUndoToast(_ content: ToastContent) {
+        guard !contentRoot.isEditModeActive else {
+            var plain = content
+            plain.actionTitle = nil
+            return contentRoot.toast(plain)
+        }
+        contentRoot.toastHost.showUndo(content, mark: undoTopMark, manager: windowUndoManager)
     }
 
     private func registerTransferUndo(_ receipt: FileOpReceipt, removed: [RemovedGroup]) {
@@ -137,15 +184,20 @@ extension ViewerWindow {
         trashChain = Task { @MainActor [weak self] in
             await previous?.value
             var failure: (any Error)?
-            do { try await ops.undo(receipt) } catch { failure = error }
+            var notSaved = 0
+            do { notSaved = try await ops.undo(receipt) } catch { failure = error }
             guard let self else { return }
             if receipt.kind == .move {
                 let home = removed.filter { FileManager.default.fileExists(atPath: $0.group.primary.path) }
                 if !home.isEmpty { self.reinsert(home) }
             }
             if let failure {
-                self.contentRoot.toast(ToastContent(
-                    FileTransferCopy.undoFailed(failure, folder: receipt.destination), kind: .error))
+                self.contentRoot.toast(ToastContent(BackupNotice.appending(
+                    to: FileTransferCopy.undoFailed(failure, folder: receipt.destination),
+                    notSaved: notSaved, of: receipt.items.count, leadNamesPhotos: false), kind: .error))
+            } else if let notice = BackupNotice.standaloneToast(lead: nil, notSaved: notSaved, of: receipt.items.count) {
+                // This Undo has no message of its own: the sentence is its own toast (no Undo to lose).
+                self.contentRoot.toast(notice)
             }
         }
     }

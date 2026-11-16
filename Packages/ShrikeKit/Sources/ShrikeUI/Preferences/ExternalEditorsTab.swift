@@ -4,7 +4,7 @@
 //
 //  Settings ▸ External Editors:
 //
-//  A grouped Form (spec 27 V4): one row per configured editor (icon, name,
+//  A grouped Form: one row per configured editor (icon, name,
 //  key hint, Send RAW toggle, remove), then "Add Editor…". No placeholder
 //  rows; an empty state when nothing is configured.
 //
@@ -128,7 +128,7 @@ struct ExternalEditorsTab: View {
 
     @StateObject private var model = ExternalEditorsModel()
 
-    // MARK: Layout facts (spec 27 V4; pure, so tests can pin them)
+    // MARK: Layout facts
 
     /// What the tab shows for `count` configured editors.
     struct Layout: Equatable {

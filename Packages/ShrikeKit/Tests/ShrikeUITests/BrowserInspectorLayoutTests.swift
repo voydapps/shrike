@@ -79,7 +79,7 @@ final class BrowserInspectorLayoutTests: XCTestCase {
         let sorted = times.sorted()
         let median = (sorted[4] + sorted[5]) / 2
         print(String(format: "browserSelectionChange median %.2f ms, max %.2f ms", median, sorted.last!))
-        XCTAssertLessThan(median, 16, "the selection handler stays under one frame")
+        perfAssertLessThan(median, 16, "the selection handler stays under one frame")
     }
 
     func testBigPhotoFitsThePreviewBoxAndRowsStayInsideThePane() async throws {

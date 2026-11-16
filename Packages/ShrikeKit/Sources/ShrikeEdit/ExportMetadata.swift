@@ -2,8 +2,8 @@
 //  ExportMetadata.swift
 //  ShrikeEdit
 //
-//  What survives a save (audit FS-4) and what "Remove location" removes
-//  (FS-5). The four property dictionaries alone (Exif, TIFF, GPS, IPTC)
+//  What survives a save and what "Remove location" removes.
+//  The four property dictionaries alone (Exif, TIFF, GPS, IPTC)
 //  dropped every XMP field that has no IPTC twin (colour labels, develop
 //  settings, custom namespaces) and the camera maker notes. The exporter
 //  now also passes the source's XMP (`CGImageMetadata`) and the maker-note

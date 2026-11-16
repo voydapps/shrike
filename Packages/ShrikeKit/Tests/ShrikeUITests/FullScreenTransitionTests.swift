@@ -119,7 +119,10 @@ final class FullScreenTransitionTests: XCTestCase {
         window.setFrame(NSRect(x: 80, y: 80, width: 900, height: 700), display: true)
 
         // Let any stray async work (prefetch, filmstrip, stand-ins) land.
-        try await Task.sleep(nanoseconds: 400_000_000)
+        for _ in 0..<3 {
+            await withCheckedContinuation { cont in DispatchQueue.main.async { cont.resume() } }
+            for _ in 0..<20 { await Task.yield() }
+        }   // everything already queued on the main queue / actor has run
 
         let ids = view.imageAssignmentLogForTesting.map { $0.sourceID }
         XCTAssertTrue(ids.allSatisfy { $0 == b.id },

@@ -6,6 +6,14 @@ final class InlineNotice: NSStackView {
     private let label = NSTextField(wrappingLabelWithString: "")
     private var actions: [Action] = []
     private var bar: ExactProgressBar?
+    private let icon = NSImageView()
+
+    /// An error notice carries the warning icon, so it is not
+    /// told apart by color alone.
+    enum Kind: Equatable { case info, error }
+    private(set) var kind: Kind = .info
+    /// True while the error icon is in the notice.
+    var showsErrorIcon: Bool { !isHidden && icon.superview != nil && !icon.isHidden }
     var onVisibilityChanged: ((Bool) -> Void)?
     /// Height of a notice that must not change between its states (progress
     /// and result), so the photos below never jump: room for the Undo button.
@@ -25,12 +33,21 @@ final class InlineNotice: NSStackView {
         orientation = .horizontal; spacing = 8
         edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
         label.font = ChromeTypography.font(12); label.isSelectable = true
+        icon.image = NSImage(systemSymbolName: ErrorLook.iconSymbolName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: ErrorLook.iconPointSize, weight: .regular))
+        icon.contentTintColor = .systemRed
+        icon.setAccessibilityElement(false)
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        addArrangedSubview(icon); icon.isHidden = true
         addArrangedSubview(label); isHidden = true
     }
     required init?(coder: NSCoder) { fatalError() }
     /// The message shown ("" when hidden) and the action buttons' titles.
     var message: String { isHidden ? "" : label.stringValue }
     var buttonTitles: [String] { arrangedSubviews.compactMap { ($0 as? NSButton)?.title } }
+    /// The buttons stay in place but can no longer be pressed.
+    func disableButtons() { arrangedSubviews.forEach { ($0 as? NSButton)?.isEnabled = false } }
+    var buttonsEnabled: [Bool] { arrangedSubviews.compactMap { ($0 as? NSButton)?.isEnabled } }
     /// True while a progress bar is shown.
     var isShowingProgress: Bool { !isHidden && bar != nil }
     /// The bar's value (nil = busy, no number).
@@ -52,8 +69,10 @@ final class InlineNotice: NSStackView {
         bar.set(fraction: fraction, label: text)
     }
 
-    func show(_ text: String?, buttons: [(String, () -> Void)] = []) {
-        for view in arrangedSubviews where view !== label { removeArrangedSubview(view); view.removeFromSuperview() }
+    func show(_ text: String?, kind: Kind = .info, buttons: [(String, () -> Void)] = []) {
+        for view in arrangedSubviews where view !== label && view !== icon { removeArrangedSubview(view); view.removeFromSuperview() }
+        self.kind = kind
+        icon.isHidden = kind != .error
         bar?.stopBusy(); bar = nil
         actions = []; label.stringValue = text ?? ""; isHidden = text == nil
         for (title, body) in buttons {

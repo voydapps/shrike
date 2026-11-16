@@ -58,7 +58,7 @@ final class AuditWriteSafetyTests: XCTestCase {
         let result = try await drain(runner.run(plan))
         XCTAssertEqual(result.doneCount, 1); XCTAssertTrue(result.canUndo)
         XCTAssertNotEqual(try Data(contentsOf: victim), oldBytes)
-        try await runner.undo(result)
+        _ = try await runner.undo(result)
         XCTAssertEqual(try Data(contentsOf: victim), oldBytes, "Undo restores the old destination, not the source")
     }
     func testFailedRenameRollbackPreservesRecoveryReceiptAndUndoRestoresVictimBytes() async throws {
@@ -104,7 +104,7 @@ final class AuditWriteSafetyTests: XCTestCase {
                 XCTAssertTrue(error.localizedDescription.contains("backup is retained"))
                 // The transient fault has cleared: actual Undo uses the retained
                 // destination receipt and restores its original bytes.
-                try await runner.undo(result)
+                _ = try await runner.undo(result)
                 XCTAssertEqual(try Data(contentsOf: victim), victimBytes)
             } else {
                 XCTAssertEqual(try Data(contentsOf: victim), victimBytes)
@@ -141,7 +141,7 @@ final class AuditWriteSafetyTests: XCTestCase {
         let src = try XCTUnwrap(CGImageSourceCreateWithURL(rotatedURL as CFURL, nil))
         let orientation = ExifOrientation(properties: CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any])
         XCTAssertEqual(orientation, .right)
-        try await runner.undo(final)
+        _ = try await runner.undo(final)
         XCTAssertEqual(try Data(contentsOf: a), beforeA); XCTAssertEqual(try Data(contentsOf: b), beforeB)
     }
     func testStopWaitsForActiveCheckpointAndReturnsTruthfulCancelledResult() async throws {

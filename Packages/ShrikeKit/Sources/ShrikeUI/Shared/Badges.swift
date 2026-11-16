@@ -53,7 +53,7 @@ public enum Badges {
     public static let ratingColor = NSColor(srgbRed: 0xF5 / 255, green: 0xC5 / 255, blue: 0x18 / 255, alpha: 1)
     public static let flagColor = NSColor(srgbRed: 1, green: 0x95 / 255, blue: 0, alpha: 1)
 
-    /// The glyph of a file that can't be previewed (spec 25 §2.2): one
+    /// The glyph of a file that can't be previewed: one
     /// symbol for the Browser cell, the viewer strip, the Browser inspector
     /// and the list thumbnail column. Tint it with `brokenFileTint`.
     public static func brokenFileGlyph(pointSize: CGFloat) -> NSImage? {
@@ -91,7 +91,7 @@ public enum Badges {
         String(repeating: "★", count: max(0, min(5, rating)))
     }
 
-    /// The list's compact rating: "★3" when rated, "" otherwise (spec 27 P3-14).
+    /// The list's compact rating: "★3" when rated, "" otherwise.
     public static func compactStars(_ rating: Int) -> String {
         let n = max(0, min(5, rating))
         return n == 0 ? "" : "★\(n)"
@@ -113,7 +113,7 @@ public enum Badges {
         return image
     }
 
-    /// The chips' backdrop on a photo (spec 27 V5): black at 0.55.
+    /// The chips' backdrop on a photo: black at 0.55.
     public static let chipFill = NSColor.black.withAlphaComponent(0.55)
     /// The chips' 0.5 pt hairline: white at 0.18.
     public static let chipHairline = NSColor.white.withAlphaComponent(0.18)
@@ -170,7 +170,7 @@ public enum Badges {
         }
     }
 
-    /// Spec 24 §4.3: the two-part chip `[JPG | RAW]` of a pair. 9 pt
+    /// The two-part chip `[JPG | RAW]` of a pair. 9 pt
     /// semibold, 1 pt stroke, corner 3, a 1 pt divider; the part that is on
     /// screen is `white` on a 20 % white fill, the other `secondary`.
     public static func pairChipImage(kind: String, rawShown: Bool, fontSize: CGFloat = 9) -> NSImage {

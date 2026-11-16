@@ -30,6 +30,8 @@ struct BatchViewActions {
     var done: () -> Void = {}
     var undoBatch: () -> Void = {}
     var canUndoBatch: () -> Bool = { false }
+    /// The right column's content height and its scroll view's height.
+    var formMeasured: (_ content: CGFloat, _ viewport: CGFloat) -> Void = { _, _ in }
 }
 
 /// Tokens… popover groups.
@@ -44,7 +46,7 @@ public enum BatchTokens {
 }
 
 extension BatchTokens {
-    /// What a field means, with a sample value (audit on-screen L7: chips had no meaning).
+    /// What a field means, with a sample value.
     /// The sample is fixed text, not read from the first photo.
     public static func hint(_ token: String) -> String {
         switch token {
@@ -97,6 +99,15 @@ struct BatchFormView: View {
     let actions: BatchViewActions
     let inserter: BatchTokenInserter
     @State private var showsTokens = false
+    @State private var columnHeights = CGSize.zero   // width = controls above the preview, height = viewport
+    /// The preview box's smallest height; the window fit counts only this much of the list.
+    static let previewMinHeight: CGFloat = 120
+    /// The column's padding (2 × 16) and the gap above the preview (12).
+    static let columnExtra: CGFloat = 44
+
+    private func reportFormHeight() {
+        actions.formMeasured(columnHeights.width + Self.columnExtra + Self.previewMinHeight, columnHeights.height)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -107,9 +118,10 @@ struct BatchFormView: View {
                 Divider()
                 ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 12) {
                     if model.reviewingRemaining {
                         Text("Review remaining work. Completed steps will not run again. To change the selection or operations, choose Run Another Batch.").textSelection(.enabled)
-                        HStack { Button("Back to Results") { model.cancelRemainingReview() }; Button("Run Another Batch") { model.runAnother() } }
+                        HStack { BatchTextButton("Back to Results") { model.cancelRemainingReview() }; BatchTextButton("Run Another Batch") { model.runAnother() } }
                     }
                     operations.disabled(model.reviewingRemaining)
                     if model.reviewingRemaining {
@@ -121,15 +133,38 @@ struct BatchFormView: View {
                         }
                     }
                     conflictRow
+                    if model.showsWhatWillHappenHeading {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("What Will Happen").font(.headline)
-                        Text(model.consequenceSummary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                        Text("What will happen").font(.headline)
+                        ForEach(model.whatWillHappenLines, id: \.self) { line in
+                            // The skip lines are secondary.
+                            Text(line).foregroundStyle(line == model.unreadableLine || line == model.invalidNameLine ? Color.secondary : Color.primary)
+                                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                            // The folder on its own line, right under the sentence.
+                            if line == model.consequenceSummary, let path = model.outputPathLine {
+                                Text(path).font(.system(size: 12)).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.head)
+                                    .help(path)
+                                    .accessibilityLabel("Output folder").accessibilityValue(path)
+                            }
+                        }
                         ForEach(model.conversionDisclosures, id: \.self) { disclosure in Text(disclosure).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
                     }
-                    BatchPreviewBox(model: model)
+                    }
+                }
+                // The window fits the controls, not the preview list.
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                    columnHeights.width = $0; reportFormHeight()
+                }
+                // The list scrolls in its own box, which takes the rest of the column.
+                BatchPreviewBox(model: model)
+                    .frame(height: max(Self.previewMinHeight, columnHeights.height - columnHeights.width - Self.columnExtra))
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                    columnHeights.height = $0; reportFormHeight()
                 }
             }
             Divider()
@@ -232,9 +267,10 @@ struct BatchFormView: View {
                         .overlay(
                             RoundedRectangle(cornerRadius: 4)
                                 .stroke(Color(nsColor: .systemRed), lineWidth: 2)
-                                .opacity(model.templateError == nil ? 0 : 1)
+                                .opacity(model.templateFeedback.fieldOutlineRed ? 1 : 0)
                         )
                     Button("Insert Field…") { showsTokens.toggle() }
+                        .accessibilityLabel("Insert Field")
                         .help("Insert a part of the photo's data into the name")
                         .popover(isPresented: $showsTokens, arrowEdge: .bottom) {
                             BatchTokenPopover { token in
@@ -243,6 +279,26 @@ struct BatchFormView: View {
                         }
                 }
                 .disabled(!model.form.renameOn)
+            }
+            if let line = model.templateFeedback.underField {
+                GridRow {
+                    Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                    Text(line)
+                        .font(.system(size: ChromeTypography.size(12)))
+                        .foregroundStyle(Color(nsColor: .systemRed))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            if let example = model.exampleLine {
+                GridRow {
+                    Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                    Text(example)
+                        .font(.system(size: ChromeTypography.size(12)))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             GridRow {
                 Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
@@ -292,9 +348,45 @@ struct BatchFormView: View {
 
     @ViewBuilder
     private var outputRow: some View {
-        if let text = model.inPlaceText {
-            Text(text).foregroundStyle(.secondary)
-        } else if model.form.writesToFolder {
+        switch BatchModel.Copy.outputForm(inPlaceText: model.inPlaceText, writesToFolder: model.form.writesToFolder,
+                                          changesOriginals: model.changesOriginals) {
+        case .notice(let text):
+            outputNotice(text)
+        case .folderNotice(let text):
+            VStack(alignment: .leading, spacing: 6) {
+                outputNotice(text)
+                outputFolderField
+            }
+        case .folder(let note):
+            VStack(alignment: .leading, spacing: 4) {
+                outputFolderField
+                Text(note).font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        case .none:
+            Text("—").foregroundStyle(.secondary)
+        }
+    }
+
+    /// The orange notice box of a plan that changes originals.
+    private func outputNotice(_ text: String) -> some View {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color(nsColor: .systemOrange))
+                    .accessibilityHidden(true)
+                Text(text)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: .labelColor))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .systemOrange).opacity(0.12)))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .systemOrange).opacity(0.4), lineWidth: 1))
+            .accessibilityElement(children: .combine)
+    }
+
+    private var outputFolderField: some View {
             HStack(spacing: 8) {
                 Text(model.outputFolder.map(UserFacingPath.string) ?? "—")
                     .lineLimit(1)
@@ -309,9 +401,12 @@ struct BatchFormView: View {
                     .accessibilityValue(model.outputFolder.map(UserFacingPath.string) ?? "none")
                 Button("Choose…", action: actions.chooseOutput)
             }
-        } else {
-            Text("—").foregroundStyle(.secondary)
-        }
+    }
+
+    /// The Run button's title; its accessibility label is the same text.
+    private var runTitle: String {
+        BatchModel.Copy.footerRunTitle(reviewingRemaining: model.reviewingRemaining, queueCount: model.queue.count,
+                                       processable: model.processableCount, changesOriginals: model.changesOriginals)
     }
 
     private var bottomBar: some View {
@@ -334,39 +429,31 @@ struct BatchFormView: View {
             .fixedSize()
             .accessibilityLabel("Preset")
             .disabled(model.reviewingRemaining)
-            if let line = model.unreadableLine, model.validationLine == nil {
-                Text(line)
-                    .foregroundStyle(Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 8)
-            }
             if let line = model.validationLine {
                 Text(line)
-                    .foregroundStyle(model.templateError == nil ? Color.secondary : Color(nsColor: .systemRed))
+                    .foregroundStyle(model.templateFeedback.footerIsError ? Color(nsColor: .systemRed) : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                     .padding(.leading, 8)
             }
             Spacer(minLength: 12)
-            Button("Cancel", action: actions.cancel)
-                .keyboardShortcut(.cancelAction)
-            Button(model.reviewingRemaining ? "Retry \(model.queue.count) Remaining \(model.queue.count == 1 ? "Photo" : "Photos")" : BatchModel.Copy.runButton(model.processableCount)) {
-                let event = BatchReturnPolicy.currentEvent
-                let window = BatchReturnPolicy.currentWindow
-                if BatchReturnPolicy.returnShouldOnlyCommitField(event: event, firstResponder: window?.firstResponder) {
-                    window?.makeFirstResponder(nil)   // Return commits the value; the next Return runs
-                } else {
-                    model.requestRun()
-                }
+            // AppKit buttons: SwiftUI's footer buttons reached
+            // assistive apps with no name at all.
+            BatchTextButton("Cancel", key: .cancel, action: actions.cancel)
+            BatchTextButton(runTitle, key: .defaultAction, isEnabled: model.canRun,
+                            help: "Run the batch (Return or ⌘Return)") {
+                // Return in a text field only commits it: `BatchKeyButton`
+                // declines that Return before this runs.
+                model.requestRun()
             }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canRun)
-                .help("Run the batch (Return or ⌘Return)")
                 // Return is the real default button; ⌘Return keeps working
                 // (a button holds one shortcut, so a hidden twin carries it).
                 .background(
-                    Button("") { if model.canRun { model.requestRun() } }
+                    Button("") {
+                        // ⌘Return from a field: the typed value counts.
+                        BatchWindowController.current?.window?.makeFirstResponder(nil)
+                        model.requestRunWhenCurrent()
+                    }
                         .keyboardShortcut(.return, modifiers: .command)
                         .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
                 )
@@ -374,22 +461,95 @@ struct BatchFormView: View {
     }
 }
 
-/// Return in a text field commits the typed value first (a size, a template);
-/// it must not also start a batch that rewrites files. Mouse clicks and Return
-/// with no field being edited run as usual.
-enum BatchReturnPolicy {
-    /// Tests: stands in for `NSApp.currentEvent`, which a direct
-    /// `performKeyEquivalent` call does not set.
-    nonisolated(unsafe) static var currentEventForTesting: NSEvent?
-    /// Tests: the window an unshown test window cannot report through the event.
-    nonisolated(unsafe) static weak var windowForTesting: NSWindow?
-    @MainActor static var currentWindow: NSWindow? { windowForTesting ?? currentEvent?.window ?? NSApp.keyWindow }
-    @MainActor static var currentEvent: NSEvent? { currentEventForTesting ?? NSApp.currentEvent }
-    @MainActor static func returnShouldOnlyCommitField(event: NSEvent?, firstResponder: NSResponder?) -> Bool {
-        guard let event, event.type == .keyDown, event.keyCode == 36 || event.keyCode == 76,
-              !event.modifierFlags.contains(.command),
-              let text = firstResponder as? NSText, text.isFieldEditor else { return false }
-        return true
+/// What Return and Esc do while a text field of the Batch window is being
+/// edited: Return commits the typed value (a size, a
+/// template) and must not also start a batch that rewrites files; Esc
+/// cancels the edit and must not close the window. ⌘Return, mouse clicks
+/// and keys with no field being edited work as usual.
+enum BatchFieldKeys {
+    enum Key: Equatable { case plainReturn, plainEscape, other }
+
+    static func key(_ event: NSEvent) -> Key {
+        guard event.type == .keyDown else { return .other }
+        let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard mods.isEmpty else { return .other }
+        switch event.keyCode {
+        case 36, 76: return .plainReturn   // Return, keypad Enter
+        case 53: return .plainEscape
+        default: return .other
+        }
+    }
+
+    /// The field editor of a text field in `window`, while one is being edited.
+    @MainActor static func editor(in window: NSWindow?) -> NSTextView? {
+        guard let text = window?.firstResponder as? NSTextView, text.isFieldEditor else { return nil }
+        return text
+    }
+
+    /// The `NSTextMovement` of an end-of-editing notification was Return.
+    static func endedWithReturn(_ userInfo: [AnyHashable: Any]?) -> Bool {
+        (userInfo?["NSTextMovement"] as? Int) == NSTextMovement.return.rawValue
+    }
+}
+
+/// The Batch footer's buttons. The default button (Return) and the cancel
+/// button (Esc) leave those keys to a text field that is being edited:
+/// - The window offers Return to its buttons before the field editor sees
+///   it: the default button commits the field instead of running.
+/// - When the field editor ends editing with Return, AppKit presses the
+///   default button itself, after the field has already let go; the button
+///   notes that end of editing and declines that one press. Focus then
+///   leaves the field, so the next Return runs.
+/// - Esc cancels the edit (the field's delegate puts the old value back) and
+///   keeps the window.
+final class BatchKeyButton: NSButton {
+    private var declineReturnPress = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self, name: NSControl.textDidEndEditingNotification, object: nil)
+        guard window != nil, keyEquivalent == "\r" else { return }
+        NotificationCenter.default.addObserver(self, selector: #selector(fieldEndedEditing(_:)),
+                                               name: NSControl.textDidEndEditingNotification, object: nil)
+    }
+
+    @objc private func fieldEndedEditing(_ note: Notification) {
+        guard keyEquivalent == "\r", let field = note.object as? NSView, let window, field.window === window,
+              BatchFieldKeys.endedWithReturn(note.userInfo) else { return }
+        declineReturnPress = true
+        // The same turn of the run loop: AppKit's press follows at once. Then
+        // the field (which AppKit selects again) lets go of the focus.
+        DispatchQueue.main.async { [weak self, weak window] in
+            self?.declineReturnPress = false
+            if BatchFieldKeys.editor(in: window) != nil { window?.makeFirstResponder(nil) }
+        }
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard let window, let editor = BatchFieldKeys.editor(in: window) else {
+            return super.performKeyEquivalent(with: event)
+        }
+        switch (BatchFieldKeys.key(event), keyEquivalent) {
+        case (.plainReturn, "\r"):
+            guard isEnabled else { return super.performKeyEquivalent(with: event) }
+            window.makeFirstResponder(nil)   // commits the typed value; the next Return runs
+            return true
+        case (.plainEscape, "\u{1b}"):
+            editor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))   // the field puts its old value back
+            if let field = editor.delegate as? NSTextField { field.abortEditing() }
+            window.makeFirstResponder(nil)
+            return true
+        default:
+            return super.performKeyEquivalent(with: event)
+        }
+    }
+
+    override func sendAction(_ action: Selector?, to target: Any?) -> Bool {
+        if declineReturnPress {
+            declineReturnPress = false
+            return false
+        }
+        return super.sendAction(action, to: target)
     }
 }
 
@@ -448,20 +608,28 @@ struct BatchQueuePane: View {
                         .font(.system(size: ChromeTypography.size(11)))
                         .lineLimit(1)
                         .truncationMode(.tail)
+                    if let note = BatchModel.duplicatesNote(model.droppedDuplicateCount) {
+                        // Read with the queue line; the icon is not read on its own.
+                        Label {
+                            Text(verbatim: note).fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "info.circle").font(.system(size: 12))
+                        }
+                        .font(.system(size: ChromeTypography.size(11)))
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(Text(verbatim: note))
+                        .accessibilityAddTraits(.isStaticText)
+                    }
                 }
                 .foregroundStyle(.secondary)
                 Spacer()
-                Button(action: actions.addItems) { Image(systemName: "plus") }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .help("Add Photos…")
-                    .accessibilityLabel("Add Photos")
-                Button { model.removeSelected() } label: { Image(systemName: "minus") }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .disabled(model.selection.isEmpty)
-                    .help("Remove from Queue")
-                    .accessibilityLabel("Remove from Queue")
+                // AppKit buttons: SwiftUI backs a borderless image button with
+                // an NSButton whose own title is empty and which ignores
+                // `.accessibilityLabel`, so assistive apps read no name.
+                BatchIconButton(symbol: "plus", name: "Add Photos", help: "Add Photos…",
+                                isEnabled: true, action: actions.addItems)
+                BatchIconButton(symbol: "minus", name: "Remove from Queue", help: "Remove from Queue",
+                                isEnabled: !model.selection.isEmpty, action: { model.removeSelected() })
             }
             .padding(.leading, BatchLayout.queueHeadingInset)
             .padding(.trailing, 12)
@@ -510,7 +678,7 @@ struct BatchPreviewBox: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 3) {
                     ForEach(Array(model.previewRows.enumerated()), id: \.offset) { _, row in
-                        BatchPreviewRowView(row: row)
+                        BatchPreviewRowView(row: row, clashText: model.clashText(for: row))
                     }
                     if model.moreCount > 0 {
                         Text(BatchModel.Copy.andMore(model.moreCount))
@@ -529,10 +697,52 @@ struct BatchPreviewBox: View {
 
 struct BatchPreviewRowView: View {
     let row: BatchPreviewRow
+    /// `BatchPreviewRowLook.clashText` for this row (nil: no words, no warning sign).
+    var clashText: String?
+
+    /// What VoiceOver reads for a skipped-look row (`broken.jpg. Skipped. Shrike can't read this file.`);
+    /// nil for a normal row (its parts combine).
+    static func accessibilityText(for row: BatchPreviewRow) -> String? {
+        BatchPreviewRowLook.skipText(row.skip).map {
+            BatchPreviewRowLook.accessibilityLabel(name: row.source.primary.lastPathComponent, skipText: $0)
+        }
+    }
 
     var body: some View {
+        if let reason = BatchPreviewRowLook.skipText(row.skip) {
+            skippedRow(reason)
+        } else {
+            normalRow
+        }
+    }
+
+    /// A skipped photo: no arrow and no new name; icon, grey name, grey reason.
+    private func skippedRow(_ reason: String) -> some View {
         HStack(spacing: 6) {
-            if row.nameClash {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(Color(nsColor: .systemOrange))
+                .accessibilityHidden(true)
+            Text(row.source.primary.lastPathComponent)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+            Spacer(minLength: 8)
+            Text(reason)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .font(.system(size: ChromeTypography.size(12)))
+        .accessibilityRepresentation {
+            Text(Self.accessibilityText(for: row) ?? reason)
+        }
+    }
+
+    private var normalRow: some View {
+        HStack(spacing: 6) {
+            if clashText != nil {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(Color(nsColor: .systemYellow))
                     .accessibilityHidden(true)
@@ -546,10 +756,10 @@ struct BatchPreviewRowView: View {
                 .truncationMode(.middle)
             Spacer(minLength: 8)
             if let skip = row.skip {
-                Text(skip.message).foregroundStyle(.secondary).lineLimit(1)
+                Text(clashText ?? skip.message).foregroundStyle(.secondary).lineLimit(1)
             } else {
-                if row.nameClash {
-                    Text(BatchModel.Copy.nameClash).foregroundStyle(.secondary)
+                if let clashText {
+                    Text(clashText).foregroundStyle(.secondary).lineLimit(1)
                 }
                 if let size = row.outputSize {
                     Text(verbatim: "\(Int(size.width.rounded())) × \(Int(size.height.rounded()))")
@@ -634,17 +844,35 @@ struct BatchTemplateField: NSViewRepresentable {
     func updateNSView(_ field: NSTextField, context: Context) {
         context.coordinator.text = $text
         if field.stringValue != text { field.stringValue = text }
+        if field.currentEditor() == nil { context.coordinator.committed = text }
         field.isEnabled = context.environment.isEnabled
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var text: Binding<String>
-        init(text: Binding<String>) { self.text = text }
+        /// The value before the current edit; Esc puts it back.
+        var committed: String
+        init(text: Binding<String>) { self.text = text; committed = text.wrappedValue }
 
         func controlTextDidChange(_ note: Notification) {
             guard let field = note.object as? NSTextField else { return }
             text.wrappedValue = field.stringValue
+        }
+
+        func controlTextDidEndEditing(_ note: Notification) {
+            guard let field = note.object as? NSTextField else { return }
+            committed = field.stringValue
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+            text.wrappedValue = committed
+            textView.string = committed
+            control.stringValue = committed
+            control.abortEditing()
+            control.window?.makeFirstResponder(nil)
+            return true
         }
     }
 }
@@ -702,10 +930,9 @@ struct BatchRunningView: View {
             Divider()
             HStack {
                 Spacer()
-                Button(model.isStopping ? "Stopping…" : "Stop Batch") { model.stop() }
-                    .keyboardShortcut(".", modifiers: .command)
-                    .disabled(model.isStopping)
-                    .help("No new photos start. Photos already finished are kept. (⌘.)")
+                BatchTextButton(model.isStopping ? "Stopping…" : "Stop Batch", key: .commandPeriod,
+                                isEnabled: !model.isStopping,
+                                help: "No new photos start. Photos already finished are kept. (⌘.)") { model.stop() }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -728,19 +955,18 @@ struct BatchDoneView: View {
             }
             Divider()
             HStack(spacing: 8) {
-                Menu("Actions") {
-                    Button("Copy Log", action: actions.copyLog)
-                    Button("Show Completed Files", action: actions.showInFinder).disabled(model.doneURLs.isEmpty)
-                    Button("Open Completed in Shrike", action: actions.openInShrike).disabled(model.doneFolders.isEmpty)
-                    Button("Undo Batch", action: actions.undoBatch).disabled(!actions.canUndoBatch())
-                    Button("Run Another Batch") { model.runAnother() }
-                }
+                BatchActionsMenu(title: "Actions", items: [
+                    .init(title: "Copy Log", isEnabled: true, action: actions.copyLog),
+                    .init(title: "Show Completed Files", isEnabled: !model.doneURLs.isEmpty, action: actions.showInFinder),
+                    .init(title: "Open Completed in Shrike", isEnabled: !model.doneFolders.isEmpty, action: actions.openInShrike),
+                    .init(title: "Undo Batch", isEnabled: actions.canUndoBatch(), action: actions.undoBatch),
+                    .init(title: "Run Another Batch", isEnabled: true) { model.runAnother() },
+                ])
                 Spacer()
                 if model.canReviewRemaining {
-                    Button("Review Remaining…") { model.reviewRemaining() }
+                    BatchTextButton("Review Remaining…") { model.reviewRemaining() }
                 }
-                Button("Done", action: actions.done)
-                    .keyboardShortcut(.defaultAction)
+                BatchTextButton("Done", key: .defaultAction, action: actions.done)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -751,9 +977,10 @@ struct BatchDoneView: View {
     /// under it, in the same column and at the same top as the running view.
     private var calm: some View {
         VStack(alignment: .leading, spacing: 12) {
-            titleRow(icon: model.isUndone ? "arrow.uturn.backward.circle" : "checkmark.circle.fill",
-                     color: model.isUndone ? Color(nsColor: .secondaryLabelColor) : Color(nsColor: .systemGreen),
-                     text: model.isUndone ? model.resultTitle + "\n" + model.summary : model.summary)
+            titleRow(icon: model.resultIcon.symbolName,
+                     color: model.resultIcon.isGreen ?Color(nsColor: .systemGreen) : Color(nsColor: .secondaryLabelColor),
+                     title: model.resultTitle, summary: model.summary)
+            backupLine
             folderLink
         }
         .batchColumn()
@@ -763,8 +990,9 @@ struct BatchDoneView: View {
     /// one row per item with its reason.
     private var withReasons: some View {
         VStack(alignment: .leading, spacing: 12) {
-            titleRow(icon: model.result?.doneCount == 0 ? "xmark.circle" : "exclamationmark.triangle",
-                     color: Color(nsColor: .secondaryLabelColor), text: model.resultTitle + "\n" + model.summary)
+            titleRow(icon: model.resultIcon.symbolName,
+                     color: Color(nsColor: .secondaryLabelColor), title: model.resultTitle, summary: model.summary)
+            backupLine
             folderLink
             List {
                 ForEach(model.skippedRows, id: \.source) { row in
@@ -772,7 +1000,7 @@ struct BatchDoneView: View {
                 }
             }
             .listStyle(.inset(alternatesRowBackgrounds: model.skippedRows.count > 8))
-            .frame(minHeight: 100, maxHeight: 320)
+            .frame(minHeight: 100, maxHeight: .infinity)
             if model.hasIntentionalSkips {
                 Text("Tick the skips you chose to include them in Review Remaining.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -807,23 +1035,51 @@ struct BatchDoneView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
+        // One element "name. reason"; a ticked row keeps its checkbox as a child.
+        .accessibilityElement(children: row.isIntentionalSkip ? .contain : .combine)
     }
 
     /// The icon slot and the title; the title starts 30 pt in, so it lines
     /// up with the running title's text and the folder link.
-    private func titleRow(icon: String, color: Color, text: String) -> some View {
+    private func titleRow(icon: String, color: Color, title: String, summary: String? = nil) -> some View {
         HStack(alignment: .top, spacing: BatchLayout.doneIconGap) {
             Image(systemName: icon)
                 .font(.system(size: BatchLayout.doneIconSize))
                 .frame(height: BatchLayout.doneTitleLine)
                 .foregroundStyle(color)
                 .accessibilityHidden(true)
-            Text(text).font(.system(size: 15, weight: .semibold))
+            // The title stands apart (15 pt semibold); the summary
+            // sentences are regular 13 pt secondary, 6 pt under it.
+            VStack(alignment: .leading, spacing: BatchLayout.resultSummarySpacing) {
+                Text(title).font(.system(size: BatchLayout.resultTitleSize, weight: .semibold))
+                if let summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.system(size: BatchLayout.resultSummarySize))
+                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityElement(children: .combine)
         }
     }
 
     /// The Output folder (or the folder changed in place) as a link:
     /// clicking it shows the files in Finder.
+    /// "Shrike lost track of …" with the warning icon.
+    @ViewBuilder private var backupLine: some View {
+        if let line = model.backupNotice, !model.isUndone {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(nsColor: .systemOrange))
+                    .accessibilityHidden(true)
+                Text(verbatim: line)
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     @ViewBuilder private var folderLink: some View {
         if let text = model.resultFolderText, let folder = model.resultFolder {
             Button(action: actions.showInFinder) {
@@ -854,6 +1110,10 @@ extension View {
 /// The "W × H" columns (queue list and preview) share one
 /// minimum width and a trailing edge, so the right edges line up row to row.
 enum BatchLayout {
+    /// The result title and the summary under it.
+    static let resultTitleSize: CGFloat = 15
+    static let resultSummarySize: CGFloat = 13
+    static let resultSummarySpacing: CGFloat = 6
     static let dimensionsColumnWidth: CGFloat = 96
     /// The form column must fit beside the 280 pt queue pane at the minimum
     /// window width, also with Larger Interface (a wider row pushed the
@@ -875,4 +1135,149 @@ enum BatchLayout {
     static let doneCheckboxInset: CGFloat = 22
     /// The hint under the skip list lines up with the checkboxes' left edge.
     static let doneHintInset: CGFloat = 16
+}
+
+/// A borderless symbol button that names itself to assistive apps (title
+/// and label = `name`), in the secondary colour of the queue header.
+struct BatchIconButton: NSViewRepresentable {
+    let symbol: String
+    let name: String
+    let help: String
+    let isEnabled: Bool
+    let action: () -> Void
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+        @objc func fire(_ sender: Any?) { action() }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: name) ?? NSImage(),
+                              target: context.coordinator, action: #selector(Coordinator.fire(_:)))
+        button.isBordered = false
+        button.contentTintColor = .secondaryLabelColor
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentHuggingPriority(.required, for: .vertical)
+        updateNSView(button, context: context)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        button.isEnabled = isEnabled && context.environment.isEnabled   // follows a disabled form too
+        button.toolTip = help
+        Self.name(button, name)
+    }
+
+    /// Title and label on the button and on its cell (the cell is the
+    /// element the AX API reads for an NSButton).
+    static func name(_ button: NSButton, _ name: String) {
+        button.setAccessibilityTitle(name)
+        button.setAccessibilityLabel(name)
+        button.cell?.setAccessibilityTitle(name)
+        button.cell?.setAccessibilityLabel(name)
+    }
+}
+
+/// A push button that names itself to assistive apps: the button and its
+/// cell carry the visible title as accessibility title and label. SwiftUI's
+/// own `Button` in this window reached assistive apps with no name.
+struct BatchTextButton: NSViewRepresentable {
+    enum Key { case none, defaultAction, cancel, commandPeriod }
+    /// `.link`: borderless, link-coloured text (SwiftUI's `.link` style,
+    /// which left the button unnamed for VoiceOver).
+    enum Look { case push, link }
+    let title: String
+    let key: Key
+    let isEnabled: Bool
+    let help: String?
+    let look: Look
+    let action: () -> Void
+
+    init(_ title: String, key: Key = .none, isEnabled: Bool = true, help: String? = nil,
+         look: Look = .push, action: @escaping () -> Void) {
+        self.title = title; self.key = key; self.isEnabled = isEnabled; self.help = help
+        self.look = look; self.action = action
+    }
+
+    func makeCoordinator() -> BatchIconButton.Coordinator { .init(action: action) }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = BatchKeyButton(title: title, target: context.coordinator,
+                              action: #selector(BatchIconButton.Coordinator.fire(_:)))
+        switch look {
+        case .push:
+            button.bezelStyle = .push
+        case .link:
+            button.isBordered = false
+            button.contentTintColor = .linkColor
+        }
+        switch key {
+        case .none: break
+        case .defaultAction: button.keyEquivalent = "\r"
+        case .cancel: button.keyEquivalent = "\u{1b}"
+        case .commandPeriod: button.keyEquivalent = "."; button.keyEquivalentModifierMask = .command
+        }
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        updateNSView(button, context: context)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        if button.title != title { button.title = title; button.invalidateIntrinsicContentSize() }
+        button.isEnabled = isEnabled && context.environment.isEnabled
+        button.toolTip = help
+        BatchIconButton.name(button, title)
+    }
+}
+
+/// The result's Actions pull-down as an AppKit pop-up button (named, like
+/// `BatchTextButton`); its items are ordinary menu items.
+struct BatchActionsMenu: NSViewRepresentable {
+    struct Item {
+        let title: String
+        let isEnabled: Bool
+        let action: () -> Void
+    }
+    let title: String
+    let items: [Item]
+
+    final class Coordinator: NSObject {
+        var items: [Item] = []
+        @objc func fire(_ sender: NSMenuItem) {
+            guard items.indices.contains(sender.tag) else { return }
+            items[sender.tag].action()
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: true)
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        updateNSView(button, context: context)
+        return button
+    }
+
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        context.coordinator.items = items
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(withTitle: title, action: nil, keyEquivalent: "")   // a pull-down shows item 0 as its title
+        for (index, item) in items.enumerated() {
+            let entry = NSMenuItem(title: item.title, action: #selector(Coordinator.fire(_:)), keyEquivalent: "")
+            entry.target = context.coordinator
+            entry.tag = index
+            entry.isEnabled = item.isEnabled
+            menu.addItem(entry)
+        }
+        button.menu = menu
+        button.isEnabled = context.environment.isEnabled
+        BatchIconButton.name(button, title)
+    }
 }

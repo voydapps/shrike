@@ -115,6 +115,79 @@ final class BrowserRevertTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: a), edited, "⌘Z puts the edited version back")
     }
 
+    // MARK: A notice's Undo undoes only its own action
+
+    private func copyA(_ browser: BrowserWindowController, to folder: URL) async throws -> URL {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let trash = root.appendingPathComponent("Trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+        browser.fileOps = FileOps(metadata: nil, backups: nil, watchers: nil, trashItem: { url in
+            let target = trash.appendingPathComponent(UUID().uuidString + url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: target)
+            return target
+        })
+        browser.transfer(.copy, [ImageGroup(primary: dir.appendingPathComponent("a.jpg"))], to: folder)
+        await browser.trashChain?.value
+        let copy = folder.appendingPathComponent("a.jpg")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path))
+        XCTAssertEqual(browser.transferNotice.buttonTitles, ["Undo"])
+        return copy
+    }
+
+    private func pressNoticeUndo(_ browser: BrowserWindowController) throws {
+        let button = try XCTUnwrap(browser.transferNotice.arrangedSubviews.compactMap { $0 as? NSButton }.first)
+        if button.isEnabled { button.performClick(nil) }
+    }
+
+    func testCopyNoticeUndoIsDisabledAfterALaterRotateAndDoesNotUndoIt() async throws {
+        let (browser, _, _) = try await makeBrowser()
+        defer { browser.close() }
+        let b = dir.appendingPathComponent("b.jpg")
+        let copy = try await copyA(browser, to: root.appendingPathComponent("Dest", isDirectory: true))
+        XCTAssertEqual(browser.transferNotice.buttonsEnabled, [true], "positive control")
+        let beforeRotate = try Data(contentsOf: b)
+        XCTAssertTrue(browser.contentController.select(urls: [b]))
+        browser.perform(.rotateRight)
+        browser.flushPendingOrientation()
+        await browser.waitForOrientationWrites()
+        let rotated = try Data(contentsOf: b)
+        XCTAssertNotEqual(rotated, beforeRotate, "B was rotated")
+        XCTAssertEqual(browser.transferNotice.buttonsEnabled, [false], "A's Undo can no longer be pressed")
+        try pressNoticeUndo(browser)
+        await browser.waitForOrientationWrites()
+        XCTAssertEqual(try Data(contentsOf: b), rotated, "B is not undone")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path), "A stays (Edit ▸ Undo undoes it later)")
+    }
+
+    func testCopyNoticeUndoUndoesTheCopyWhenNothingCameAfter() async throws {
+        let (browser, _, _) = try await makeBrowser()
+        defer { browser.close() }
+        let copy = try await copyA(browser, to: root.appendingPathComponent("Dest", isDirectory: true))
+        XCTAssertEqual(browser.transferNotice.buttonsEnabled, [true])
+        try pressNoticeUndo(browser)
+        await browser.trashChain?.value
+        let gone = await waitUntil { !FileManager.default.fileExists(atPath: copy.path) }
+        XCTAssertTrue(gone, "the copy is undone")
+    }
+
+    /// An Undo toast goes away as soon as its action is no longer the one Undo would undo.
+    func testRevertToastIsDismissedWhenALaterChangeComes() async throws {
+        let (browser, _, _) = try await makeBrowser()
+        defer { browser.close() }
+        let a = dir.appendingPathComponent("a.jpg"), b = dir.appendingPathComponent("b.jpg")
+        browser.alertResponderForTesting = { _ in 1 }
+        XCTAssertTrue(browser.contentController.select(urls: [a]))
+        browser.perform(.revertToOriginal)
+        await browser.revertTask?.value
+        XCTAssertEqual(browser.toastHost.content?.actionTitle, "Undo", "positive control")
+        XCTAssertTrue(browser.contentController.select(urls: [b]))
+        browser.perform(.rotateRight)
+        browser.flushPendingOrientation()
+        await browser.waitForOrientationWrites()
+        XCTAssertNotEqual(browser.toastHost.content?.message, "Reverted “a.jpg” to the original.",
+                          "the stale Undo toast is gone")
+    }
+
     func testCancelLeavesTheFile() async throws {
         let (browser, _, edited) = try await makeBrowser()
         defer { browser.close() }

@@ -170,7 +170,7 @@ final class ViewerToolbarAccessibilityTests: XCTestCase {
         defer { window.close() }
         XCTAssertNotNil(toolbarElement(window), "no toolbar in the accessibility tree")
 
-        XCTAssertEqual(values("Inspector", in: window), "Off")
+        XCTAssertEqual(values("Info", in: window), "Off")
         XCTAssertEqual(values("Flag", in: window), "Off")
 
         // A click on the item runs the command; the value follows the host.
@@ -178,12 +178,12 @@ final class ViewerToolbarAccessibilityTests: XCTestCase {
         inspector.performClick(nil)
         XCTAssertTrue(window.splitController?.isInspectorShown ?? false)
         refresh(window, bar)
-        XCTAssertEqual(values("Inspector", in: window), "On")
+        XCTAssertEqual(values("Info", in: window), "On")
 
         // The menu (or a key) turns it off: the next validation says so.
         window.dispatch(.toggleInspector)
         refresh(window, bar)
-        XCTAssertEqual(values("Inspector", in: window), "Off")
+        XCTAssertEqual(values("Info", in: window), "Off")
 
         // Optional toggles from the Customize palette.
         let count = bar.toolbar.items.count

@@ -26,7 +26,7 @@ final class ViewerInspectorNarrowTests: XCTestCase {
         facts.file = [
             InspectorRow("Folder", "ux-fin"), InspectorRow("Size", "10 MB"),
             InspectorRow("Dimensions", "3456 × 5184 (17.9 MP)"), InspectorRow("Type", "JPEG"),
-            InspectorRow("Colour profile", "sRGB IEC61966-2.1"),
+            InspectorRow("Color profile", "sRGB IEC61966-2.1"),
         ]
         facts.capture = [
             InspectorRow("Date taken", "25 Jan 2026 at 06:41:11"),

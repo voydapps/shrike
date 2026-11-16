@@ -35,7 +35,9 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
     override public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(toggleReviewControls(_:)):
-            menuItem.state = Prefs.reviewControlsVisible ? .on : .off
+            // The title says what the click does (as the panel items do): no check mark.
+            menuItem.title = Self.ratingBarMenuTitle(visible: Prefs.reviewControlsVisible)
+            menuItem.state = .off
             return !contentRoot.isEditModeActive
         case ShrikeMainMenu.commandAction, #selector(NSText.copy(_:)):
             guard let command = menuItem.shrikeCommand else { return false }
@@ -45,7 +47,7 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
                 menuItem.title = title
                 menuItem.state = .off
             }
-            // Spec 24 + spec 27 B5: Unpin All exists only in full screen (a mode item);
+            // Unpin All exists only in full screen (a mode item);
             // Show RAW File is always there and greyed when it cannot apply.
             if command == .unpinAllPanels { menuItem.isHidden = contentRoot.windowMode != .fullscreen }
             if command == .toggleRAWFile { menuItem.isHidden = false }
@@ -83,15 +85,34 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
         displayedItem.map { ShareSubmenu.files(of: $0.group) } ?? []
     }
 
+    /// Why `command` is grey, for the commands that have a reason; nil otherwise.
+    func greyReason(for command: ShrikeCommand) -> ViewerGreyReason? {
+        guard !contentRoot.isEditModeActive else { return nil }
+        let turnsFile: Bool
+        switch command {
+        case .rotateLeft, .rotateRight, .rotate180, .flipHorizontal, .flipVertical: turnsFile = true
+        case .editImage, .editCrop, .editRotate, .editResize, .editColor, .levels, .autoContrast, .autoColor:
+            turnsFile = false
+        default: return nil
+        }
+        return ViewerGreyReason.of(rawShown: rawBlocksEditing(displayedItem),
+                                   broken: contentRoot.isShowingDecodeError,
+                                   hasPhoto: contentRoot.imageView.image != nil,
+                                   ready: turnsFile || canBeginEditingDisplayedPhoto)
+    }
+
     public func canPerform(_ command: ShrikeCommand) -> Bool {
         let edit = contentRoot.isEditModeActive
         let item = displayedItem
         let hasPixels = contentRoot.imageView.image != nil
+        let broken = contentRoot.isShowingDecodeError
         let last = list.count - 1
         // Open in External Editor N: the displayed item.
         if command.externalEditorSlot != nil { return item != nil && !edit }
         switch command {
-        case .save, .saveAs:
+        case .saveAs:
+            return edit && contentRoot.editModeController.chromeState.saveCopyEnabled
+        case .save, .exitEditMode, .editDone:
             return edit
         case .revertToOriginal:
             return item != nil && !edit && isDisplayedEdited
@@ -105,30 +126,32 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
             return item != nil
         case .revealInFinder, .copy, .copyPath, .share:
             return item != nil
+        // A broken file greys Rotate, Flip and Zoom too (the
+        // pixels behind the error card are the previous photo's).
         case .rotateLeft, .rotateRight, .rotate180:
-            return hasPixels && !rawBlocksEditing(item)
+            return hasPixels && !broken && !rawBlocksEditing(item)
         case .flipHorizontal, .flipVertical:
-            return hasPixels && !edit && !rawBlocksEditing(item)
+            return hasPixels && !broken && !edit && !rawBlocksEditing(item)
         case .loupe:
             return hasPixels && !edit
         case .editImage:
-            // RAW is never written (spec 24 §4.5): edit the JPEG instead.
-            // A photo that can't be opened has nothing to edit (spec 26 §2).
+            // RAW is never written: edit the JPEG instead.
+            // A photo that can't be opened has nothing to edit.
             return hasPixels && !edit && canBeginEditingDisplayedPhoto && !rawBlocksEditing(item) && !contentRoot.isShowingDecodeError
         case .zoomIn:
-            return hasPixels && contentRoot.imageView.canZoomIn
+            return hasPixels && !broken && contentRoot.imageView.canZoomIn
         case .zoomOut:
-            return hasPixels && contentRoot.imageView.canZoomOut
+            return hasPixels && !broken && contentRoot.imageView.canZoomOut
         case .zoomToFit, .actualSize, .zoom200, .zoom300, .zoomBestFit, .fitWidth, .fitHeight:
-            return hasPixels
+            return hasPixels && !broken
         case .editCrop, .editRotate, .editResize, .editColor,
              .levels, .autoContrast, .autoColor:
-            // The edit tools never open on a RAW view (spec 24 §4.5), nor on a decode error.
+            // The edit tools never open on a RAW view, nor on a decode error.
             return hasPixels && (edit || canBeginEditingDisplayedPhoto) && !rawBlocksEditing(item) && !contentRoot.isShowingDecodeError
         case .resetEdits:
             return edit && contentRoot.editModeController.hasPendingEdits
         case .toggleFilmstrip:
-            // A window keeps its strip in edit mode (spec 25 §3.3); full screen has none then.
+            // A window keeps its strip in edit mode; full screen has none then.
             return !edit || contentRoot.windowMode == .windowed
         case .toggleInspector, .toggleHistogram,
              .toggleFullScreen, .showInBrowser, .goToFolder:
@@ -167,7 +190,11 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
     }
 
     public func perform(_ command: ShrikeCommand) {
-        guard canPerform(command) else { return }
+        guard canPerform(command) else {
+            // The key of a grey command says why instead of nothing.
+            if let reason = greyReason(for: command) { contentRoot.toast(reason.toastText) }
+            return
+        }
         switch command {
         case .loupe:
             contentRoot.setLoupeActive(!contentRoot.isLoupeActive)
@@ -211,7 +238,7 @@ extension ViewerWindow: ShrikeMenuActions, ShrikeCommandTarget {
     }
 
     /// Reads the displayed file's GPS a moment after it is shown (never
-    /// on the first-pixel path; fast flips skip the read), so Image ▸
+    /// on the first-pixel path; fast flips skip the read), so Photo ▸
     /// Show in Maps can be enabled or disabled.
     func scheduleLocationLookup() {
         locationLookup?.cancel()

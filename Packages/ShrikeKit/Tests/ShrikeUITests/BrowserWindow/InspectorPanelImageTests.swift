@@ -269,20 +269,19 @@ final class InspectorPanelImageTests: XCTestCase {
         return host.fittingSize.height
     }
 
-    func testTheHeaderKeepsItsHeightForShortAndLongNamesWithAndWithoutAlso() {
+    /// Spec 28 §7 replaces "rows never move": nothing is reserved. A short
+    /// name is one line under the box (no 55 pt gap); a long name takes two;
+    /// the "Also" line exists only for a pair.
+    func testTheHeaderReservesNoLines() {
         let long = String(repeating: "A very long file name ", count: 8) + ".jpg"
-        let cases: [(String, String?)] = [
-            ("a.jpg", nil),
-            ("a.jpg", "Also: a.ORF (24.1 MB)"),
-            (long, nil),
-            (long, "Also: " + String(repeating: "x", count: 120) + ".ORF (24.1 MB)"),
-            ("Two words.jpg", "Also: b.ORF (1 MB)"),
-        ]
-        let heights = cases.map { headerHeight(name: $0.0, also: $0.1) }
-        XCTAssertGreaterThan(heights[0], 180, "the box and the text rows")
-        for (i, h) in heights.enumerated() {
-            XCTAssertEqual(h, heights[0], accuracy: 0.5, "case \(i): same height as the short name without Also")
-        }
+        let short = headerHeight(name: "a.jpg", also: nil)
+        let shortAlso = headerHeight(name: "a.jpg", also: "Also: a.ORF (24.1 MB)")
+        let longName = headerHeight(name: long, also: nil)
+        XCTAssertGreaterThan(short, 180, "the box and the text rows")
+        XCTAssertLessThan(short - 180, 30, "one name line under the box, nothing reserved")
+        XCTAssertGreaterThan(shortAlso, short + 8, "the Also line takes room only when there is a pair")
+        XCTAssertGreaterThan(longName, short + 8, "a long name takes a second line")
+        XCTAssertLessThan(longName - short, 25, "never more than two lines")
     }
 }
 

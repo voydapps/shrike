@@ -576,7 +576,7 @@ final class EditNativeFieldFlowTests: XCTestCase {
         XCTAssertNil(c.pendingCropRect(), "Reading a focused draft does not move/apply the overlay")
         let operations = await c.recipe?.snapshot(); XCTAssertEqual(operations, [])
         XCTAssertFalse(c.chromeState.hasEdits); XCTAssertFalse(c.chromeState.canUndo)
-        XCTAssertEqual(c.chromeState.subtitle, "Editing")
+        XCTAssertEqual(c.chromeState.subtitle, "Editing · Unsaved changes", "a changed crop draft is an unsaved change")
         try assertSaveChangesChrome(viewer)
         let capsule = EditCapsuleView(); capsule.apply(c.chromeState)
         XCTAssertEqual(capsule.doneButton.title, "Save Changes")
@@ -588,6 +588,67 @@ final class EditNativeFieldFlowTests: XCTestCase {
         let backups = await BackupStore(root: root.appendingPathComponent("backups")).records(for: url)
         XCTAssertEqual(backups.count, 1)
         XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(backups.first).backupURL), original)
+    }
+
+    /// A crop changed by key or by a typed field and not applied is an unsaved
+    /// change: status, dot, primary title and the Esc question all say so;
+    /// Cancel keeps it pending as a frame, Don't Save leaves the file alone.
+    func testPendingCropByKeyOrFieldIsAnUnsavedChangeEverywhere() async throws {
+        for byField in [false, true] {
+            for choice in [EditExitModal.Choice.cancel, .discard] {
+                let url = try write("pending-\(byField)-\(choice).png"), original = try Data(contentsOf: url)
+                let viewer = try await viewer([url]); defer { viewer.close() }
+                try await enter(viewer, tool: .crop)
+                let c = viewer.contentRootForTesting.editModeController
+                let panel = try XCTUnwrap(c._installedToolForTesting as? CropPanel)
+                if byField { try await type("1200", into: panel._widthField, in: viewer) }
+                else { c.cropOverlay.perform(.resize(CropKeyGeometry.Edges(right: -1), steps: 10)) }
+                try await until("pending crop reads as unsaved (\(byField))") {
+                    viewer.subtitle == "Editing · Unsaved changes"
+                }
+                XCTAssertEqual(c.chromeState.primaryTitle, "Save Changes")
+                XCTAssertTrue(viewer.isDocumentEdited, "the close button's dot follows the same rule")
+                let pendingBefore = try XCTUnwrap(c.pendingCropRect())
+                var asked: EditExitModal.Content?
+                EditExitModal.responderForTesting = { content in asked = content; return choice }
+                c.attemptExit(reason: .userToggled)
+                if choice == .cancel {
+                    try await until("Cancel returns to the editor") { asked != nil && !c.isTransitioning }
+                    XCTAssertTrue(asked?.message.hasPrefix("Save changes to") == true)
+                    XCTAssertTrue(c.isActive)
+                    let operations = await c.recipe?.snapshot()
+                    XCTAssertEqual(operations, [], "Cancel does not apply the pending crop")
+                    XCTAssertEqual(c.pendingCropRect(), pendingBefore, "still pending, shown as the frame")
+                    XCTAssertFalse(c.cropOverlay.isHidden)
+                    XCTAssertEqual(c.currentPixelSize, CGSize(width: 2400, height: 1600), "the photo itself is not cropped")
+                    XCTAssertEqual(viewer.subtitle, "Editing · Unsaved changes")
+                    XCTAssertEqual(c.chromeState.primaryTitle, "Save Changes")
+                } else {
+                    try await until("Don't Save leaves edit mode") { !c.isActive }
+                }
+                XCTAssertEqual(try Data(contentsOf: url), original)
+                EditExitModal.responderForTesting = nil
+            }
+        }
+    }
+
+    /// Return (= Done) applies a pending key crop and saves it: the title said
+    /// Save Changes beforehand.
+    func testReturnSavesAPendingKeyOrFieldCrop() async throws {
+        for byField in [false, true] {
+            let url = try write("return-pending-\(byField).png")
+            let viewer = try await viewer([url]); defer { viewer.close() }
+            try await enter(viewer, tool: .crop)
+            let c = viewer.contentRootForTesting.editModeController
+            let panel = try XCTUnwrap(c._installedToolForTesting as? CropPanel)
+            if byField { try await type("1200", into: panel._widthField, in: viewer) }
+            else { c.cropOverlay.perform(.resize(CropKeyGeometry.Edges(right: -1), steps: 10)) }
+            try await until("title says Save Changes before Return") { c.chromeState.primaryTitle == "Save Changes" }
+            XCTAssertEqual(viewer.subtitle, "Editing · Unsaved changes")
+            c.cropOverlay.perform(.done)
+            try await until("Return saved and left edit mode") { !c.isActive }
+            XCTAssertEqual(try dimensions(url), CGSize(width: byField ? 1200 : 2390, height: 1600))
+        }
     }
 
     func testFocusedResizeCaptionProjectsLinkedCommitAndSavesThatSize() async throws {
@@ -803,7 +864,7 @@ final class EditNativeFieldFlowTests: XCTestCase {
         XCTAssertTrue(content.imageView.image === presented, "caption projection does not render")
         let stillUnchanged = await session.checkpoint(); XCTAssertEqual(stillUnchanged, checkpoint)
         XCTAssertFalse(c.chromeState.hasEdits); XCTAssertFalse(c.chromeState.canUndo); XCTAssertFalse(c.chromeState.canRedo)
-        XCTAssertEqual(c.chromeState.subtitle, "Editing")
+        XCTAssertEqual(c.chromeState.subtitle, "Editing · Unsaved changes", "a changed Levels draft is an unsaved change")
         try assertSaveChangesChrome(viewer)
         XCTAssertEqual(content.editToolbarController.doneButton.accessibilityLabel(), "Save Changes")
         let capsule = EditCapsuleView(); capsule.apply(c.chromeState)
@@ -1214,7 +1275,7 @@ final class EditNativeFieldFlowTests: XCTestCase {
         viewer.keyDown(with: try key("e", code: 14, modifiers: .command, in: viewer))
         await viewer.waitForEditLoad()
         XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message,
-                       "Wait for the current photo to finish loading before editing.")
+                       "Wait for the photo to finish loading, then try again.")
         XCTAssertEqual(try Data(contentsOf: first), originalFirst)
         XCTAssertEqual(try Data(contentsOf: second), originalSecond)
         XCTAssertFalse(editor.isActive, "Editing during queued/in-flight navigation must not bind the preceding photo")
@@ -1484,4 +1545,448 @@ private struct HeldNextPhotoSource: ImageSource {
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.url == rhs.url }
     func hash(into hasher: inout Hasher) { hasher.combine(url) }
 
+}
+
+@MainActor
+extension EditNativeFieldFlowTests {
+    // MARK: - Spec 28 §11.2: Apply turns on with a pending change, applies, turns off again
+
+    func testApplyCropTurnsOnFromTheNumberFieldsAppliesAndTurnsOff() async throws {
+        let url = try blurFixture("apply-crop-fields.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .crop)
+        viewer.recalculateKeyViewLoop()
+        let c = viewer.contentRootForTesting.editModeController
+        let panel = try XCTUnwrap(c._installedToolForTesting as? CropPanel)
+        XCTAssertFalse(panel._applyButton.isEnabled, "no pending crop on entry")
+        try await type("800", into: panel._widthField, in: viewer)
+        try await until("A typed width makes a pending crop") { panel._applyButton.isEnabled }
+        let session = try XCTUnwrap(c.recipe)
+        let before = await session.snapshot()
+        XCTAssertTrue(before.isEmpty)
+        panel._applyButton.performClick(nil); await c.settleForTesting()
+        let after = await session.snapshot()
+        XCTAssertEqual(after.count, 1)
+        guard case .crop = after.first else { return XCTFail("one crop operation, got \(after)") }
+        XCTAssertEqual(c.currentPixelSize.width, 800, accuracy: 1)
+        let installed = try XCTUnwrap(c._installedToolForTesting as? CropPanel)
+        try await until("Apply Crop is off again after the crop is applied") { !installed._applyButton.isEnabled }
+    }
+
+    func testApplyCropTurnsOnFromTheOverlayDragAndFromTheModel() async throws {
+        let url = try blurFixture("apply-crop-overlay.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .crop)
+        let c = viewer.contentRootForTesting.editModeController
+        let panel = try XCTUnwrap(c._installedToolForTesting as? CropPanel)
+        let overlay = c.cropOverlay
+        viewer.contentView?.layoutSubtreeIfNeeded()
+        try await until("The crop frame covers the photo") { overlay.cropRect.width > 0 && !overlay.isHidden }
+        XCTAssertFalse(panel._applyButton.isEnabled)
+        // A real drag of the bottom-right corner handle (overlay is flipped).
+        let corner = CGPoint(x: overlay.cropRect.maxX - 1, y: overlay.cropRect.maxY - 1)
+        let target = CGPoint(x: corner.x - overlay.cropRect.width * 0.3, y: corner.y - overlay.cropRect.height * 0.3)
+        func mouse(_ type: NSEvent.EventType, _ point: CGPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: overlay.convert(point, to: nil), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: viewer.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        overlay.mouseDown(with: try mouse(.leftMouseDown, corner))
+        overlay.mouseDragged(with: try mouse(.leftMouseDragged, target))
+        overlay.mouseUp(with: try mouse(.leftMouseUp, target))
+        try await until("A dragged crop frame makes a pending crop") { panel._applyButton.isEnabled }
+        panel._resetButton.performClick(nil)
+        try await until("Reset Crop takes the pending crop away") { !panel._applyButton.isEnabled }
+        // The model path the number fields use.
+        overlay.setRectFromImageSpace(CGRect(x: 100, y: 100, width: 600, height: 400))
+        try await until("A model-set crop makes a pending crop") { panel._applyButton.isEnabled }
+        panel._applyButton.performClick(nil); await c.settleForTesting()
+        let ops = await (try XCTUnwrap(c.recipe)).snapshot()
+        XCTAssertEqual(ops.count, 1)
+        let installed = try XCTUnwrap(c._installedToolForTesting as? CropPanel)
+        try await until("Apply Crop is off again after the crop is applied") { !installed._applyButton.isEnabled }
+    }
+
+    func testApplyResizeTurnsOnFromTheFieldsAppliesAndTurnsOff() async throws {
+        let url = try blurFixture("apply-resize.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .resize)
+        viewer.recalculateKeyViewLoop()
+        let c = viewer.contentRootForTesting.editModeController
+        let panel = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        XCTAssertFalse(panel._applyButton.isEnabled)
+        try await type("50", into: panel._percentField, in: viewer)
+        try await until("A typed percent makes a pending resize") { panel._applyButton.isEnabled }
+        panel._applyButton.performClick(nil); await c.settleForTesting()
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 768, height: 512))
+        let installed = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        try await until("Apply Resize is off again after the resize is applied") { !installed._applyButton.isEnabled }
+        installed._resetButton.performClick(nil)
+        XCTAssertFalse(installed._applyButton.isEnabled, "Reset to the current size is no change")
+    }
+
+    // MARK: Esc in a number field (real key path)
+
+    private func escape(_ viewer: ViewerWindow) throws {
+        viewer.sendEvent(try key("\u{1b}", code: 53, in: viewer))
+    }
+
+    /// Esc with a typed, uncommitted value puts the committed value back and
+    /// gives the keyboard to the photo; nothing is applied. A second Esc
+    /// leaves without a question when nothing else changed.
+    func testEscInATypedNumberFieldRestoresItAndFocusesThePhoto() async throws {
+        for tool in [EditTool.crop, .resize, .levels] {
+            let url = try write("esc-field-\(tool).png", red: 0.5), original = try Data(contentsOf: url)
+            let viewer = try await viewer([url]); defer { viewer.close() }
+            try await enter(viewer, tool: tool)
+            let c = viewer.contentRootForTesting.editModeController
+            let field: NSTextField = try {
+                if let crop = c._installedToolForTesting as? CropPanel { return crop._widthField }
+                if let levels = c._installedToolForTesting as? LevelsPanel { return try XCTUnwrap(levels._field(.inBlack)) }
+                return try XCTUnwrap(c._installedToolForTesting as? ResizePanel)._widthField
+            }()
+            let committed = field.stringValue
+            try draft(tool == .levels ? "20" : "1200", into: field, in: viewer)
+            try await until("the typed draft shows (\(tool))") { viewer.subtitle == "Editing · Unsaved changes" }
+            var asked: EditExitModal.Content?
+            EditExitModal.responderForTesting = { content in asked = content; return .cancel }
+            defer { EditExitModal.responderForTesting = nil }
+            try escape(viewer)
+            XCTAssertNil(field.currentEditor(), "Esc ends editing in the field (\(tool))")
+            XCTAssertTrue(viewer.firstResponder === viewer.imageViewForTesting, "the photo has the keyboard (\(tool))")
+            XCTAssertEqual(field.stringValue, committed, "the typed value is undone (\(tool))")
+            try await until("nothing is pending (\(tool))") { viewer.subtitle == "Editing" }
+            let operations = await c.recipe?.snapshot()
+            XCTAssertEqual(operations, [], "Esc applies nothing (\(tool))")
+            XCTAssertNil(asked, "the first Esc does not ask (\(tool))")
+            try escape(viewer)
+            try await until("the second Esc leaves edit mode (\(tool))") { !c.isActive }
+            XCTAssertNil(asked, "no changes: no question (\(tool))")
+            XCTAssertEqual(try Data(contentsOf: url), original)
+        }
+    }
+
+    /// Esc with nothing typed only moves the keyboard out of the field.
+    func testEscInAnUntouchedNumberFieldOnlyMovesFocus() async throws {
+      for fullscreenHost in [false, true] {
+        let url = try write("esc-untouched-\(fullscreenHost).png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        if fullscreenHost { viewer.contentRootForTesting.windowMode = .fullscreen }
+        try await enter(viewer, tool: .crop)
+        let c = viewer.contentRootForTesting.editModeController
+        let field = try XCTUnwrap(c._installedToolForTesting as? CropPanel)._heightField
+        let before = field.stringValue
+        XCTAssertTrue(viewer.makeFirstResponder(field))
+        try escape(viewer)
+        XCTAssertNil(field.currentEditor())
+        XCTAssertTrue(viewer.firstResponder === viewer.imageViewForTesting)
+        XCTAssertEqual(field.stringValue, before)
+        XCTAssertTrue(c.isActive)
+        XCTAssertEqual(viewer.subtitle, "Editing")
+      }
+    }
+
+    /// Nothing typed, the panel changes the number (the crop frame moved), then
+    /// Esc: the new number stays and Esc writes nothing.
+    func testEscInAnUntouchedFieldKeepsANumberThePanelChanged() async throws {
+        let url = try write("esc-outside.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .crop)
+        let c = viewer.contentRootForTesting.editModeController
+        let crop = try XCTUnwrap(c._installedToolForTesting as? CropPanel)
+        let field = crop._widthField
+        XCTAssertTrue(viewer.makeFirstResponder(field))
+        crop.setDimensions(width: 37, height: 21)
+        XCTAssertNotNil(field.currentEditor(), "the outside write keeps the field editing")
+        XCTAssertEqual(field.stringValue, "37")
+        let pending = c.pendingCropRect(), subtitle = viewer.subtitle
+        try escape(viewer)
+        XCTAssertNil(field.currentEditor())
+        XCTAssertTrue(viewer.firstResponder === viewer.imageViewForTesting)
+        XCTAssertEqual(field.stringValue, "37", "Esc keeps the panel's newer number")
+        XCTAssertEqual(c.pendingCropRect(), pending, "Esc changes no draft")
+        XCTAssertEqual(viewer.subtitle, subtitle)
+    }
+
+    /// A committed crop value, then a new typed value and Esc: the committed
+    /// value comes back. Esc again asks; Cancel keeps editing, photo not cropped.
+    func testEscRestoresTheCommittedCropValueThenAsksAndCancelKeepsEditing() async throws {
+        let url = try write("esc-committed.png"), original = try Data(contentsOf: url)
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .crop)
+        let c = viewer.contentRootForTesting.editModeController
+        let field = try XCTUnwrap(c._installedToolForTesting as? CropPanel)._widthField
+        try await type("1200", into: field, in: viewer)
+        let committed = field.stringValue
+        let pending = try XCTUnwrap(c.pendingCropRect())
+        try draft("800", into: field, in: viewer)
+        var asked: EditExitModal.Content?
+        EditExitModal.responderForTesting = { content in asked = content; return .cancel }
+        defer { EditExitModal.responderForTesting = nil }
+        try escape(viewer)
+        XCTAssertEqual(field.stringValue, committed, "the last committed value is back")
+        XCTAssertTrue(viewer.firstResponder === viewer.imageViewForTesting)
+        XCTAssertEqual(c.pendingCropRect(), pending, "the typed 800 was not committed")
+        XCTAssertNil(asked)
+        try escape(viewer)
+        try await until("the second Esc asks and Cancel returns") { asked != nil && !c.isTransitioning }
+        XCTAssertTrue(c.isActive, "Cancel keeps edit mode")
+        let operations = await c.recipe?.snapshot()
+        XCTAssertEqual(operations, [], "the pending crop is not applied")
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 2400, height: 1600), "the photo is not cropped")
+        XCTAssertEqual(viewer.subtitle, "Editing · Unsaved changes")
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    /// Apply a resize, focus W, Undo rewrites the focused fields, type, Esc:
+    /// W goes back to what it showed before the typing (the undone size),
+    /// never to the value it had when it took focus.
+    func testEscAfterUndoRewroteTheFocusedFieldRestoresTheShownValue() async throws {
+        let url = try blurFixture("esc-after-undo.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .resize)
+        let c = viewer.contentRootForTesting.editModeController
+        let panel = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        try await type("50", into: panel._percentField, in: viewer)
+        try await until("A typed percent makes a pending resize") { panel._applyButton.isEnabled }
+        panel._applyButton.performClick(nil); await c.settleForTesting()
+        let resize = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        let field = resize._widthField
+        XCTAssertTrue(viewer.makeFirstResponder(field))
+        XCTAssertEqual(field.stringValue, "768")
+        c.performUndo(); await c.settleForTesting()
+        try await until("Undo rewrites the fields") { resize._widthField.stringValue == "1536" }
+        XCTAssertNotNil(field.currentEditor(), "the field keeps the keyboard through Undo")
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        editor.insertText("9", replacementRange: NSRange(location: editor.string.utf16.count, length: 0))
+        try escape(viewer)
+        XCTAssertNil(field.currentEditor())
+        XCTAssertEqual(resize.draft.width, "1536", "Esc brings back what W showed before the typing")
+        XCTAssertEqual(resize.draft.height, "1024")
+        try await until("nothing is pending after Esc") { viewer.subtitle == "Editing" }
+    }
+
+    /// Type into W (not committed), Edit > Undo the way Command-Z sends it (the
+    /// `undo:` action up the responder chain from the field editor), then Esc:
+    /// the field and the draft show the current recipe's size, nothing pending.
+    func testUndoWhileTypingThenEscShowsTheCurrentRecipeSize() async throws {
+        let url = try blurFixture("undo-while-typing.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .resize)
+        let c = viewer.contentRootForTesting.editModeController
+        let panel = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        try await type("50", into: panel._percentField, in: viewer)
+        try await until("A typed percent makes a pending resize") { panel._applyButton.isEnabled }
+        panel._applyButton.performClick(nil); await c.settleForTesting()
+        let resize = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        let field = resize._widthField
+        XCTAssertEqual(field.stringValue, "768")
+        try draft("999", into: field, in: viewer)
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        XCTAssertTrue(viewer.firstResponder === editor)
+        XCTAssertTrue(editor.tryToPerform(#selector(ViewerWindow.undo(_:)), with: nil), "someone in the chain takes undo:")
+        await c.settleForTesting()
+        let recipe = try XCTUnwrap(c.recipe)
+        let undoneRecipe = await recipe.operations.isEmpty
+        XCTAssertTrue(undoneRecipe, "undo: from the field editor reaches ViewerWindow.undo, the edit recipe")
+        // The undo discards the typing (as Esc would) and gives the keyboard to the photo.
+        let (w, h) = ("1536", "1024")
+        try await until("Undo rewrites both fields") { resize.draft.height == h && resize.draft.width == w }
+        XCTAssertNil(field.currentEditor())
+        XCTAssertTrue(viewer.firstResponder === viewer.contentRootForTesting.imageView)
+        XCTAssertEqual(resize._widthField.stringValue, w)
+        XCTAssertFalse(resize._applyButton.isEnabled, "no stale pending resize")
+        try await until("nothing is pending after Undo") { viewer.subtitle == "Editing" }
+    }
+
+    /// Apply a resize, type "7" in W (not committed), Undo: the fields show the
+    /// restored size and Apply is off at once, never "7 × 1024" with Apply on.
+    func testUndoWhileTypingInResizeShowsTheRestoredSizeWithApplyOff() async throws {
+        let url = try blurFixture("undo-typing-resize.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .resize)
+        let c = viewer.contentRootForTesting.editModeController
+        let panel = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        try await type("50", into: panel._percentField, in: viewer)
+        try await until("A typed percent makes a pending resize") { panel._applyButton.isEnabled }
+        panel._applyButton.performClick(nil); await c.settleForTesting()
+        let resize = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        try draft("7", into: resize._widthField, in: viewer)
+        let editor = try XCTUnwrap(resize._widthField.currentEditor() as? NSTextView)
+        XCTAssertTrue(editor.tryToPerform(#selector(ViewerWindow.undo(_:)), with: nil))
+        await c.settleForTesting()
+        XCTAssertEqual(resize.draft.width, "1536"); XCTAssertEqual(resize.draft.height, "1024")
+        XCTAssertEqual(resize.draft.percent, "100")
+        XCTAssertFalse(resize._applyButton.isEnabled, "nothing pending after Undo")
+        // Redo while typing does the same: the redone size shows, Apply off.
+        try draft("7", into: resize._widthField, in: viewer)
+        let again = try XCTUnwrap(resize._widthField.currentEditor() as? NSTextView)
+        XCTAssertTrue(again.tryToPerform(#selector(ViewerWindow.redo(_:)), with: nil))
+        await c.settleForTesting()
+        XCTAssertEqual(resize.draft.width, "768"); XCTAssertEqual(resize.draft.height, "512")
+        XCTAssertFalse(resize._applyButton.isEnabled, "nothing pending after Redo")
+        XCTAssertNil(resize._widthField.currentEditor())
+    }
+
+    /// Nothing to undo: Undo while typing leaves the typing (and the keyboard) alone.
+    func testUndoWithNothingToUndoKeepsTheTyping() async throws {
+        for tool in [EditTool.resize, .crop, .levels] {
+            let url = try blurFixture("undo-typing-empty-\(tool).png")
+            let viewer = try await viewer([url]); defer { viewer.close() }
+            try await enter(viewer, tool: tool)
+            let c = viewer.contentRootForTesting.editModeController
+            await c.settleForTesting()
+            let panel = try XCTUnwrap(c._installedToolForTesting)
+            let field = try XCTUnwrap((panel as? ResizePanel)?._widthField ?? (panel as? CropPanel)?._widthField
+                                      ?? (panel as? LevelsPanel)?._field(.inBlack))
+            try draft("70", into: field, in: viewer)
+            let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+            XCTAssertTrue(editor.tryToPerform(#selector(ViewerWindow.undo(_:)), with: nil))
+            await c.settleForTesting()
+            XCTAssertTrue(field.currentEditor() === editor, "\(tool): the field keeps the keyboard")
+            XCTAssertEqual(editor.string, "70", "\(tool): the typing stays")
+        }
+    }
+
+    /// Crop: apply, type in W, Undo → W shows the real width (not the applied
+    /// crop's, the 0.2.33 fault); Return in W afterwards applies nothing.
+    func testUndoWhileTypingInCropShowsTheRealWidthAndReturnAppliesNothing() async throws {
+        let url = try blurFixture("undo-typing-crop.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .crop)
+        viewer.recalculateKeyViewLoop()
+        let c = viewer.contentRootForTesting.editModeController
+        let panel = try XCTUnwrap(c._installedToolForTesting as? CropPanel)
+        try await type("1500", into: panel._widthField, in: viewer)
+        try await until("A typed width makes a pending crop") { panel._applyButton.isEnabled }
+        panel._applyButton.performClick(nil); await c.settleForTesting()
+        let crop = try XCTUnwrap(c._installedToolForTesting as? CropPanel)
+        XCTAssertEqual(crop._widthField.stringValue, "1500")
+        try draft("77", into: crop._widthField, in: viewer)
+        let editor = try XCTUnwrap(crop._widthField.currentEditor() as? NSTextView)
+        XCTAssertTrue(editor.tryToPerform(#selector(ViewerWindow.undo(_:)), with: nil))
+        await c.settleForTesting()
+        let session = try XCTUnwrap(c.recipe)
+        let undone = await session.snapshot()
+        XCTAssertEqual(undone, [], "the crop is undone")
+        // The undo discarded the typing itself: no Esc needed (the 0.2.33 sequence had one).
+        XCTAssertNil(crop._widthField.currentEditor(), "W gave up the keyboard on Undo")
+        XCTAssertTrue(viewer.firstResponder === viewer.contentRootForTesting.imageView)
+        XCTAssertEqual(crop._widthField.stringValue, "1536", "W shows the real width")
+        XCTAssertEqual(crop._heightField.stringValue, "1024")
+        XCTAssertNil(crop.dimensionDraft)
+        // Return in W (nothing typed) must not apply a stale value.
+        try await type(crop._widthField.stringValue, into: crop._widthField, in: viewer)
+        await c.settleForTesting()
+        let after = await session.snapshot()
+        XCTAssertEqual(after, [], "Return in W applies nothing")
+        XCTAssertEqual(c.currentPixelSize, CGSize(width: 1536, height: 1024))
+        XCTAssertFalse(crop._applyButton.isEnabled)
+    }
+
+    /// Levels: typed number, Undo → the fields show the restored levels.
+    func testUndoWhileTypingInLevelsShowsTheRestoredValues() async throws {
+        let url = try blurFixture("undo-typing-levels.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .levels)
+        let c = viewer.contentRootForTesting.editModeController
+        await c.settleForTesting()
+        let panel = try XCTUnwrap(c._installedToolForTesting as? LevelsPanel)
+        try await type("20", into: try XCTUnwrap(panel._field(.inBlack)), in: viewer)
+        await c.settleForTesting()
+        let applied = await (try XCTUnwrap(c.recipe)).undoDepth
+        XCTAssertEqual(applied, 1, "Return commits one Levels step")
+        let levels = try XCTUnwrap(c._installedToolForTesting as? LevelsPanel)
+        let typed = try XCTUnwrap(levels._field(.inBlack))
+        try draft("55", into: typed, in: viewer)
+        let editor = try XCTUnwrap(typed.currentEditor() as? NSTextView)
+        XCTAssertTrue(editor.tryToPerform(#selector(ViewerWindow.undo(_:)), with: nil))
+        await c.settleForTesting()
+        // The undo discarded the typing itself: no Esc needed (the 0.2.33 sequence had one).
+        XCTAssertNil(typed.currentEditor(), "the field gave up the keyboard on Undo")
+        XCTAssertTrue(viewer.firstResponder === viewer.contentRootForTesting.imageView)
+        XCTAssertEqual(typed.stringValue, "0", "the field shows the restored black point")
+        XCTAssertNil(levels.projectedParams, "no typed draft is left")
+        XCTAssertEqual(levels.params, .identity)
+    }
+
+    /// A resize changed in its field (not applied) is an unsaved change.
+    func testPendingResizeInItsFieldReadsAsUnsaved() async throws {
+        let url = try write("pending-resize-status.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .resize)
+        let c = viewer.contentRootForTesting.editModeController
+        let field = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)._widthField
+        XCTAssertEqual(viewer.subtitle, "Editing")
+        try await type("1200", into: field, in: viewer)
+        try await until("the pending resize reads as unsaved") { viewer.subtitle == "Editing · Unsaved changes" }
+        let operations = await c.recipe?.snapshot()
+        XCTAssertEqual(operations, [], "not applied")
+    }
+
+    // MARK: Save Copy… menu and toolbar share one enabled state
+
+    private func assertSaveCopy(_ viewer: ViewerWindow, _ expected: Bool, _ step: String,
+                                file: StaticString = #filePath, line: UInt = #line) {
+        let c = viewer.contentRootForTesting.editModeController
+        XCTAssertEqual(c.chromeState.saveCopyEnabled, expected, "toolbar rule: \(step)", file: file, line: line)
+        XCTAssertEqual(viewer.canPerform(.saveAs), expected, "File ▸ Save Copy…: \(step)", file: file, line: line)
+        if c.chromeState.showsSaveCopy {
+            XCTAssertEqual(viewer.contentRootForTesting.editToolbarController.saveCopyButton.isEnabled, expected,
+                           "toolbar button: \(step)", file: file, line: line)
+        }
+    }
+
+    func testSaveCopyMenuAndToolbarAgreeForNoAppliedPendingAndBoth() async throws {
+        let url = try write("save-copy-rule.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .crop)
+        let c = viewer.contentRootForTesting.editModeController
+        let panel = try XCTUnwrap(c._installedToolForTesting as? CropPanel)
+        assertSaveCopy(viewer, false, "no edits")
+        var panels = 0
+        viewer.savePanelResponderForTesting = { _, _ in panels += 1; return nil }
+        viewer.keyDown(with: try key("S", code: 1, modifiers: [.command, .shift], in: viewer))
+        try await Task.sleep(for: .milliseconds(200)) // nothing to wait for: the key must do nothing
+        XCTAssertEqual(panels, 0, "⇧⌘S with no edits opens no Save panel")
+        viewer.savePanelResponderForTesting = nil
+        c.cropOverlay.perform(.resize(CropKeyGeometry.Edges(right: -1), steps: 10))
+        try await until("pending crop") { c.chromeState.hasPendingToolEdits }
+        assertSaveCopy(viewer, true, "pending draft only")
+        panel._applyButton.performClick(nil)
+        try await until("crop applied") { c.chromeState.hasEdits && !c.chromeState.hasPendingToolEdits }
+        assertSaveCopy(viewer, true, "applied edits")
+        c.cropOverlay.perform(.resize(CropKeyGeometry.Edges(right: -1), steps: 10))
+        try await until("applied + pending") { c.chromeState.hasEdits && c.chromeState.hasPendingToolEdits }
+        assertSaveCopy(viewer, true, "applied + pending")
+    }
+
+    /// 16-bit photo: the primary itself is Save Copy…; the menu item follows it.
+    func testSaveCopyMenuFollowsTheCopyPrimaryForAPendingDraft() async throws {
+        let url = try write16("save-copy-rule16.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .resize)
+        let c = viewer.contentRootForTesting.editModeController
+        let panel = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+        assertSaveCopy(viewer, false, "no edits (16-bit)")
+        try await type("200", into: panel._widthField, in: viewer)
+        try await until("the copy primary is on") { c.chromeState.primaryTitle == "Save Copy…" }
+        assertSaveCopy(viewer, true, "pending draft only (16-bit)")
+    }
+
+    /// What File ▸ Save Copy… writes with a pending crop: the crop on screen.
+    func testSaveCopyMenuWithAPendingCropWritesTheCrop() async throws {
+        let url = try write("save-copy-pending.png"), original = try Data(contentsOf: url)
+        let copy = root.appendingPathComponent("save-copy-pending copy.png")
+        let viewer = try await viewer([url]); defer { viewer.close() }
+        try await enter(viewer, tool: .crop)
+        let c = viewer.contentRootForTesting.editModeController
+        c.cropOverlay.perform(.resize(CropKeyGeometry.Edges(right: -1), steps: 10))
+        try await until("pending crop") { c.chromeState.hasPendingToolEdits }
+        viewer.savePanelResponderForTesting = { _, _ in copy }
+        viewer.editSaveAs(nil)
+        try await until("the copy is written") { FileManager.default.fileExists(atPath: copy.path) && !c.isSaving }
+        XCTAssertEqual(try dimensions(copy), CGSize(width: 2390, height: 1600))
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
 }

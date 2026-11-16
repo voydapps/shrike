@@ -2,7 +2,7 @@
 //  PanelTextField.swift
 //  ShrikeUI
 //
-//  The number fields of the edit tool panels (spec 25 §3.1). Return commits
+//  The number fields of the edit tool panels. Return commits
 //  the field (its action runs), then the field gives up focus, so the NEXT
 //  Return is the window's default button: Done. Without this the field kept
 //  focus and every Return only committed it again.
@@ -24,16 +24,68 @@ final class PanelTextField: NSTextField {
     private var hasUncommittedChanges = false
     private var committedReturn = false
     private var editSessionRevision: UInt64 = 0
+    /// What the field showed when typing began (after any rewrite by the panel); Esc puts it back.
+    private var committedString = ""
     private var endEditingRevision: UInt64 = 0
+
+    /// Typed text not committed yet, in the field editor now.
+    var isTyping: Bool { hasUncommittedChanges && currentEditor() != nil }
+    /// The number shown before the typing began (the shown number when not typing).
+    var shownIntegerBeforeTyping: Int { isTyping ? Int(committedString) ?? 0 : integerValue }
+    /// The panel shows a new value; while the user types, the typing stays and Esc returns to it.
+    func showValue(_ string: String) {
+        if isTyping { committedString = string } else { stringValue = string }
+    }
 
     enum Completion: Equatable {
         case committed, alreadyCommitted, refused, staleOwnership
         var mayContinue: Bool { self == .committed || self == .alreadyCommitted }
     }
 
+    override func becomeFirstResponder() -> Bool {
+        let took = super.becomeFirstResponder()
+        if took { committedString = stringValue }
+        return took
+    }
+
+    /// Esc (the panel's `control(_:textView:doCommandBy:)` calls this): a
+    /// typed value goes and the last committed one comes back; with nothing
+    /// typed the field keeps what it shows (the panel may have changed it).
+    /// Either way the keyboard goes to the photo, as Esc on the crop frame.
+    /// Left alone, the field editor runs its completion list, which does nothing here.
+    func cancelTyping(_ textView: NSTextView, _ command: Selector) -> Bool {
+        guard command == #selector(NSResponder.cancelOperation(_:)), !textView.hasMarkedText(),
+              currentEditor() === textView, window != nil else { return false }
+        endTyping(textView, restore: hasUncommittedChanges)
+        return true
+    }
+
+    /// Edit ▸ Undo / Redo of an edit while typing: the typed text goes, as with
+    /// Esc, so the undo's new values land in a field that is not being edited.
+    /// Nothing typed: the field keeps the keyboard and what it shows.
+    /// Returns whether typing was discarded (the panel then refreshes Apply).
+    @discardableResult
+    func discardTyping() -> Bool {
+        guard isTyping, let editor = currentEditor() as? NSTextView, window != nil else { return false }
+        if editor.hasMarkedText() { editor.unmarkText() }
+        endTyping(editor, restore: true)
+        return true
+    }
+
+    private func endTyping(_ textView: NSTextView, restore: Bool) {
+        guard let window else { return }
+        if restore { textView.string = committedString }
+        // Cleared before the focus moves, so ending the edit does not commit the typed value.
+        hasUncommittedChanges = false
+        if !window.makeFirstResponder((window as? ViewerWindow)?.contentRoot.imageView) { window.makeFirstResponder(nil) }
+        if restore { stringValue = committedString }
+    }
+
     override func textDidBeginEditing(_ notification: Notification) {
         editSessionRevision &+= 1
         hasUncommittedChanges = false
+        // The cell still holds the shown value; the panel may have rewritten it since focus (Undo).
+        committedString = cell?.stringValue ?? committedString
         if !processingReturn { committedReturn = false }
         super.textDidBeginEditing(notification)
     }
@@ -93,6 +145,7 @@ final class PanelTextField: NSTextField {
         processingReturn = isReturn
         defer { processingReturn = wasProcessingReturn }
         super.textDidEndEditing(notification)
+        if isReturn { committedString = stringValue }
         guard isReturn else {
             // This notification follows native validation. Refused edits never
             // reach it; cancellation and our own Return resignation do not commit.

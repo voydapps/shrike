@@ -41,8 +41,13 @@ final class BatchRecoveryDestinationTests: XCTestCase {
         model.run(); await model.waitForRun()
         XCTAssertEqual(model.result?.doneCount, 1)
         XCTAssertEqual(model.result?.skippedCount, 1)
-        XCTAssertEqual(model.result?.failedCount, 1, "a file Shrike cannot read is a failure, not a skip")
-        XCTAssertEqual(model.summary, "1 completed · 1 failed")
+        XCTAssertEqual(model.result?.failedCount, 1, "the runner still counts an unreadable file as failed")
+        // Pass 2c: the preview announced it as skipped, so the Done view says skipped and offers no
+        // Review Remaining just for it. A file that breaks during the run (not announced) stays a failure.
+        XCTAssertEqual(model.summary, "1 completed · 1 skipped")
+        XCTAssertFalse(model.canReviewRemaining)
+        XCTAssertEqual(model.resultTitle, "Batch complete")
+        model.announcedUnreadable = []
         XCTAssertFalse(model.hasIntentionalSkips, "an unreadable file is retried on its own; no hint to select it")
         let unreadable = try XCTUnwrap(model.result?.items.first { $0.source.primary == broken })
         if case .skipped(.unreadable) = unreadable.outcome {} else { XCTFail("Corrupt input must be skipped as unreadable") }
@@ -65,7 +70,12 @@ final class BatchRecoveryDestinationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: completed), completedBytes)
 
         // Repair the actual unreadable source, then execute the retry plan.
+        XCTAssertFalse(model.canRun, "every queued photo is unreadable: nothing to run")
         let repairedBytes = try SaveFlowTests.writeImage(broken, type: .png)
+        // The Batch window becoming key again reads the skipped photo anew.
+        model.refreshSkippedPhotos(); await model.waitForPreview()
+        XCTAssertTrue(model.unreadablePhotos.isEmpty, "the repaired file is readable now")
+        XCTAssertTrue(model.canRun)
         model.run(); await model.waitForRun()
         XCTAssertEqual(model.result?.doneCount, 1)
         XCTAssertEqual(model.result?.skippedCount, 0)

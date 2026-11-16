@@ -11,7 +11,7 @@
 //    * appears on the first image load AND on every nav event
 //    * stays visible while a hold-to-scroll is draining (updates text in
 //      place instead of fading/restoring per keystroke)
-//    * default (spec 24 §1.2): auto-hide, fades after 2.0 s of nav inactivity
+//    * default: auto-hide, fades after 2.0 s of nav inactivity
 //      (250 ms fade-out) while `Prefs.viewerPositionOverlayAutoHides` is true
 //    * pref off: never fades; remains visible until window closes
 //    * subtle — SF Mono 13 pt, white-on-translucent-black, 6 pt radius
@@ -148,9 +148,15 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
     // MARK: - Pill state
 
     private var fadeOutWorkItem: DispatchWorkItem?
+    /// Test seam: lets a test check that an idle fade is (not) scheduled,
+    /// when it was re-scheduled, and with which delay, without waiting for it.
+    internal var scheduledFadeIDForTesting: ObjectIdentifier? { fadeOutWorkItem.map(ObjectIdentifier.init) }
+    internal private(set) var scheduledFadeDelayForTesting: TimeInterval?
+    /// How many idle fades have been scheduled so far (a restart adds one).
+    internal private(set) var scheduledFadeCountForTesting = 0
 
     /// When true, `show(...)` schedules a fade-out after `idleTimeout` like
-    /// the spec 24 default. When false, the overlay stays
+    /// the default. When false, the overlay stays
     /// fully visible until `fadeOutNow()` is called (window teardown).
     ///
     /// This is a *computed* property that re-reads the
@@ -343,7 +349,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
     /// treats `.medium` as non-interruptive, which is the right volume
     /// for a "something is loading" cue.
     private func postDefaultAnnouncement(_ message: String) {
-        let element: Any = window ?? (NSApp as Any)
+        guard let element: Any = window ?? NSApp else { return }
         NSAccessibility.post(
             element: element,
             notification: .announcementRequested,
@@ -373,7 +379,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
     /// Stars, flag, tag dots, RAW chip, pencil.
     private let marksLabel = NSTextField(labelWithString: "")
 
-    /// Spec 24 §4.3: the pair chip is the only clickable part of the pill.
+    /// The pair chip is the only clickable part of the pill.
     /// A transparent button over the chip (at least 28 × 22 pt).
     let chipButton = PillChipButton()
     /// The chip was clicked: switch between the primary and the RAW.
@@ -388,7 +394,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
         label.font = PillMarks.nameFont
         label.textColor = .white
         label.maximumNumberOfLines = 1
-        // The name is cut by `FileNameFit` (spec 25 §6.2), never by the
+        // The name is cut by `FileNameFit`, never by the
         // system's middle truncation.
         label.lineBreakMode = .byClipping
         label.refit = { [weak self] in self?.refitName() }
@@ -1642,7 +1648,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
         if !label.attributedStringValue.isEqual(to: text) { label.attributedStringValue = text }
     }
 
-    /// The pointer moved over the canvas of a window (spec 24 §5.1): an
+    /// The pointer moved over the canvas of a window: an
     /// auto-hiding pill shows and fades again after 2.0 s without movement.
     /// Nothing before the first photo, while the capsule holds the pill
     /// (full screen) or while the load hairline is up.
@@ -1781,7 +1787,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
         fireVoiceOverAnnouncementIfPermitted()
     }
 
-    // MARK: - Held open by the capsule (spec 24 §1.2)
+    // MARK: - Held open by the capsule
 
     /// The full-screen capsule shows: the pill shows with it and hides
     /// with it. While held, no idle fade is scheduled.
@@ -1816,6 +1822,8 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
             self?.runFadeOut()
         }
         fadeOutWorkItem = item
+        scheduledFadeDelayForTesting = delay
+        scheduledFadeCountForTesting += 1
         DispatchQueue.main.asyncAfter(
             deadline: .now() + delay,
             execute: item
@@ -1837,7 +1845,7 @@ final class NavigationPositionOverlayView: HUDSurfaceView {
 
 // MARK: - Pair chip button
 
-/// Spec 24 §4.3: the pill's one clickable part. Transparent over the chip;
+/// The pill's one clickable part. Transparent over the chip;
 /// on hover a white 10 % platter (radius 6) and the pointing hand.
 @MainActor
 final class PillChipButton: NSButton {
@@ -2053,7 +2061,7 @@ public struct PillMarks: Equatable, Sendable {
             out.append(attachment(image, centredOn: capMid))
         }
         if let kind = marks.pairKind {
-            // Spec 24 §4.3: [JPG | RAW], the file on screen lit.
+            // [JPG | RAW], the file on screen lit.
             out.append(gap)
             let chip = NSMutableAttributedString(attributedString: attachment(
                 Badges.pairChipImage(kind: kind, rawShown: marks.rawShown), centredOn: capMid))

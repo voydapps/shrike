@@ -87,7 +87,7 @@ final class ViewerContextMenu: NSObject, NSMenuDelegate {
         add(.revealInFinder, target: window)
         add(.showInBrowser, target: window)
         menu.addItem(share.makeParentItem())
-        // Same three, same order as the Browser's menu (spec 27 P3-12).
+        // Same three, same order as the Browser's menu.
         add(.slideshow, target: window)
         add(.batch, target: window)
         add(.compare, target: window)
@@ -141,45 +141,13 @@ final class ViewerContextMenu: NSObject, NSMenuDelegate {
     // MARK: Open With ▸ (system apps)
 
     private func fillOpenWith() {
-        openWithMenu.removeAllItems()
-        guard let url = window?.commandFileURLs.first else {
-            let none = NSMenuItem(title: "No Applications", action: nil, keyEquivalent: "")
-            none.isEnabled = false
-            openWithMenu.addItem(none)
-            return
-        }
-        let workspace = NSWorkspace.shared
-        let apps = workspace.urlsForApplications(toOpen: url)
-            .filter { $0.lastPathComponent != Bundle.main.bundleURL.lastPathComponent }
-        let fallback = workspace.urlForApplication(toOpen: url)
-        for app in apps.prefix(20) {
-            let title = FileManager.default.displayName(atPath: app.path)
-                .replacingOccurrences(of: ".app", with: "")
-            let row = NSMenuItem(title: app == fallback ? "\(title) (default)" : title,
-                                 action: #selector(openWith(_:)), keyEquivalent: "")
-            row.target = self
-            row.representedObject = app
-            let icon = workspace.icon(forFile: app.path)
-            icon.size = NSSize(width: 16, height: 16)
-            row.image = icon
-            openWithMenu.addItem(row)
-        }
-        if openWithMenu.items.isEmpty {
-            let none = NSMenuItem(title: "No Applications", action: nil, keyEquivalent: "")
-            none.isEnabled = false
-            openWithMenu.addItem(none)
-        }
+        OpenWithMenu.fill(openWithMenu, url: window?.commandFileURLs.first, target: self,
+                          action: #selector(openWith(_:)))
     }
 
     @objc private func openWith(_ sender: NSMenuItem) {
-        guard let app = sender.representedObject as? URL,
-              let url = window?.commandFileURLs.first else { return }
-        // No completion handler. NSWorkspace calls it on a background
-        // queue, and a closure written here would be main-actor isolated
-        // (this class is @MainActor), so Swift 6 would trap when it runs.
-        NSWorkspace.shared.open([url], withApplicationAt: app,
-                                configuration: NSWorkspace.OpenConfiguration(),
-                                completionHandler: nil)
+        guard let url = window?.commandFileURLs.first else { return }
+        OpenWithMenu.open([url], with: sender)
     }
 
     // MARK: Test seams
@@ -193,5 +161,48 @@ extension ViewerWindow {
     var isDisplayedEdited: Bool {
         guard let primary = displayedItem?.group.primary else { return false }
         return fileBadges[primary]?.edited ?? false
+    }
+}
+
+/// Open With ▸ (system apps), shared by the viewer's and the grid's right-click menus.
+@MainActor
+enum OpenWithMenu {
+    /// Fills `menu` with the apps that can open `url` (the default one marked).
+    static func fill(_ menu: NSMenu, url: URL?, target: AnyObject, action: Selector) {
+        menu.removeAllItems()
+        func none() {
+            let row = NSMenuItem(title: "No Applications", action: nil, keyEquivalent: "")
+            row.isEnabled = false
+            menu.addItem(row)
+        }
+        guard let url else { return none() }
+        let workspace = NSWorkspace.shared
+        let apps = workspace.urlsForApplications(toOpen: url)
+            .filter { $0.lastPathComponent != Bundle.main.bundleURL.lastPathComponent }
+        let fallback = workspace.urlForApplication(toOpen: url)
+        for app in apps.prefix(20) {
+            let title = FileManager.default.displayName(atPath: app.path)
+                .replacingOccurrences(of: ".app", with: "")
+            let row = NSMenuItem(title: app == fallback ? "\(title) (default)" : title,
+                                 action: action, keyEquivalent: "")
+            row.target = target
+            row.representedObject = app
+            let icon = workspace.icon(forFile: app.path)
+            icon.size = NSSize(width: 16, height: 16)
+            row.image = icon
+            menu.addItem(row)
+        }
+        if menu.items.isEmpty { none() }
+    }
+
+    /// Opens `urls` with the app a row of `fill` carries.
+    static func open(_ urls: [URL], with row: NSMenuItem) {
+        guard let app = row.representedObject as? URL, !urls.isEmpty else { return }
+        // No completion handler. NSWorkspace calls it on a background
+        // queue, and a closure written here would be main-actor isolated,
+        // so Swift 6 would trap when it runs.
+        NSWorkspace.shared.open(urls, withApplicationAt: app,
+                                configuration: NSWorkspace.OpenConfiguration(),
+                                completionHandler: nil)
     }
 }

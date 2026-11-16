@@ -45,13 +45,13 @@ public final class FavoritesStore {
     private let load: () -> Data?
     private let save: (Data?) -> Void
     private let seed: () -> [URL]
-    private let exists: (URL) -> Bool
+    private let exists: @Sendable (URL) -> Bool
 
     public init(
         load: @escaping () -> Data?,
         save: @escaping (Data?) -> Void,
         seed: @escaping () -> [URL],
-        exists: @escaping (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+        exists: @escaping @Sendable (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
     ) {
         self.load = load
         self.save = save
@@ -95,9 +95,52 @@ public final class FavoritesStore {
     }
 
     /// Rows for the sidebar: the saved path when it exists; otherwise the
-    /// bookmark's new place (a moved folder), else a missing row.
+    /// bookmark's new place (a moved folder), else a missing row. Checks the
+    /// disk on the calling thread: UI code uses `uncheckedRows()` and
+    /// `checkedRows()` instead.
     public func rows() -> [SidebarFavoriteRow] {
-        var list = favorites()
+        let list = favorites()
+        let result = Self.check(list, exists: exists)
+        if let updated = result.updated { write(updated) }
+        return result.rows
+    }
+
+    /// The saved list as rows, every folder shown as present. Reads stored
+    /// data only: no disk access. `isMissing` can be carried over from
+    /// what the sidebar showed before, so a rebuild does not flash.
+    public func uncheckedRows(knownMissing: Set<String> = []) -> [SidebarFavoriteRow] {
+        favorites().map { SidebarFavoriteRow(url: $0.url, isMissing: knownMissing.contains($0.url.standardizedFileURL.path)) }
+    }
+
+    /// What `checkedRows()` found: the rows, and the list to save when a
+    /// moved folder was found through its bookmark (with the list that was
+    /// checked, so a later change of the saved list is not overwritten).
+    public struct Checked: Sendable {
+        public var rows: [SidebarFavoriteRow]
+        var checked: [SidebarFavorite]
+        var updated: [SidebarFavorite]?
+    }
+
+    /// The same rows as `rows()`, with every `stat` and bookmark lookup off
+    /// the main thread (a sleeping network share can block for seconds).
+    public func checkedRows() async -> Checked {
+        let list = favorites()
+        let exists = self.exists
+        return await Task.detached(priority: .userInitiated) { Self.check(list, exists: exists) }.value
+    }
+
+    /// Saves the moved paths of a check, when the saved list is still the one
+    /// that was checked (a favorite added meanwhile is never lost).
+    /// Returns false when the list changed: the caller checks again.
+    @discardableResult
+    func commit(_ result: Checked) -> Bool {
+        guard favorites() == result.checked else { return false }
+        if let updated = result.updated { write(updated) }
+        return true
+    }
+
+    nonisolated static func check(_ saved: [SidebarFavorite], exists: @Sendable (URL) -> Bool) -> Checked {
+        var list = saved
         var changed = false
         let rows = list.indices.map { i -> SidebarFavoriteRow in
             let url = list[i].url
@@ -109,8 +152,7 @@ public final class FavoritesStore {
             }
             return SidebarFavoriteRow(url: url, isMissing: true)
         }
-        if changed { write(list) }
-        return rows
+        return Checked(rows: rows, checked: saved, updated: changed ? list : nil)
     }
 
     /// Adds `url` at `index` (the end by default). A folder already in the
@@ -149,7 +191,7 @@ public final class FavoritesStore {
         save(try? JSONEncoder().encode(list))
     }
 
-    static func resolve(_ bookmark: Data) -> URL? {
+    nonisolated static func resolve(_ bookmark: Data) -> URL? {
         guard !bookmark.isEmpty else { return nil }
         var stale = false
         return try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting],
@@ -172,7 +214,7 @@ public struct SidebarWorkspaceRow: Equatable, Sendable {
     public var title: String { url.lastPathComponent }
 }
 
-/// The one pinned folder (spec 23-workspace). Stored as one JSON object
+/// The one pinned folder. Stored as one JSON object
 /// `{ "path", "bookmark" }` in `shrike.browser.workspace`; the bookmark only
 /// finds a moved folder (Shrike is not sandboxed, so no security scope).
 @MainActor
@@ -180,12 +222,12 @@ public final class WorkspaceStore {
 
     private let load: () -> Data?
     private let save: (Data?) -> Void
-    private let exists: (URL) -> Bool
+    private let exists: @Sendable (URL) -> Bool
 
     public init(
         load: @escaping () -> Data?,
         save: @escaping (Data?) -> Void,
-        exists: @escaping (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+        exists: @escaping @Sendable (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
     ) {
         self.load = load
         self.save = save
@@ -222,18 +264,52 @@ public final class WorkspaceStore {
     /// The Workspace as the sidebar shows it: the saved path when it is
     /// there; otherwise the bookmark's new place (renamed or moved; saved,
     /// no message), else a missing row. A bookmark that now points into the
-    /// Trash counts as missing. Nil when none is set.
+    /// Trash counts as missing. Nil when none is set. Checks the disk on the
+    /// calling thread: the sidebar uses `uncheckedRow()` / `checkedRow()`.
     public func row() -> SidebarWorkspaceRow? {
-        guard var saved = saved() else { return nil }
-        let url = saved.url
-        if exists(url) { return SidebarWorkspaceRow(url: url, isMissing: false) }
-        if let moved = FavoritesStore.resolve(saved.bookmark), exists(moved),
+        guard let saved = saved() else { return nil }
+        let result = Self.check(saved, exists: exists)
+        if let updated = result.updated { write(updated) }
+        return result.row
+    }
+
+    /// The saved Workspace as a present row: stored data only, no disk.
+    public func uncheckedRow(knownMissing: Bool = false) -> SidebarWorkspaceRow? {
+        saved().map { SidebarWorkspaceRow(url: $0.url, isMissing: knownMissing) }
+    }
+
+    public struct Checked: Sendable {
+        public var row: SidebarWorkspaceRow?
+        var checked: SidebarFavorite?
+        var updated: SidebarFavorite?
+    }
+
+    /// The same row as `row()`, checked off the main thread.
+    public func checkedRow() async -> Checked {
+        let saved = saved()
+        let exists = self.exists
+        return await Task.detached(priority: .userInitiated) { Self.check(saved, exists: exists) }.value
+    }
+
+    /// Saves a moved path when the saved Workspace is still the checked one.
+    /// False when it changed meanwhile: the caller checks again.
+    @discardableResult
+    func commit(_ result: Checked) -> Bool {
+        guard saved() == result.checked else { return false }
+        if let updated = result.updated { write(updated) }
+        return true
+    }
+
+    nonisolated static func check(_ saved: SidebarFavorite?, exists: @Sendable (URL) -> Bool) -> Checked {
+        guard var value = saved else { return Checked(row: nil, checked: nil, updated: nil) }
+        let url = value.url
+        if exists(url) { return Checked(row: SidebarWorkspaceRow(url: url, isMissing: false), checked: saved, updated: nil) }
+        if let moved = FavoritesStore.resolve(value.bookmark), exists(moved),
            !moved.standardizedFileURL.pathComponents.contains(".Trash") {
-            saved.path = moved.standardizedFileURL.path
-            write(saved)
-            return SidebarWorkspaceRow(url: moved, isMissing: false)
+            value.path = moved.standardizedFileURL.path
+            return Checked(row: SidebarWorkspaceRow(url: moved, isMissing: false), checked: saved, updated: value)
         }
-        return SidebarWorkspaceRow(url: url, isMissing: true)
+        return Checked(row: SidebarWorkspaceRow(url: url, isMissing: true), checked: saved, updated: nil)
     }
 
     /// Makes `url` the Workspace (replacing any other). False for "/".
@@ -294,11 +370,20 @@ public struct SidebarVolume: Equatable, Sendable {
 public struct VolumeSource: Sendable {
     public var list: @Sendable () -> [SidebarVolume]
     public var eject: @Sendable (URL) throws -> Void
+    /// What the sidebar shows before `list` has run off the main thread.
+    /// Must not touch the disk. The system source has nothing to show yet;
+    /// an injected list (tests) is plain data, so it is used as is.
+    public var initial: @Sendable () -> [SidebarVolume]
+    /// True while `initial` is only a placeholder for `list`.
+    public var initialIsPlaceholder: Bool
 
     public init(list: @escaping @Sendable () -> [SidebarVolume],
-                eject: @escaping @Sendable (URL) throws -> Void) {
+                eject: @escaping @Sendable (URL) throws -> Void,
+                initial: (@Sendable () -> [SidebarVolume])? = nil) {
         self.list = list
         self.eject = eject
+        self.initial = initial ?? list
+        self.initialIsPlaceholder = initial != nil
     }
 
     /// The Mac's mounted, visible volumes (a volume list and `statfs`, no
@@ -319,7 +404,8 @@ public struct VolumeSource: Sendable {
             }
             return SidebarVolume.ordered(volumes)
         },
-        eject: { url in try NSWorkspace.shared.unmountAndEjectDevice(at: url) }
+        eject: { url in try NSWorkspace.shared.unmountAndEjectDevice(at: url) },
+        initial: { [] }
     )
 
     /// No volumes, eject never called (tests of other features).

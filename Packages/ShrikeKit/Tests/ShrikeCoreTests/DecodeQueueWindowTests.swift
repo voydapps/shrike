@@ -84,7 +84,14 @@ final class DecodeQueueWindowTests: XCTestCase {
         let fresh = sources(10..<13)
         await q.setNavigation(list: fresh, currentIndex: 0)
 
-        try await Task.sleep(nanoseconds: 450_000_000)
+        // The fresh list is fully cached once its three decodes landed; the
+        // stale decodes (250 ms each) were started first, so wait until none
+        // of them is still running before looking for leaks.
+        let freshIDs = Set(fresh.map(\.id))
+        let freshReady = await eventually(10) { await q.cachedIDs() == freshIDs }
+        XCTAssertTrue(freshReady, "the new list must fill its cache")
+        let drained = await eventually(10) { TestImageSource.inFlight.withLock { $0 } == 0 }
+        XCTAssertTrue(drained, "stale decodes must have finished")
         let cached = await q.cachedIDs()
         XCTAssertTrue(cached.isDisjoint(with: Set(slow.map(\.id))),
                       "stale decodes landed in the new list's cache: \(cached)")
@@ -147,10 +154,17 @@ final class DecodeQueueWindowTests: XCTestCase {
     func testLaneSkipsWorkCancelledBeforeItStarted() async throws {
         let lane = DecodeLane(width: 1, label: "test.lane")
         let ran = OSAllocatedUnfairLock(initialState: false)
+        let blockerRunning = OSAllocatedUnfairLock(initialState: false)
         let blocker = Task {
-            try await lane.run { Thread.sleep(forTimeInterval: 0.2); return 1 }
+            try await lane.run {
+                blockerRunning.withLock { $0 = true }
+                Thread.sleep(forTimeInterval: 0.2)
+                return 1
+            }
         }
-        try await Task.sleep(nanoseconds: 20_000_000)
+        // The victim must queue behind a blocker that really holds the slot.
+        let blockerHasSlot = await eventually(10) { blockerRunning.withLock { $0 } }
+        XCTAssertTrue(blockerHasSlot)
         let victim = Task {
             try await lane.run { () -> Int in ran.withLock { $0 = true }; return 2 }
         }

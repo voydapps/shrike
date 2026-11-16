@@ -2,8 +2,8 @@
 //  CellAccessibility.swift
 //  ShrikeUI
 //
-//  The one VoiceOver label of a grid or strip cell (spec 25 §7.2): words,
-//  not star glyphs. Order is fixed: name, stars, flagged, edited (spec 27 N8), pair, can't preview.
+//  The one VoiceOver label of a grid or strip cell: words,
+//  not star glyphs. Order is fixed: name, stars, flagged, edited, pair, can't preview.
 //
 
 import Foundation

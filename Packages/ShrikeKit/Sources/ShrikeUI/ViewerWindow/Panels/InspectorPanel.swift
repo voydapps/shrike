@@ -18,6 +18,7 @@ import SwiftUI
 import CoreGraphics
 import ImageIO
 import ShrikeCore
+import UniformTypeIdentifiers
 
 @MainActor
 final class InspectorPanel: HUDSurfaceView {
@@ -70,7 +71,7 @@ final class InspectorPanel: HUDSurfaceView {
         self.viewModel = vm
         self.pinOverlay = PinCornerOverlay(
             identifierSuffix: "inspector",
-            panelName: "Inspector",
+            panelName: "Info",
             appearance: .fullscreenHUD
         )
 
@@ -114,7 +115,7 @@ final class InspectorPanel: HUDSurfaceView {
     /// the pin glyph.
     static let headerHeight: CGFloat = 36
     private let headerRow = NSView()
-    private let headerTitle = NSTextField(labelWithString: "Inspector")
+    private let headerTitle = NSTextField(labelWithString: "Info")
 
     private func setupPinOverlay() {
         headerRow.translatesAutoresizingMaskIntoConstraints = false
@@ -210,6 +211,9 @@ final class InspectorPanel: HUDSurfaceView {
     func reloadFileFacts() {
         guard let url = viewModel.url ?? pendingURL else { return }
         pendingURL = url
+        // The listing's values are older than this change.
+        listingFacts[url] = nil
+        changedSinceListing.insert(url)
         guard headerReadsEnabled else { viewModel.url = nil; return }
         // The old rows stay until the new ones are read: no blank frame.
         infoTask?.cancel()
@@ -221,27 +225,86 @@ final class InspectorPanel: HUDSurfaceView {
         viewModel.url = url
         viewModel.originalKeptSince = nil
         infoTask?.cancel()
+        infoLanded = false
         guard let url else {
             viewModel.facts = InspectorFacts()
             return
         }
-        viewModel.facts = InspectorRows.facts(url: url, fileSize: Self.fileSize(url), info: nil)
+        // No disk call on the next/prev path: the rows the Browser's listing
+        // already knows are filled now; the header read off the main thread
+        // confirms or corrects them.
+        viewModel.facts = Self.knownFacts(url: url, listingFacts[url])
         readInfo(url)
     }
 
-    private static func fileSize(_ url: URL) -> Int64? {
+    /// What the paired Browser's listing knows of each photo (size, date,
+    /// type, pixel size when known), keyed by file. Empty for a viewer
+    /// opened from Finder.
+    private var listingFacts: [URL: InspectorFileInput] = [:]
+    /// The header read of the shown file has landed.
+    private var infoLanded = false
+
+    /// Bumped by every new listing; a late full walk of an older one is dropped.
+    private var listingGeneration = 0
+    /// Files changed on disk since the listing was taken: its values for them are old.
+    private var changedSinceListing: Set<URL> = []
+
+    /// The rest of the listing (`setListingFacts` had the first photo's facts),
+    /// when it belongs to the same listing.
+    func addListingFacts(_ facts: [URL: InspectorFileInput], generation: Int) {
+        guard generation == listingGeneration else { return }
+        let current = listingFacts
+        let known = facts.filter { !changedSinceListing.contains($0.key) }
+        // The shown photo's rows are rewritten only if they were not known yet (no repaint of equal rows).
+        let shownKnown = viewModel.url.map { current[$0] != nil } ?? true
+        if shownKnown { listingFacts = known.merging(current) { _, now in now }; return }
+        setListingFactsKeepingGeneration(known.merging(current) { _, now in now })
+    }
+
+    @discardableResult
+    func setListingFacts(_ facts: [URL: InspectorFileInput]) -> Int {
+        listingGeneration &+= 1
+        changedSinceListing = []
+        setListingFactsKeepingGeneration(facts)
+        return listingGeneration
+    }
+
+    private func setListingFactsKeepingGeneration(_ facts: [URL: InspectorFileInput]) {
+        listingFacts = facts
+        // A new viewer shows its first photo before the listing arrives.
+        if let url = viewModel.url, !infoLanded, let known = facts[url] {
+            viewModel.facts = Self.knownFacts(url: url, known)
+        }
+    }
+
+    private static func knownFacts(url: URL, _ known: InspectorFileInput?) -> InspectorFacts {
+        guard var input = known else {
+            return InspectorRows.facts(url: url, fileSize: nil, info: nil, modified: nil, type: nil)
+        }
+        var facts = InspectorFacts()
+        let folder = url.deletingLastPathComponent().lastPathComponent
+        input.folder = folder.isEmpty ? nil : folder
+        input.type = input.type ?? UTType(filenameExtension: url.pathExtension)
+        facts.file = InspectorRows.fileRows(input)
+        return facts
+    }
+
+    nonisolated private static func fileStat(_ url: URL) -> (size: Int64?, modified: Date?, type: UTType?) {
         // A URL value caches resource values; a file rewritten by another app
         // would keep its old size here.
         let fresh = URL(fileURLWithPath: url.path)
-        return (try? fresh.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
+        let values = try? fresh.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .contentTypeKey])
+        return (values?.fileSize.map { Int64($0) }, values?.contentModificationDate, values?.contentType)
     }
 
     private func readInfo(_ url: URL) {
         infoTask = Task { [weak self] in
-            let size = Self.fileSize(url)
+            let stat = await Task.detached(priority: .userInitiated) { Self.fileStat(url) }.value
             let info = try? await PhotoInfo.read(url)
             guard !Task.isCancelled, let self, self.viewModel.url == url else { return }
-            self.viewModel.facts = InspectorRows.facts(url: url, fileSize: size, info: info)
+            self.infoLanded = true
+            self.viewModel.facts = InspectorRows.facts(url: url, fileSize: stat.size, info: info,
+                                                       modified: stat.modified, type: stat.type)
         }
     }
 
@@ -371,19 +434,7 @@ struct InspectorContent: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 if let url = model.url {
-                    Text(url.lastPathComponent)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                        .truncationMode(.tail)
-                    if let also = model.alsoLine {
-                        Text(also)
-                            .font(.system(size: InspectorStyle.smallFontSize))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
+                    InspectorTitleBlock(name: url.lastPathComponent, also: model.alsoLine)
                 }
                 if !model.indexSummary.isEmpty {
                     Text(model.indexSummary)
@@ -391,7 +442,7 @@ struct InspectorContent: View {
                         .foregroundStyle(.secondary)
                 }
 
-                section("File", rows: model.facts.file.filter { $0.label != "Name" })
+                section("File", rows: model.facts.file)
                 if !model.facts.capture.isEmpty {
                     section("Capture", rows: model.facts.capture)
                 }
@@ -442,6 +493,8 @@ struct InspectorContent: View {
             model.onContentHeight?(height)
         }
         .tint(ShrikeAccent.markColor)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Info panel")
         .frame(minWidth: ViewerSplitController.inspectorMinimumWidth, idealWidth: 280)
         .background(Color.clear)
     }
@@ -449,41 +502,10 @@ struct InspectorContent: View {
     private var cullingSection: some View {
         VStack(alignment: .leading, spacing: 7) {
             header("Rating & Flag")
-            HStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    ForEach(1...5, id: \.self) { i in
-                    let filled = model.marks.rating >= i
-                    Button { model.actions.rate(i) } label: {
-                        Image(systemName: filled ? "star.fill" : "star")
-                            .font(.system(size: InspectorStyle.starSize))
-                            .foregroundStyle(filled ? Color(nsColor: InspectorStyle.filledStarColor) : Color.secondary)
-                            .frame(width: InspectorStyle.starHitSize, height: InspectorStyle.starHitSize)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Rate \(i) star\(i == 1 ? "" : "s")")
-                }
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Rating")
-                .accessibilityValue(model.marks.rating == 0 ? "No stars" : "\(model.marks.rating) of 5 stars")
-                .accessibilityAdjustableAction { direction in
-                    let now = model.marks.rating
-                    switch direction {
-                    case .increment: model.actions.rate(min(5, now + 1))
-                    case .decrement: model.actions.rate(max(0, now - 1))
-                    @unknown default: break
-                    }
-                }
-                if model.marks.rating > 0 {
-                    InspectorClearLink { model.actions.rate(0) }
-                        .padding(.leading, 6)
-                }
-            }
-            Toggle("Flagged", isOn: Binding(get: { model.marks.flagged },
-                                         set: { _ in model.actions.toggleFlag() }))
-                .toggleStyle(.checkbox)
-                .font(.system(size: InspectorStyle.smallFontSize))
+            InspectorStarsRow(rating: model.marks.rating,
+                              showsClear: InspectorStarsRow.showsClear(rating: model.marks.rating, mixed: false),
+                              onRate: model.actions.rate)
+            InspectorFlagToggle(isOn: model.marks.flagged) { _ in model.actions.toggleFlag() }
             header("Tags").padding(.top, 5)
             HStack(spacing: 4) {
                 ForEach(model.marks.tags, id: \.name) { tag in
@@ -521,8 +543,8 @@ struct InspectorContent: View {
                 if r.label == "Folder", let folder = model.url?.deletingLastPathComponent() {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(r.label)
-                            .font(.system(size: InspectorLayout.rowFontSize))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: InspectorStyle.smallFontSize))
+                            .foregroundStyle(Color(nsColor: InspectorLayout.rowLabelColor))
                             .fixedSize(horizontal: true, vertical: false)
                         // Click reveals the file in Finder.
                         // Not drawn as a link, `labelColor`.
@@ -530,14 +552,14 @@ struct InspectorContent: View {
                             NSWorkspace.shared.activateFileViewerSelecting([model.url ?? folder])
                         }
                         .buttonStyle(.plain)
-                        .font(.system(size: InspectorLayout.rowFontSize))
+                        .font(.system(size: InspectorStyle.smallFontSize))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                 } else {
-                    InspectorRowView(label: r.label, value: r.value, compact: compact)
+                    InspectorRowView(label: r.label, value: r.value, tooltip: r.tooltip, compact: compact)
                 }
             }
         }
@@ -555,9 +577,9 @@ private struct TagsAnchorReporter: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-/// Sizes and colours of the inspector (spec 25 §8): one step up from 11 pt,
+/// Sizes and colours of the inspector: one step up from 11 pt,
 /// the same rating yellow as the Browser cell.
-/// The "Clear" link next to the stars (spec 25 §8): secondary grey, 12 pt,
+/// The "Clear" link next to the stars: secondary grey, 12 pt,
 /// underlined while the pointer is over it.
 struct InspectorClearLink: View {
     let action: () -> Void

@@ -123,10 +123,11 @@ final class PanelPolishTests: XCTestCase {
         let picker = EditToolPicker()
         XCTAssertEqual(picker.segmentCount, 5)
         XCTAssertEqual(EditChromeTools.order.map(EditChromeTools.name), ["Crop", "Rotate", "Resize", "Color", "Levels"])
-        for i in 0..<5 {
-            XCTAssertEqual(picker.width(forSegment: i), 32)
+        // Spec 28 §10 B (amends spec 26 §1.3): icon and word per segment.
+        for (i, tool) in EditChromeTools.order.enumerated() {
+            XCTAssertEqual(picker.width(forSegment: i), EditToolPicker.segmentWidth(for: tool))
             XCTAssertNotNil(picker.image(forSegment: i))
-            XCTAssertEqual(picker.label(forSegment: i) ?? "", "", "icon-only")
+            XCTAssertEqual(picker.label(forSegment: i), EditChromeTools.name(tool))
         }
         XCTAssertEqual(picker.selectedSegment, -1, "no tool on entry")
         XCTAssertEqual(picker.accessibilityLabel(), "Tool")

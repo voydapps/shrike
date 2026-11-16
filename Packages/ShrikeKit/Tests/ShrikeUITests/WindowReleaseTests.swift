@@ -332,7 +332,10 @@ final class WindowReleaseTests: XCTestCase {
             NotificationCenter.default.post(name: NSWindow.didBecomeMainNotification, object: viewer)
             await viewer.navigate(to: 1)
             await viewer.navigate(to: 2)
-            try? await Task.sleep(nanoseconds: 300_000_000)
+        for _ in 0..<3 {
+            await withCheckedContinuation { cont in DispatchQueue.main.async { cont.resume() } }
+            for _ in 0..<20 { await Task.yield() }
+        }   // everything already queued on the main queue / actor has run
             r = await refs(viewer)
             viewer.performClose(nil)
         }

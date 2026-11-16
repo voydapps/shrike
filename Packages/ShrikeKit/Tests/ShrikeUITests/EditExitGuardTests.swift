@@ -60,6 +60,16 @@ final class EditExitGuardTests: XCTestCase {
         return url
     }
 
+    /// Lets everything already queued on the main queue and main actor run
+    /// (queue hops and scheduler turns, no clock), so "it did not navigate"
+    /// is checked after any navigation that was going to happen has happened.
+    private func drainMainQueue() async {
+        for _ in 0..<3 {
+            await withCheckedContinuation { cont in DispatchQueue.main.async { cont.resume() } }
+            for _ in 0..<20 { await Task.yield() }
+        }
+    }
+
     private func waitUntil(_ label: String, timeout: TimeInterval = 8,
                            _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
@@ -215,7 +225,7 @@ final class EditExitGuardTests: XCTestCase {
         viewer.dispatch(.nextImage)
         await viewer.waitForEditExit()
         XCTAssertEqual(asked.count, 1)
-        try await Task.sleep(nanoseconds: 200_000_000)
+        await drainMainQueue()
         XCTAssertEqual(viewer.displayedItem?.listIndex, 0, "Cancel stays on the photo")
         XCTAssertTrue(viewer.contentRootForTesting.isEditModeActive)
     }
@@ -240,7 +250,7 @@ final class EditExitGuardTests: XCTestCase {
         viewer.contentRootForTesting.onFilmstripJump?(2)
         await viewer.waitForEditExit()
         XCTAssertEqual(asked.count, 2)
-        try await Task.sleep(nanoseconds: 200_000_000)
+        await drainMainQueue()
         XCTAssertEqual(viewer.displayedItem?.listIndex, 0)
 
         answer(.discard)

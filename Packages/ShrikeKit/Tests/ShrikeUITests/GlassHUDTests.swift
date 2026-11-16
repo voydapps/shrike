@@ -347,11 +347,11 @@ final class GlassHUDTests: XCTestCase {
 
         let welcome = WelcomeWindowController(recentURLs: { [] })
         defer { welcome.close() }
-        // Plain push buttons; Open… is not the accent default button.
-        XCTAssertEqual(welcome.openButton.bezelStyle, .push)
-        XCTAssertEqual(welcome.openFolderButton.keyEquivalent, "\r", "Open Folder… is the primary (spec 27 P3-11)")
+        // Spec 28 §8: rounded system buttons; Open Photo… is the default (Return).
+        XCTAssertEqual(welcome.openButton.bezelStyle, .rounded)
+        XCTAssertEqual(welcome.openButton.keyEquivalent, "\r", "Open Photo… is the default (spec 28 §8)")
         XCTAssertNil(welcome.openButton.bezelColor)
-        XCTAssertEqual(welcome.openButton.keyEquivalent, "")
+        XCTAssertEqual(welcome.openFolderButton.keyEquivalent, "")
 
         let edit = EditToolbarController()
         let done = edit.toolbar(edit.toolbar, itemForItemIdentifier: EditToolbarController.ItemID.done,

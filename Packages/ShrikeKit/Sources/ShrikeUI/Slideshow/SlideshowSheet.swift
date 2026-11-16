@@ -57,6 +57,8 @@ final class SlideshowSheet: NSObject, NSTextFieldDelegate {
     private let scope: SlideshowScope
     private var settings: SlideshowSettings
     private var panel: NSPanel?
+    private var plainShowLine: NSTextField?
+    var plainShowLineForTesting: NSTextField? { plainShowLine }
     private let allRadio = NSButton(radioButtonWithTitle: "", target: nil, action: nil)
     private let selectedRadio = NSButton(radioButtonWithTitle: "", target: nil, action: nil)
     private let intervalField = NSTextField()
@@ -134,8 +136,17 @@ final class SlideshowSheet: NSObject, NSTextFieldDelegate {
         fitPopup.selectItem(at: settings.fill ? 1 : 0)
         loopBox.state = settings.loop ? .on : .off
 
-        var rows: [[NSView]] = [[label("Show:"), allRadio]]
-        if scope.offersSelection { rows.append([NSGridCell.emptyContentView, selectedRadio]) }
+        // One choice is a plain line (no radio, no "Show:").
+        var rows: [[NSView]]
+        if scope.offersSelection {
+            rows = [[label("Show:"), allRadio], [NSGridCell.emptyContentView, selectedRadio]]
+        } else {
+            let line = NSTextField(labelWithString: scope.allTitle)
+            line.font = ChromeTypography.font(13)
+            line.lineBreakMode = .byTruncatingMiddle
+            plainShowLine = line
+            rows = [[NSGridCell.emptyContentView, line]]
+        }
         rows += [
             [label("Each photo:"), intervalRow],
             [label("Transition:"), transitionPopup],
@@ -155,7 +166,8 @@ final class SlideshowSheet: NSObject, NSTextFieldDelegate {
         cancel.keyEquivalent = "\u{1b}"
         let start = NSButton(title: "Start", target: self, action: #selector(startClicked))
         start.keyEquivalent = "\r"
-        start.useAccentFill()   // one accent
+        start.bezelStyle = .rounded   // The system default button (Return)
+        cancel.bezelStyle = .rounded
         startButton = start
         let buttons = NSStackView(views: [cancel, start])
         buttons.spacing = 12

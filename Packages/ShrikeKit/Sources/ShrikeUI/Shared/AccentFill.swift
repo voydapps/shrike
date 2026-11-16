@@ -2,7 +2,7 @@
 //  AccentFill.swift
 //  ShrikeUI
 //
-//  One accent per window (spec 22 §3.5). Every default / call-to-action
+//  One accent per window. Every default / call-to-action
 //  button takes its fill through this one call, so edit actions, recovery
 //  and sheet default buttons retain the native accent mechanism.
 //

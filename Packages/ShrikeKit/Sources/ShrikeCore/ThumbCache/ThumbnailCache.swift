@@ -111,6 +111,9 @@ public actor ThumbnailCache {
     private nonisolated let memory: ThumbnailMemoryLRU
     private nonisolated let disk: ThumbnailDiskStore
     private nonisolated let diskRoot: URL
+    /// False when the disk folder could not be made (`allowMemoryOnly`): thumbnails then live
+    /// in memory only and disk writes fail quietly.
+    public nonisolated let isPersistent: Bool
     private var diskCeilingBytes: Int64
 
     // Stats — incremented on every request. `statistics()` snapshots.
@@ -193,7 +196,8 @@ public actor ThumbnailCache {
         diskCeilingBytes: Int64 = 512 * 1024 * 1024,
         maxConcurrentDecodes: Int? = nil,
         memoryByteLimit: Int = ThumbnailCache.defaultMemoryByteLimit,
-        resources: ImageResourceBudget = .shared
+        resources: ImageResourceBudget = .shared,
+        allowMemoryOnly: Bool = false
     ) throws {
         self.diskRoot = diskURL
         self.diskCeilingBytes = diskCeilingBytes
@@ -201,9 +205,13 @@ public actor ThumbnailCache {
         self.resources = resources
         self.memory = ThumbnailMemoryLRU(byteLimit: memoryByteLimit, countLimit: 1024, resources: resources)
         self.disk = ThumbnailDiskStore(root: diskURL, resources: resources)
-        try FileManager.default.createDirectory(
-            at: diskURL, withIntermediateDirectories: true
-        )
+        do {
+            try FileManager.default.createDirectory(at: diskURL, withIntermediateDirectories: true)
+            self.isPersistent = true
+        } catch {
+            if !allowMemoryOnly { throw error }
+            self.isPersistent = false
+        }
         self.evictionTicker = nil
         // Start the eviction ticker asynchronously since `init` can't
         // call actor-isolated methods synchronously under Swift 6.
@@ -622,7 +630,7 @@ public actor ThumbnailCache {
     }
     /// Optional relief (a big job did not fit) and system warnings halve the
     /// tier, oldest first, so what is on screen stays; only critical pressure
-    /// empties it (audit MP-06).
+    /// empties it.
     func relievePressure(_ pressure: ImageMemoryPressure) {
         if pressure == .critical { memory.removeAll() } else { memory.trim(toBytes: memory.byteLimit / 2) }
         for job in jobs.values where job.priority == .prefetch && job.interest <= 0 {

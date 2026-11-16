@@ -237,6 +237,9 @@ final class ZoomBadgeHidesTests: XCTestCase {
     func testANewPulseOutlivesTheOldOnesSafetyHide() async {
         let content = makeContent(fullscreen: true)
         content.userChangedZoom()
+        // Real timers are the thing under test here (old pulse hides at 1.8 s, the new one
+        // 1.8 s after the second pulse), so the sleeps are the point; they only run
+        // longer on a slow machine, and a flake needs a stall of over 1.3 s.
         await sleep(1.5)
         content.userChangedZoom()
         await sleep(0.5)   // the old pulse's safety hide (at 1.8 s) has run

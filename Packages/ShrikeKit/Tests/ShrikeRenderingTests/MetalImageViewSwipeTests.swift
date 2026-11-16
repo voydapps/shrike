@@ -223,7 +223,7 @@ final class MetalImageViewSwipeTests: XCTestCase {
             view.handleSwipe(amount: -0.3, phase: .changed, isComplete: false)
             worst = max(worst, CACurrentMediaTime() - t0)
         }
-        XCTAssertLessThan(worst, 0.002, "handleSwipe never waits")
+        perfAssertLessThan(worst, 0.002, "handleSwipe never waits")
         view.skipsFramesForTesting = false
         XCTAssertNil(view.swipeDrawnRectsForTesting.neighbour, "empty canvas: nothing drawn")
         // A 256 x 192 thumbnail of a 4000 x 3000 photo.

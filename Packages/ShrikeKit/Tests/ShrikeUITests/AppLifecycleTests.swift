@@ -112,7 +112,8 @@ final class WelcomeWindowTests: XCTestCase {
         XCTAssertEqual(window?.isReleasedWhenClosed, false)
         XCTAssertEqual(window?.styleMask.contains(.resizable), false)
         XCTAssertEqual(controller.openButton.title, "Open Photo…")
-        XCTAssertEqual(controller.openButton.keyEquivalent, "", "Open Photo… is the plain button; Open Folder… is the primary")
+        XCTAssertEqual(controller.openButton.keyEquivalent, "\r", "Open Photo… is the default (spec 28 §8)")
+        XCTAssertEqual(controller.openFolderButton.keyEquivalent, "")
         XCTAssertEqual(controller.openFolderButton.title, "Open Folder…")
         XCTAssertEqual(controller.dropZone.accessibilityLabel(), "Drop photos or folders here")
     }
@@ -175,7 +176,7 @@ final class WelcomeWindowTests: XCTestCase {
     func testRecentRowsOpenAndMissingItemsExplain() {
         let present = TestScratch.directory
         let missing = URL(fileURLWithPath: "/nonexistent-shrike-\(UUID().uuidString)/Trip")
-        let controller = WelcomeWindowController(recentURLs: { [present, missing] })
+        let controller = WelcomeWindowController(recentURLs: { [present, missing] }, forgetRecents: { _ in })   // never the real Open Recent list
         defer { controller.close() }
         var opened: [URL] = []
         controller.onOpenURLs = { opened += $0 }

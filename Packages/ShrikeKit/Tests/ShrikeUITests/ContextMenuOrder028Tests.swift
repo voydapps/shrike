@@ -34,9 +34,11 @@ final class ContextMenuOrder028Tests: XCTestCase {
 
         let shared = ["Open in External Editor", "Reveal in Finder", "Share",
                       ShrikeCommand.slideshow.title, ShrikeCommand.batch.title, ShrikeCommand.compare.title,
-                      "Rating", ShrikeCommand.toggleFlag.title,
+                      ShrikeCommand.rotateLeft.title, ShrikeCommand.rotateRight.title, ShrikeCommand.editImage.title,
+                      "Rating", ShrikeCommand.toggleFlag.title, ShrikeCommand.tags.title,
                       ShrikeCommand.copyToFolder.title, ShrikeCommand.moveToFolder.title,
-                      ShrikeCommand.rename.title, ShrikeCommand.moveToTrash.title]
+                      ShrikeCommand.rename.title, ShrikeCommand.revertToOriginal.title,
+                      ShrikeCommand.copy.title, ShrikeCommand.copyPath.title, ShrikeCommand.moveToTrash.title]
         XCTAssertEqual(browserTitles.filter(shared.contains), shared)
         XCTAssertEqual(viewerTitles.filter(shared.contains), shared)
         XCTAssertTrue(viewerTitles.contains(ShrikeCommand.slideshow.title))

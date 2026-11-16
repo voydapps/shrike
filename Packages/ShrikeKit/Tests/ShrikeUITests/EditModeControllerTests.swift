@@ -334,16 +334,28 @@ final class EditModeControllerTests: XCTestCase {
         var restoredDisplay: [Bool] = []
         c.onPresentImage = { presented.append($0) }
         c.onExitedEditMode = { restoredDisplay.append($0) }
+        // The render waits on a gate the test opens, so "under way" and "ends
+        // after the discard" are events, not guesses about speed.
+        let gate = RenderGate()
         c.renderOverrideForTesting = { _, _, _ in
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            gate.markStarted()
+            defer { gate.markReturned() }
+            await gate.waitUntilOpen()
             return rotated
         }
         c.enter(image: original, url: nil, landOn: .rotate)
         c.appendSnapped90(quarters: 1)
-        try await Task.sleep(nanoseconds: 100_000_000)   // the render is under way
+        let underWay = await gate.waitUntilStarted()   // the render is under way
+        XCTAssertTrue(underWay)
         c.finalizeExit()                                   // discard
         XCTAssertEqual(restoredDisplay, [true], "discard puts the pre-edit image back")
-        try await Task.sleep(nanoseconds: 500_000_000)   // the slow render ends
+        gate.open()                                        // the slow render ends
+        let returned = await gate.waitUntilReturned()
+        XCTAssertTrue(returned)
+        // The result is handed back through the main actor; give those hops
+        // (a few scheduler turns, no clock) time to run before looking.
+        for _ in 0..<50 { await Task.yield() }
+        await c.settleForTesting()
         XCTAssertTrue(presented.isEmpty, "a render that ends after the discard is dropped")
         XCTAssertFalse(c.isActive)
     }
@@ -355,7 +367,7 @@ final class EditModeControllerTests: XCTestCase {
         var presented: [CGImage] = []
         c.onPresentImage = { presented.append($0) }
         c.renderOverrideForTesting = { _, _, _ in
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            try? await Task.sleep(nanoseconds: 100_000_000)   // simulated render cost; the test waits on settleForTesting
             return rotated
         }
         c.enter(image: makeImage(width: 40, height: 20), url: nil, landOn: .rotate)
@@ -364,5 +376,36 @@ final class EditModeControllerTests: XCTestCase {
         XCTAssertEqual(presented.count, 1)
         XCTAssertTrue(presented.first === rotated)
         c.finalizeExit()
+    }
+}
+
+/// A render the test can hold open: `markStarted` when the render begins,
+/// `open()` to let it finish.
+private final class RenderGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started = false
+    private var isOpen = false
+    func markStarted() { lock.withLock { started = true } }
+    func open() { lock.withLock { isOpen = true } }
+    private var returned = false
+    func markReturned() { lock.withLock { returned = true } }
+    func waitUntilReturned() async -> Bool {
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            if lock.withLock({ returned }) { return true }
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        return false
+    }
+    func waitUntilOpen() async {
+        while !lock.withLock({ isOpen }) { try? await Task.sleep(nanoseconds: 2_000_000) }
+    }
+    func waitUntilStarted() async -> Bool {
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            if lock.withLock({ started }) { return true }
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        return false
     }
 }

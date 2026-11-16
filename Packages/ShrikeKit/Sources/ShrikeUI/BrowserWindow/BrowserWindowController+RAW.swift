@@ -3,7 +3,7 @@
 //  ShrikeUI
 //
 //  ⌥R and the RAW chip in the Browser: the view-only switch between the
-//  selected pair's JPEG and RAW, as in the viewer (spec 24 §4). The big
+//  selected pair's JPEG and RAW, as in the viewer. The big
 //  preview (Filmstrip) and the info panel show the RAW file; nothing is
 //  saved. Another selection ends it.
 //

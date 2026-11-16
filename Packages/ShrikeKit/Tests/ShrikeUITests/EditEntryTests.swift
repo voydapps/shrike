@@ -76,9 +76,9 @@ final class EditEntryTests: XCTestCase {
         let entries: [(String, () -> Void)] = [
             ("E", { _ = viewer.handleKeySnapshot(self.key("e", 14)) }),
             ("⌘E", { _ = viewer.handleKeySnapshot(self.key("e", 14, .command)) }),
-            ("Image ▸ Edit Image", { viewer.perform(.editImage) }),
+            ("Photo ▸ Edit Photo", { viewer.perform(.editImage) }),
             ("toolbar / capsule Edit", { viewer.dispatch(.openEditMode) }),
-            ("context menu ▸ Edit Image", { viewer.perform(.editImage) }),
+            ("context menu ▸ Edit Photo", { viewer.perform(.editImage) }),
         ]
         for (name, enter) in entries {
             enter()

@@ -91,7 +91,7 @@ enum FileTransferCopy {
     }
 
     static func cancelled(_ verb: FileVerb, done: Int, total: Int) -> String {
-        "\(verb == .copy ? "Copied" : "Moved") \(done) of \(total) items. The rest were cancelled."
+        "\(verb == .copy ? "Copied" : "Moved") \(done) of \(total) items. The rest were canceled."
     }
 
     static func failed(_ verb: FileVerb, _ group: ImageGroup, folder: URL, error: any Error) -> String {
@@ -138,9 +138,64 @@ enum FileTransferCopy {
             + (extra.count == 1 ? "it belongs" : "they belong") + " to the same photo."
     }
 
+    /// Of the `n` remaining conflicts, `m` also have
+    /// other same-name files that Replace removes. The note sits ABOVE the checkbox, so it
+    /// says what Replace does. nil when none would.
+    static func remainingExtraFilesNote(_ m: Int, of n: Int) -> String? {
+        guard m > 0, n > 0 else { return nil }
+        let m = min(m, n)
+        if n == 1 {
+            return "The remaining conflict also has another file with the same name. Replace removes that file too. Undo brings it back."
+        }
+        if m == 1 {
+            return "Of the remaining \(n) conflicts, 1 also has another file with the same name. Replace removes that file too. Undo brings it back."
+        }
+        if m == n {
+            return "All \(n) remaining conflicts also have other files with the same name. Replace removes those files too. Undo brings them back."
+        }
+        return "Of the remaining \(n) conflicts, \(m) also have other files with the same name. Replace removes those files too. Undo brings them back."
+    }
+
+    /// The sentence after a copy / move that replaced
+    /// photos and so moved `n` other same-name files to the Trash.
+    static func extraFilesTrashed(_ n: Int) -> String? {
+        guard n > 0 else { return nil }
+        // True with and without a Trash on the volume.
+        return n == 1 ? "1 other file with the same name was removed. Undo brings it back."
+                      : "\(n) other files with the same name were removed. Undo brings them back."
+    }
+
+    /// After a run whose Replace also removed other same-name
+    /// files, the result opens with `Replaced 8 photos.` instead of the done
+    /// text (`Copied 5 items to “X”.`). A cancelled run keeps its own text;
+    /// with no extra files nothing changes. `replacedPhotos`: the receipt items
+    /// whose Replace removed something (`replacedPhotos(_:)`).
+    static func opening(_ text: String, cancelled: Bool, replacedPhotos: Int, extraFilesTrashed extras: Int) -> String {
+        guard !cancelled, extras > 0, replacedPhotos > 0 else { return text }
+        return replacedPhotos == 1 ? "Replaced 1 photo." : "Replaced \(replacedPhotos) photos."
+    }
+
+    static func replacedPhotos(_ receipt: FileOpReceipt) -> Int {
+        receipt.items.filter { !$0.replaced.isEmpty }.count
+    }
+
+    /// The whole result line: the done (or cancelled) text, the backup
+    /// sentence (it refers to the moved photos, so it comes right
+    /// after them), then the sentence about extra files in the Trash. Read from the LAST receipt.
+    static func resultLine(_ text: String, backupsNotSaved: Int, of count: Int, extraFilesTrashed extras: Int) -> String {
+        let line = BackupNotice.appending(to: text, notSaved: backupsNotSaved, of: count)
+        guard let extra = extraFilesTrashed(extras) else { return line }
+        return line + " " + extra
+    }
+
     static func applyToRemaining(_ remaining: Int) -> String {
         remaining == 1 ? "Do this for the remaining conflict"
                        : "Do this for the remaining \(remaining) conflicts"
+    }
+
+    /// The two lines under the name-clash alert's text. Reads the disk.
+    static func conflictDetails(existing: URL, incoming: URL) -> String {
+        [detailsLine("Existing", url: existing), detailsLine("New", url: incoming)].joined(separator: "\n")
     }
 
     /// "Existing: 6000 × 4000, 12.4 MB, 25 Sep 2026 14:02". Reads the disk.
@@ -183,6 +238,8 @@ final class FileTransferCoordinator {
     var showProgressToast: @MainActor (ToastContent) -> ToastHostView.ProgressTicket? = { _ in nil }
     var updateProgressToast: @MainActor (ToastContent, ToastHostView.ProgressTicket) -> ToastHostView.ProgressTicket? = { _, _ in nil }
     var dismissProgressToast: @MainActor (ToastHostView.ProgressTicket) -> Void = { _ in }
+    /// The ticket's card is still the one on screen.
+    var ownsProgressToast: @MainActor (ToastHostView.ProgressTicket) -> Bool = { _ in false }
 
     /// Test seams: the folder panel (title → folder, nil = Cancel) and
     /// the name-clash sheet.
@@ -194,6 +251,8 @@ final class FileTransferCoordinator {
     /// Esc sets this: the file in flight finishes and is counted (cancelling
     /// the reading task would drop it from the receipt).
     private var runningStop: TransferStop?
+    /// The reservation whose early card this window shows.
+    private weak var earlyReservation: TransferReservation?
     private(set) var isShowingProgress = false
 
     // HUD
@@ -242,12 +301,15 @@ final class FileTransferCoordinator {
     }
 
     /// Runs the UI a resolution needs (panel, the missing-destination alert). nil = cancelled.
-    func resolve(_ resolution: Resolution) async -> URL? {
+    /// `onChosen` runs in the same main-actor turn as the panel's OK, so
+    /// the transfer counts as running for ⌘Q from that moment.
+    func resolve(_ resolution: Resolution, onChosen: (@MainActor (URL) -> Void)? = nil) async -> URL? {
         switch resolution {
         case .folder(let url):
+            onChosen?(url)
             return url
         case .needsPanel(let title, let slot):
-            guard let url = await chooseFolder(title: title) else { return nil }
+            guard let url = await chooseFolder(title: title, onChosen: onChosen) else { return nil }
             if let slot { slots.set(slot, folder: url) }
             return url
         case .unavailable(let slot, let name):
@@ -262,15 +324,20 @@ final class FileTransferCoordinator {
                 slots.clear(slot)
                 return nil
             case 2:
-                return await resolve(.needsPanel(title: FileTransferCopy.slotPanelTitle(slot), saveSlot: slot))
+                return await resolve(.needsPanel(title: FileTransferCopy.slotPanelTitle(slot), saveSlot: slot),
+                                     onChosen: onChosen)
             default:
                 return nil
             }
         }
     }
 
-    func chooseFolder(title: String) async -> URL? {
-        if let panelResponder { return panelResponder(title) }
+    func chooseFolder(title: String, onChosen: (@MainActor (URL) -> Void)? = nil) async -> URL? {
+        if let panelResponder {
+            let url = panelResponder(title)
+            if let url { onChosen?(url) }
+            return url
+        }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -279,25 +346,47 @@ final class FileTransferCoordinator {
         panel.prompt = "Choose"
         panel.title = title
         panel.message = title
-        guard let window else { return panel.runModal() == .OK ? panel.url : nil }
+        // Never `runModal` here: inside this async main-actor task it would
+        // stop every other main-actor job (other transfers, the Batch).
         return await withCheckedContinuation { continuation in
-            panel.beginSheetModal(for: window) { response in
-                continuation.resume(returning: response == .OK ? panel.url : nil)
+            let handler: @Sendable (NSApplication.ModalResponse) -> Void = { response in
+                ShrikeAlert.onMain {
+                    let url = response == .OK ? panel.url : nil
+                    if let url { onChosen?(url) }
+                    continuation.resume(returning: url)
+                }
+            }
+            if let window {
+                panel.beginSheetModal(for: window, completionHandler: handler)
+            } else {
+                panel.begin(completionHandler: handler)
             }
         }
     }
 
-    // MARK: Conflicts (A3)
+    // MARK: Conflicts
 
-    func askConflict(_ conflict: FileConflict) async -> ConflictAnswer {
+    /// Shows the conflict alert and returns its end function (tests replace
+    /// it with one that does not show anything).
+    typealias ConflictAlertPresenter = @MainActor (NSAlert, @escaping @MainActor (NSApplication.ModalResponse) -> Void)
+        -> @MainActor (NSApplication.ModalResponse) -> Void
+    #if DEBUG
+    var conflictAlertPresenter: ConflictAlertPresenter?
+    #endif
+    /// How often an open conflict question looks at the stop flag.
+    static var conflictStopPoll: Duration = .milliseconds(100)
+
+    /// `stop` set while the question is up (Quit Anyway) ends it as
+    /// "stop": a Skip that applies to nothing more; the run then stops.
+    func askConflict(_ conflict: FileConflict, stop: TransferStop? = nil) async -> ConflictAnswer {
         conflictsAsked += 1
         if let conflictResponder { return await conflictResponder(conflict) }
         let incoming = conflict.incoming.primary
         let existing = conflict.existingPrimary ?? conflict.existing.first ?? incoming
         let details = await Task.detached(priority: .userInitiated) {
-            [FileTransferCopy.detailsLine("Existing", url: existing),
-             FileTransferCopy.detailsLine("New", url: incoming)].joined(separator: "\n")
+            FileTransferCopy.conflictDetails(existing: existing, incoming: incoming)
         }.value
+        if stop?.isStopped == true { return ConflictAnswer(.skip) }
         let alert = ShrikeAlert.make(
             message: FileTransferCopy.conflictTitle(existing.lastPathComponent, folder: conflict.destinationFolder),
             information: FileTransferCopy.conflictMessage(alsoReplacing: conflict.allOtherFilesReplaced.map(\.lastPathComponent)),
@@ -306,23 +395,63 @@ final class FileTransferCoordinator {
         let label = NSTextField(wrappingLabelWithString: details)
         label.font = ChromeTypography.font(11)
         label.textColor = .secondaryLabelColor
-        label.frame = NSRect(x: 0, y: 0, width: 300, height: 32)
-        alert.accessoryView = label
+        // NSAlert cannot put text under its suppression checkbox,
+        // so the note sits in the accessory view, just above the checkbox.
+        if conflict.remainingConflicts > 0,
+           let note = FileTransferCopy.remainingExtraFilesNote(conflict.remainingWithExtraFiles, of: conflict.remainingConflicts) {
+            let noteLabel = NSTextField(wrappingLabelWithString: note)
+            noteLabel.font = ChromeTypography.font(11)
+            noteLabel.textColor = .secondaryLabelColor
+            noteLabel.preferredMaxLayoutWidth = 300
+            let noteHeight = ceil(noteLabel.sizeThatFits(NSSize(width: 300, height: 200)).height)
+            let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 32 + 8 + noteHeight))
+            label.frame = NSRect(x: 0, y: 8 + noteHeight, width: 300, height: 32)
+            noteLabel.frame = NSRect(x: 0, y: 0, width: 300, height: noteHeight)
+            container.addSubview(label)
+            container.addSubview(noteLabel)
+            alert.accessoryView = container
+        } else {
+            label.frame = NSRect(x: 0, y: 0, width: 300, height: 32)
+            alert.accessoryView = label
+        }
         if conflict.remainingConflicts > 0 {
             alert.showsSuppressionButton = true
             alert.suppressionButton?.title = FileTransferCopy.applyToRemaining(conflict.remainingConflicts)
             alert.suppressionButton?.state = .off
         }
-        let index: Int?
-        if let window {
-            index = await withCheckedContinuation { continuation in
-                alert.beginSheetModal(for: window) { response in
-                    continuation.resume(returning: ShrikeAlert.index(of: response, buttonCount: 3))
+        // A sheet, or (window gone) the alert on its own; never `runModal`,
+        // which would freeze the other transfers and the Batch meanwhile.
+        var answered = false
+        var watcher: Task<Void, Never>?
+        let response: NSApplication.ModalResponse = await withCheckedContinuation { continuation in
+            let completion: @MainActor (NSApplication.ModalResponse) -> Void = { response in
+                guard !answered else { return }
+                answered = true
+                watcher?.cancel()
+                continuation.resume(returning: response)
+            }
+            let end: @MainActor (NSApplication.ModalResponse) -> Void
+            #if DEBUG
+            if let conflictAlertPresenter {
+                end = conflictAlertPresenter(alert, completion)
+            } else {
+                let presentation = ShrikeAlert.present(alert, on: window, completion: completion)
+                end = { presentation.end($0) }
+            }
+            #else
+            let presentation = ShrikeAlert.present(alert, on: window, completion: completion)
+            end = { presentation.end($0) }
+            #endif
+            guard let stop else { return }
+            watcher = Task { @MainActor in
+                while !Task.isCancelled, !answered {
+                    if stop.isStopped { end(.abort); completion(.abort); return }
+                    try? await Task.sleep(for: Self.conflictStopPoll)
                 }
             }
-        } else {
-            index = ShrikeAlert.index(of: alert.runModal(), buttonCount: 3)
         }
+        if response == .abort { return ConflictAnswer(.skip) }
+        let index = ShrikeAlert.index(of: response, buttonCount: 3)
         let all = alert.suppressionButton?.state == .on && conflict.remainingConflicts > 0
         switch index {
         case 1: return ConflictAnswer(.replace, applyToRemaining: all)
@@ -349,20 +478,54 @@ final class FileTransferCoordinator {
     /// Runs one copy / move and returns what happened. Shows the progress
     /// toast when it takes longer than `progressDelay`. Cancel the calling
     /// task to stop it: finished files stay and are in the receipt.
-    func run(_ verb: FileVerb, _ groups: [ImageGroup], to folder: URL, ops: FileOps) async -> Outcome {
-        let policy = ConflictPolicy.ask { [weak self] conflict in
-            await self?.askConflict(conflict) ?? .skip
+    /// `reservation`: taken when the user started this transfer;
+    /// without one the run reserves itself. Released on every return.
+    func run(_ verb: FileVerb, _ groups: [ImageGroup], to folder: URL, ops: FileOps,
+             reservation: TransferReservation? = nil) async -> Outcome {
+        let reserved = reservation ?? Self.reserve(verb, total: groups.count)
+        defer { Self.release(reserved) }
+        #if DEBUG
+        _ = DebugReviewOptions.current   // hands -ShrikeDebugTransferDelay to FileOps
+        #endif
+        // Quit Anyway while it waited for the window's earlier work: nothing
+        // starts, and nothing is left for the quit to wait on.
+        guard !reserved.stop.isStopped else {
+            return Outcome(receipt: nil, skipped: [], failures: [], error: nil, cancelled: true, total: groups.count)
         }
-        let stop = TransferStop()
+        let stop = reserved.stop
+        let policy = ConflictPolicy.ask { [weak self] conflict in
+            await self?.askConflict(conflict, stop: stop) ?? .skip
+        }
         runningStop = stop
+        let runID = reserved.id
+        Self.running[runID]?.total = groups.count
         defer { runningStop = nil }
         let stream = verb == .copy
             ? ops.copy(groups, to: folder, conflicts: policy, stop: stop)
             : ops.move(groups, to: folder, conflicts: policy, stop: stop)
         let box = ProgressBox()
-        let progressTimer = Task { @MainActor [weak self] in
+        // The card shown when the user chose the destination: this
+        // run owns it from here and updates it in place.
+        // If another notice replaced it meanwhile, the timer shows a new one.
+        if let card = reserved.earlyCard {
+            reserved.earlyCard = nil
+            box.ticket = updateProgressToast(Self.startingContent(verb, total: groups.count), card)
+            box.visible = box.ticket != nil
+            isShowingProgress = box.visible
+        }
+        let progressTimer = box.visible ? nil : Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.progressDelay)
-            guard !Task.isCancelled, let self, let last = box.last, !last.isFinished else { return }
+            guard !Task.isCancelled, let self else { return }
+            guard let last = box.last else {
+                // The copier's first pass over 2000 photos takes
+                // a while before the first progress; show "Copying 1 of 2000…"
+                // (indeterminate) instead of nothing.
+                box.visible = true
+                self.isShowingProgress = true
+                box.ticket = self.showProgressToast(Self.startingContent(verb, total: groups.count))
+                return
+            }
+            guard !last.isFinished else { return }
             box.visible = true
             box.ticket = self.showProgress(verb, last)
         }
@@ -370,6 +533,7 @@ final class FileTransferCoordinator {
         do {
             for try await progress in stream {
                 box.last = progress
+                Self.running[runID]?.completed = progress.completed
                 if box.visible, !progress.isFinished, let ticket = box.ticket {
                     box.ticket = updateProgressToast(progressContent(verb, progress), ticket)
                 }
@@ -377,7 +541,7 @@ final class FileTransferCoordinator {
         } catch {
             failure = error
         }
-        progressTimer.cancel()
+        progressTimer?.cancel()
         isShowingProgress = false
         if let ticket = box.ticket { dismissProgressToast(ticket) }
         let last = box.last
@@ -401,8 +565,82 @@ final class FileTransferCoordinator {
         return content
     }
 
+    /// Every copy / move running in any window (the quit question).
+    struct RunningTransfer {
+        let verb: FileVerb
+        var completed: Int
+        var total: Int
+        let stop: TransferStop
+    }
+    private(set) static var running: [UUID: RunningTransfer] = [:]
+
+    /// A copy / move the user started (destination chosen, a drop, a menu
+    /// item): it counts as running for ⌘Q from that moment, also while it
+    /// still waits for the window's earlier work or prepares.
+    @MainActor final class TransferReservation {
+        let id = UUID()
+        let stop = TransferStop()
+        /// The indeterminate card shown at once and its window's
+        /// coordinator; `run` takes it over, `release` removes it.
+        fileprivate(set) var earlyCard: ToastHostView.ProgressTicket?
+        fileprivate weak var host: FileTransferCoordinator?
+    }
+
+    /// "Copying 1 of 2000…", indeterminate: before the first progress.
+    static func startingContent(_ verb: FileVerb, total: Int) -> ToastContent {
+        var content = ToastContent(FileTransferCopy.progress(verb, completed: 0, total: total))
+        content.progressIsIndeterminate = true
+        return content
+    }
+
+    /// `reserve`, and for several photos the progress card at once, so the
+    /// user sees the copy start while the copier prepares. Not for
+    /// one photo (a quick copy would flash it) or while this window already
+    /// shows a transfer's progress.
+    func reserveShowingProgress(_ verb: FileVerb, total: Int) -> TransferReservation {
+        let reservation = Self.reserve(verb, total: total)
+        guard total > 1, runningStop == nil, earlyReservation?.earlyCard == nil else { return reservation }
+        reservation.host = self
+        reservation.earlyCard = showProgressToast(Self.startingContent(verb, total: total))
+        earlyReservation = reservation
+        return reservation
+    }
+
+    static func reserve(_ verb: FileVerb, total: Int) -> TransferReservation {
+        let reservation = TransferReservation()
+        running[reservation.id] = RunningTransfer(verb: verb, completed: 0, total: total, stop: reservation.stop)
+        return reservation
+    }
+
+    /// Safe to call more than once.
+    static func release(_ reservation: TransferReservation?) {
+        guard let reservation else { return }
+        running[reservation.id] = nil
+        if let card = reservation.earlyCard {
+            reservation.earlyCard = nil
+            reservation.host?.dismissProgressToast(card)
+        }
+    }
+
+    static var runningWork: [QuitWork.Transfer] {
+        running.values.map { QuitWork.Transfer(verb: $0.verb, completed: $0.completed, total: $0.total) }
+    }
+
+    /// Quit Anyway: no new photo starts; the one being written finishes.
+    static func stopAllRunning() {
+        for transfer in running.values { transfer.stop.stop() }
+    }
+
     /// Esc while the progress toast shows: stop the rest.
     func cancelRunning() -> Bool {
+        // The early card: the transfer has not started; it starts stopped.
+        // Only while that card is on screen; covered, Esc keeps its meaning.
+        if let early = earlyReservation, let card = early.earlyCard, ownsProgressToast(card) {
+            early.stop.stop()
+            early.earlyCard = nil
+            dismissProgressToast(card)
+            return true
+        }
         guard isShowingProgress, let stop = runningStop else { return false }
         stop.stop()
         return true
@@ -516,7 +754,7 @@ final class DestinationHUDView: NSView {
         stack.alignment = .leading
         stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
-        // The rows scroll when the card is taller than the canvas (spec 21b §6).
+        // The rows scroll when the card is taller than the canvas.
         let scroll = NSScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.drawsBackground = false
@@ -556,7 +794,7 @@ final class DestinationHUDView: NSView {
             stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             fullHeight,
         ])
-        // Spec 21b §6: min(360, canvas − 24), never below 216. A narrow viewer
+        // Min(360, canvas − 24), never below 216. A narrow viewer
         // (480 pt window + inspector = 240 pt canvas) must not cut the card off.
         let nominal = panel.widthAnchor.constraint(equalToConstant: Self.nominalWidth)
         nominal.priority = NSLayoutConstraint.Priority(rawValue: 490)   // never grows the window
@@ -752,4 +990,9 @@ final class DestinationHUDRow: NSView {
 
     @objc private func changeFolder(_ sender: Any?) { onChange?() }
     @objc private func clearSlot(_ sender: Any?) { onClear?() }
+}
+
+/// Holds the reservation taken in the panel's OK turn.
+@MainActor final class ReservationBox {
+    var reservation: FileTransferCoordinator.TransferReservation?
 }

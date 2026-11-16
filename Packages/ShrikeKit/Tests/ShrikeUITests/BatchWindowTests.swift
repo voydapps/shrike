@@ -159,7 +159,10 @@ final class BatchWindowTests: XCTestCase {
         let bad = urls[0].deletingLastPathComponent().appendingPathComponent("c3-bad.jpg")
         try Data([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).write(to: bad)
         let model = makeModel()
+        // L-4 (spec 28 §4): only a pixel job skips an unreadable photo; a
+        // rename-only job renames it too, so this job also rotates.
         var form = BatchForm(); form.convertOn = false; form.resizeOn = false
+        form.rotateOn = true
         form.renameOn = true; form.template = "pic-{counter}"; form.outputFolder = nil
         model.form = form
         model.add(groups(urls + [bad]))
@@ -229,8 +232,9 @@ final class BatchWindowTests: XCTestCase {
         model.form.resizeValue = 1000
         XCTAssertEqual(model.outputFolder?.lastPathComponent, "Shrike Export", "default <source>/Shrike Export")
         XCTAssertNil(model.inPlaceText)
-        XCTAssertTrue(model.consequenceSummary.hasPrefix("Create 40 new photos in "))
-        XCTAssertTrue(model.consequenceSummary.hasSuffix("Originals stay unchanged."))
+        // Spec 28 §20.9: the sentence points at the path line below it.
+        XCTAssertEqual(model.consequenceSummary, "Create 40 new photos in the folder below. Originals stay unchanged.")
+        XCTAssertEqual(model.outputPathLine, model.outputFolder.map(UserFacingPath.string))
 
         try await runAndWait(model)
         let out = dir.appendingPathComponent("src/Shrike Export", isDirectory: true)
@@ -269,7 +273,7 @@ final class BatchWindowTests: XCTestCase {
             XCTAssertEqual(pixelSize(out.appendingPathComponent(name)), CGSize(width: 2000, height: 1500),
                            "\(name) is whole")
         }
-        XCTAssertTrue(model.skippedRows.contains { $0.reason == "Cancelled." })
+        XCTAssertTrue(model.skippedRows.contains { $0.reason == "Canceled." })
         XCTAssertTrue(model.summary.hasPrefix("\(result.doneCount) completed · "))
     }
 
@@ -330,6 +334,24 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertEqual(try leftEdge(), plain)
     }
 
+    /// Two photos, one whose filled name is not usable: the Output box and the
+    /// confirm sheet count the same one photo ("name", singular).
+    func testInPlaceRenameTextCountsLikeTheConfirmSheet() async throws {
+        let urls = try [jpeg("B.jpg"), jpeg(".lead.jpg")]   // ".leadx" would be hidden
+        let model = makeModel()
+        model.add(groups(urls))
+        model.form.convertOn = false
+        model.form.resizeOn = false
+        model.form.renameOn = true
+        model.form.template = "{name}x"
+        let previewed = await waitUntil { model.isPreviewCurrent && model.invalidNameCount == 1 }
+        XCTAssertTrue(previewed)
+        let plan = try XCTUnwrap(model.makePlan().plan)
+        XCTAssertEqual(model.originalsAtRisk(plan).count, 1)
+        XCTAssertEqual(model.inPlaceText, BatchModel.ConfirmCopy.information(1, renameOnly: true))
+        XCTAssertEqual(model.inPlaceText, "Only the name changes. Undo Batch can put the old name back.")
+    }
+
     // MARK: {yyyy-MM-dd}_{lens}_{counter:00} with no lens data
 
     func testVector3MissingLensCollapsesSeparators() async throws {
@@ -343,7 +365,16 @@ final class BatchWindowTests: XCTestCase {
         model.form.renameOn = true
         model.form.template = "{yyyy-MM-dd}_{lens}_{counter:00}"
         XCTAssertTrue(model.consequenceSummary.hasPrefix("Rename 1 original file."))
-        XCTAssertEqual(model.inPlaceText, "In place")
+        XCTAssertTrue(model.renamesOnlyInPlace)
+        // One photo: the singular words, as the confirm sheet says them.
+        XCTAssertEqual(BatchModel.Copy.outputForm(inPlaceText: model.inPlaceText, writesToFolder: model.form.writesToFolder),
+                       .notice("Only the name changes. Undo Batch can put the old name back."))
+        XCTAssertEqual(model.inPlaceText, BatchModel.ConfirmCopy.information(1, renameOnly: true))
+        model.form.rotateOn = true
+        XCTAssertFalse(model.renamesOnlyInPlace, "rotate changes pixels")
+        XCTAssertEqual(BatchModel.Copy.outputForm(inPlaceText: model.inPlaceText, writesToFolder: model.form.writesToFolder),
+                       .notice("Changes the original files. Undo works while Shrike still has the backup."))
+        model.form.rotateOn = false
         let previewed = await waitUntil { model.isPreviewCurrent }
         XCTAssertTrue(previewed)
         XCTAssertEqual(model.previewRows.first?.outputName, "2026-09-25_01.jpg")
@@ -458,6 +489,85 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertTrue(other.ran)
     }
 
+    /// Edit > Undo with the Batch window key: enabled with the batch's title,
+    /// runs the same Undo Batch once, then is disabled.
+    func testEditUndoInTheBatchWindowRunsUndoBatchOnce() async throws {
+        let originals = ["A.jpg", "B.jpg"]
+        for name in originals { try jpeg(name, in: "trip3") }
+        let folder = dir.appendingPathComponent("trip3", isDirectory: true)
+        var services = ShrikeServices.makeDefault()
+        services.backupStore = nil
+        let browser = BrowserWindowController(services: services, initialFolder: folder)
+        defer { browser.close() }
+        let content = browser.contentController
+        let listed = await waitUntil { content.visibleItems.count == 2 }
+        XCTAssertTrue(listed)
+        XCTAssertTrue(content.select(urls: content.visibleItems.map(\.url)))
+        browser.renameSelection()
+        let batch = try XCTUnwrap(BatchWindowController.current)
+        let window = try XCTUnwrap(batch.window as? BatchWindow)
+        let item = NSMenuItem(title: "Undo", action: NSSelectorFromString("undo:"), keyEquivalent: "z")
+        XCTAssertFalse(window.validateMenuItem(item), "no batch has run yet")
+        batch.model.form.template = "Trip_{counter:000}"
+        try await runAndWait(batch.model)
+        XCTAssertTrue(window.validateMenuItem(item))
+        XCTAssertEqual(item.title, "Undo Batch Rename")
+
+        window.undo(item)
+        await BatchUndo.lastTask?.value
+        XCTAssertEqual(names(in: "trip3"), originals)
+        XCTAssertTrue(batch.model.isUndone)
+        XCTAssertFalse(window.validateMenuItem(item), "used once: disabled afterwards")
+        XCTAssertEqual(item.title, "Undo")
+        XCTAssertNotEqual(browser.window?.undoManager?.undoActionName, "Batch Rename",
+                          "the browser's Edit > Undo no longer offers it")
+        window.undo(item)   // a second ⌘Z does nothing
+        await BatchUndo.lastTask?.value
+        XCTAssertEqual(names(in: "trip3"), originals)
+        XCTAssertTrue(batch.model.isUndone)
+    }
+
+    /// Review Remaining after an undoable in-place rename: the form is up, so
+    /// ⌘Z is the window's normal undo (the fields' typing), never Undo Batch.
+    func testEditUndoInTheReviewFormIsTextUndoNotUndoBatch() async throws {
+        for name in ["A.jpg", "B.jpg", "Trip_001.jpg"] { try jpeg(name, in: "trip4") }
+        let folder = dir.appendingPathComponent("trip4", isDirectory: true)
+        var services = ShrikeServices.makeDefault()
+        services.backupStore = nil
+        let browser = BrowserWindowController(services: services, initialFolder: folder)
+        defer { browser.close() }
+        let content = browser.contentController
+        let listed = await waitUntil { content.visibleItems.count == 3 }
+        XCTAssertTrue(listed)
+        XCTAssertTrue(content.select(urls: content.visibleItems.map(\.url).filter { $0.lastPathComponent != "Trip_001.jpg" }))
+        browser.renameSelection()
+        let batch = try XCTUnwrap(BatchWindowController.current)
+        let window = try XCTUnwrap(batch.window as? BatchWindow)
+        batch.model.form.template = "Trip_{counter:000}"
+        batch.model.form.onConflict = .skip
+        try await runAndWait(batch.model)
+        XCTAssertEqual(batch.model.result?.skippedCount, 1)
+        let item = NSMenuItem(title: "Undo", action: NSSelectorFromString("undo:"), keyEquivalent: "z")
+        XCTAssertTrue(window.validateMenuItem(item), "the Done screen offers Undo Batch")
+        XCTAssertEqual(item.title, "Undo Batch Rename")
+        let after = names(in: "trip4")
+        batch.model.reviewRemaining(includingIntentionalSkips: true); await batch.model.waitForPreview()
+        XCTAssertTrue(batch.model.reviewingRemaining)
+        XCTAssertNotNil(batch.model.result, "the result is still there behind the form")
+        // Typing in a form field registers on the window's undo manager.
+        final class Typed { var undone = false }
+        let typed = Typed()
+        let undo = try XCTUnwrap(window.undoManager)
+        undo.registerUndo(withTarget: typed) { $0.undone = true }
+        XCTAssertTrue(window.validateMenuItem(item))
+        XCTAssertFalse(item.title.contains("Batch"), item.title)
+        window.undo(item)
+        await BatchUndo.lastTask?.value
+        XCTAssertTrue(typed.undone, "⌘Z undoes the typing")
+        XCTAssertEqual(names(in: "trip4"), after, "no Undo Batch from the form")
+        XCTAssertFalse(batch.model.isUndone)
+    }
+
     // MARK: Entry points
 
     func testBrowserBatchTakesSelectionOrWholeFolder() async throws {
@@ -474,8 +584,9 @@ final class BatchWindowTests: XCTestCase {
         browser.perform(.batch)
         let first = try XCTUnwrap(BatchWindowController.current)
         XCTAssertEqual(first.model.queue.map(\.name), ["a.jpg", "b.jpg", "c.jpg"], "nothing selected: the folder")
-        XCTAssertEqual(first.model.scopeDescription, "Visible in folder")
-        XCTAssertEqual(first.window?.title, "Batch — 3 photos")
+        XCTAssertEqual(first.model.scopeDescription, "All shown in “folder”")
+        XCTAssertEqual(first.window?.title, "Batch")
+        XCTAssertEqual(first.window?.subtitle, "3 photos")
         XCTAssertFalse(first.model.form.renameOn)
         first.close()
         XCTAssertNil(BatchWindowController.current)
@@ -484,7 +595,7 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertTrue(content.select(urls: chosen))
         browser.perform(.batch)
         XCTAssertEqual(BatchWindowController.current?.model.queue.map(\.id), chosen, "the selection")
-        XCTAssertEqual(BatchWindowController.current?.model.scopeDescription, "Selected in folder")
+        XCTAssertEqual(BatchWindowController.current?.model.scopeDescription, "Selected in “folder”")
 
         let menuTitles = content.tableViewForTesting.menu?.items.map(\.title) ?? []
         XCTAssertTrue(menuTitles.contains("Batch…"), "context menu: \(menuTitles)")
@@ -505,13 +616,15 @@ final class BatchWindowTests: XCTestCase {
 
         viewer.perform(.batch)
         let batch = try XCTUnwrap(BatchWindowController.current)
-        XCTAssertEqual(batch.model.queue.map(\.id), [a, b])
+        // L-3 (spec 28 §3): Batch from the viewer takes the shown photo only.
+        XCTAssertEqual(batch.model.queue.map(\.id), [a])
 
         // A second ⌥⌘B adds to the open window (no duplicates).
         BatchWindowController.open(groups: groups([b, c]), services: services, launcher: viewer)
         XCTAssertTrue(BatchWindowController.current === batch, "one window")
         XCTAssertEqual(batch.model.queue.map(\.id), [a, b, c])
-        XCTAssertEqual(batch.window?.title, "Batch — 3 photos")
+        XCTAssertEqual(batch.window?.title, "Batch")
+        XCTAssertEqual(batch.window?.subtitle, "3 photos")
 
         let window = try XCTUnwrap(batch.window)
         XCTAssertEqual(window.contentMinSize, NSSize(width: 760, height: 520))
@@ -540,7 +653,8 @@ final class BatchWindowTests: XCTestCase {
         model.selection = [model.queue[0].id, model.queue[1].id]
         model.removeSelected()
         XCTAssertEqual(model.queue.count, 203)
-        XCTAssertEqual(model.title, "Batch — 203 photos")
+        XCTAssertEqual(model.title, "Batch")
+        XCTAssertEqual(model.subtitle, "203 photos")
     }
 
     func testClashRowIsMarkedAndKeepBothRenames() async throws {
@@ -554,7 +668,6 @@ final class BatchWindowTests: XCTestCase {
         let row = try XCTUnwrap(model.previewRows.first)
         XCTAssertTrue(row.nameClash)
         XCTAssertEqual(row.outputName, "a 2.png", "Keep Both")
-        XCTAssertEqual(BatchModel.Copy.nameClash, "Name already used")
 
         model.form.onConflict = .skip
         _ = await waitUntil { model.isPreviewCurrent }
@@ -747,37 +860,30 @@ final class BatchWindowTests: XCTestCase {
         XCTAssertFalse(model.canReviewRemaining, "everything succeeded: nothing to review, button hidden")
     }
 
-    func testReturnInAFieldOnlyCommitsIt() {
+    func testFieldKeysTellPlainReturnAndEscFromTheRest() {
         func key(_ code: UInt16, _ mods: NSEvent.ModifierFlags = [], _ type: NSEvent.EventType = .keyDown) -> NSEvent {
             NSEvent.keyEvent(with: type, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: 0,
                              context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
                              isARepeat: false, keyCode: code)!
         }
-        let editor = NSTextView(); editor.isFieldEditor = true
-        let plain = NSTextView()
-        XCTAssertTrue(BatchReturnPolicy.returnShouldOnlyCommitField(event: key(36), firstResponder: editor))
-        XCTAssertTrue(BatchReturnPolicy.returnShouldOnlyCommitField(event: key(76), firstResponder: editor), "keypad Enter")
-        XCTAssertFalse(BatchReturnPolicy.returnShouldOnlyCommitField(event: key(36, .command), firstResponder: editor), "Command-Return always runs")
-        XCTAssertFalse(BatchReturnPolicy.returnShouldOnlyCommitField(event: key(36), firstResponder: plain), "no field being edited")
-        XCTAssertFalse(BatchReturnPolicy.returnShouldOnlyCommitField(event: key(36), firstResponder: nil))
-        XCTAssertFalse(BatchReturnPolicy.returnShouldOnlyCommitField(event: nil, firstResponder: editor), "no event: a click or a test")
-        XCTAssertFalse(BatchReturnPolicy.returnShouldOnlyCommitField(
-            event: NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0,
-                                      windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0),
-            firstResponder: editor), "a mouse click on Run while a field is open still runs")
+        XCTAssertEqual(BatchFieldKeys.key(key(36)), .plainReturn)
+        XCTAssertEqual(BatchFieldKeys.key(key(76)), .plainReturn, "keypad Enter")
+        XCTAssertEqual(BatchFieldKeys.key(key(36, .command)), .other, "Command-Return always runs")
+        XCTAssertEqual(BatchFieldKeys.key(key(36, [], .keyUp)), .other)
+        XCTAssertEqual(BatchFieldKeys.key(key(53)), .plainEscape)
+        XCTAssertEqual(BatchFieldKeys.key(key(53, .option)), .other)
+        XCTAssertTrue(BatchFieldKeys.endedWithReturn(["NSTextMovement": NSTextMovement.return.rawValue]))
+        XCTAssertFalse(BatchFieldKeys.endedWithReturn(["NSTextMovement": NSTextMovement.tab.rawValue]))
+        XCTAssertFalse(BatchFieldKeys.endedWithReturn(nil))
     }
 
     /// End to end: Return with a field open only commits it; the next Return runs.
     func testReturnInAnOpenFieldCommitsThenSecondReturnRuns() async throws {
         let (batch, window) = try await openThree("E")
-        defer { batch.close(); BatchReturnPolicy.currentEventForTesting = nil; BatchReturnPolicy.windowForTesting = nil }
-        BatchReturnPolicy.windowForTesting = window
+        defer { batch.close() }
         let field = try XCTUnwrap(textFields(in: window.contentView!).first { $0.isEditable })
         XCTAssertTrue(window.makeFirstResponder(field))
         XCTAssertNotNil(field.currentEditor())
-        BatchReturnPolicy.currentEventForTesting = NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
-            context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)
         _ = press(window, "\r", 36)
         XCTAssertEqual(batch.model.phase, .form, "Return in a field does not start the batch")
         XCTAssertNil(field.currentEditor(), "the field was committed")
@@ -827,9 +933,7 @@ final class BatchWindowTests: XCTestCase {
         let hidden = await waitUntil(5) { batch.isHiddenWhileRunning }
         XCTAssertTrue(hidden)
         XCTAssertEqual(asked?.0, "Stop the batch?")
-        XCTAssertTrue(asked?.1.hasPrefix("Completed: ") ?? false, asked?.1 ?? "")
-        XCTAssertTrue(asked?.1.contains(" of 24 photos.") ?? false, asked?.1 ?? "")
-        XCTAssertTrue(asked?.1.hasSuffix("Completed changes are kept; no new photos are started.") ?? false, asked?.1 ?? "")
+        XCTAssertEqual(asked?.1, "Completed changes are kept; no new photos are started.", "no frozen count")
         XCTAssertTrue(badges.last??.hasSuffix("%") ?? false, "Dock badge: \(badges)")
 
         await model.waitForRun()
@@ -859,15 +963,119 @@ final class BatchWindowTests: XCTestCase {
         await model.waitForRun()
         let closed = await waitUntil(5) { BatchWindowController.current == nil }
         XCTAssertTrue(closed, "Stop closes the window once the batch has stopped")
-        XCTAssertTrue(model.skippedRows.contains { $0.reason == "Cancelled." } || model.result?.doneCount == 24)
+        XCTAssertTrue(model.skippedRows.contains { $0.reason == "Canceled." } || model.result?.doneCount == 24)
+    }
+
+    // MARK: Pass 2n task 2: first window size (spec 28 §14)
+
+    func testFittedHeightRule() {
+        XCTAssertEqual(BatchWindowController.fittedHeight(content: 600, chrome: 60, visibleScreenHeight: 1000), 660)
+        XCTAssertEqual(BatchWindowController.fittedHeight(content: 100, chrome: 60, visibleScreenHeight: 1000), 600, "floor")
+        XCTAssertEqual(BatchWindowController.fittedHeight(content: 2000, chrome: 60, visibleScreenHeight: 1000), 760, "760 cap")
+        XCTAssertEqual(BatchWindowController.fittedHeight(content: 2000, chrome: 60, visibleScreenHeight: 800), 720, "90 %")
+        XCTAssertEqual(BatchWindowController.fittedHeight(content: 100, chrome: 60, visibleScreenHeight: 600), 540,
+                       "the screen cap beats the 600 floor")
+        XCTAssertEqual(BatchWindowController.fittedHeight(content: 2000, chrome: 60, visibleScreenHeight: 400), 520,
+                       "a tiny screen never goes below the minimum")
+    }
+
+    /// The real form measures itself; after a hand resize it no longer moves the window.
+    func testAfterAHandResizeTheFormDoesNotMoveTheWindow() async throws {
+        let model = makeModel()
+        let batch = BatchWindowController(model: model)
+        defer { batch.close() }
+        let window = try XCTUnwrap(batch.window)
+        model.add(groups([try jpeg("hand1.jpg")]))
+        await model.waitForPreview()
+        for _ in 0..<3 { window.contentView?.layoutSubtreeIfNeeded(); await batch.fitTask?.value }
+        batch.windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification, object: window))
+        window.setContentSize(NSSize(width: 880, height: 900))
+        let top = window.frame.maxY
+        model.form.renameOn = true; model.form.resizeOn = true; model.form.convertOn = true
+        await model.waitForPreview()
+        for _ in 0..<3 { window.contentView?.layoutSubtreeIfNeeded(); await batch.fitTask?.value }
+        XCTAssertEqual(window.contentView?.bounds.height ?? 0, 900, accuracy: 0.5, "the user's size stays")
+        XCTAssertEqual(window.frame.maxY, top)
+    }
+
+    func testRealFormFitsBetweenTheMinimumAndTheCap() async throws {
+        let model = makeModel()
+        let batch = BatchWindowController(model: model)
+        defer { batch.close() }
+        let window = try XCTUnwrap(batch.window)
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 900
+        model.add(groups([try jpeg("fit1.jpg"), try jpeg("fit2.jpg")]))
+        await model.waitForPreview()
+        for _ in 0..<3 { window.contentView?.layoutSubtreeIfNeeded(); await batch.fitTask?.value }
+        let first = window.contentView?.bounds.height ?? 0
+        model.form.renameOn = true; model.form.resizeOn = true; model.form.convertOn = true
+        await model.waitForPreview()
+        for _ in 0..<3 { window.contentView?.layoutSubtreeIfNeeded(); await batch.fitTask?.value }
+        let all = window.contentView?.bounds.height ?? 0
+        print("Batch content height: default \(first), all on \(all) (visible \(visible))")
+        await batch.fitTask?.value
+        XCTAssertGreaterThanOrEqual(first, 520)
+        XCTAssertGreaterThanOrEqual(all, first, "the window grows with the form, never shrinks")
+        XCTAssertLessThanOrEqual(all, max(min(760, visible * 0.9), 520) + 0.5)
+    }
+
+    private func firstFitHeight(photos: Int) async throws -> (batch: BatchWindowController, model: BatchModel, height: CGFloat) {
+        let model = makeModel()
+        let batch = BatchWindowController(model: model)
+        let window = try XCTUnwrap(batch.window)
+        let source = try jpeg("q0.jpg")
+        var urls = [source]
+        for i in 1..<photos {
+            let url = source.deletingLastPathComponent().appendingPathComponent("q\(i).jpg")
+            try FileManager.default.copyItem(at: source, to: url)
+            urls.append(url)
+        }
+        model.add(groups(urls))
+        await model.waitForPreview()
+        for _ in 0..<3 { window.contentView?.layoutSubtreeIfNeeded(); await batch.fitTask?.value }
+        return (batch, model, window.contentView?.bounds.height ?? 0)
+    }
+
+    /// Spec 28 §14 (pass 2o): the preview list scrolls in its own box and is not
+    /// part of the fit, so a long queue opens the window at the same height.
+    func testALongQueueOpensAtTheSameHeightAndLaterPhotosDoNotGrowIt() async throws {
+        let two = try await firstFitHeight(photos: 2)
+        two.batch.close()
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("src"))
+        let many = try await firstFitHeight(photos: 300)
+        defer { many.batch.close() }
+        XCTAssertEqual(many.height, two.height, accuracy: 0.5, "300 photos open as tall as 2")
+        let window = try XCTUnwrap(many.batch.window)
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 900
+        XCTAssertGreaterThanOrEqual(two.height, min(600, visible * 0.9) - 0.5)
+
+        let source = dir.appendingPathComponent("src/q0.jpg")
+        var more: [URL] = []
+        for i in 300..<330 {
+            let url = dir.appendingPathComponent("src/q\(i).jpg")
+            try FileManager.default.copyItem(at: source, to: url)
+            more.append(url)
+        }
+        many.model.add(groups(more))
+        await many.model.waitForPreview()
+        for _ in 0..<3 { window.contentView?.layoutSubtreeIfNeeded(); await many.batch.fitTask?.value }
+        XCTAssertEqual(window.contentView?.bounds.height ?? 0, many.height, accuracy: 0.5, "more photos change nothing")
+
+        many.model.form.renameOn = true; many.model.form.resizeOn = true; many.model.form.convertOn = true
+        await many.model.waitForPreview()
+        for _ in 0..<3 { window.contentView?.layoutSubtreeIfNeeded(); await many.batch.fitTask?.value }
+        let grown = window.contentView?.bounds.height ?? 0
+        XCTAssertGreaterThanOrEqual(grown, many.height, "a longer form may grow the window")
+        XCTAssertLessThanOrEqual(grown, max(min(760, visible * 0.9), 520) + 0.5, "never above the cap")
     }
 
     func testVoiceOverAndBadgeStrings() {
         XCTAssertEqual(BatchModel.Copy.progress(17, 42), "17 of 42")
-        XCTAssertEqual(BatchModel.Copy.stopAlertInfo(17, 42), "Completed: 17 of 42 photos. Completed changes are kept; no new photos are started.")
+        XCTAssertEqual(BatchModel.Copy.stopAlertInfo, "Completed changes are kept; no new photos are started.")
         XCTAssertEqual(BatchWindowController.badge(completed: 17, total: 42), "40%")
-        XCTAssertEqual(BatchModel.Copy.title(42), "Batch — 42 photos")
-        XCTAssertEqual(BatchModel.Copy.title(1), "Batch — 1 photo")
+        XCTAssertEqual(BatchModel.Copy.windowTitle, "Batch")
+        XCTAssertEqual(BatchModel.Copy.subtitle(42), "42 photos")
+        XCTAssertEqual(BatchModel.Copy.subtitle(1), "1 photo")
         XCTAssertEqual(BatchModel.Copy.runButton(42), "Run 42 Photos")
         XCTAssertEqual(BatchModel.eta(completed: 10, total: 20, elapsed: .seconds(10)), "about 10 s left")
         XCTAssertEqual(BatchModel.eta(completed: 1, total: 20, elapsed: .seconds(10)), "about 4 min left")

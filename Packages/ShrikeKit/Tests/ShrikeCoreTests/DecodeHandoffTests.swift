@@ -87,7 +87,7 @@ final class DecodeHandoffTests: XCTestCase {
         let t0 = DispatchTime.now()
         XCTAssertNil(handoff.waitForFinished(url: url, target: 1, deadline: .now() + .seconds(2)),
                      "nothing started: no wait")
-        XCTAssertLessThan(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds, 500_000_000)
+        perfAssertLessThan(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds, 500_000_000)
         handoff.start(url: url, targetLongEdge: 512, preparer: nil)
         XCTAssertTrue(handoff.hasWaitableDecode(url: url))
         _ = handoff.claim(url: url, target: 512)

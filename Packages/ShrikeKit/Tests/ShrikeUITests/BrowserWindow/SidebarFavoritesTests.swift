@@ -79,7 +79,7 @@ final class SidebarFavoritesTests: XCTestCase {
         XCTAssertFalse(relaunched.favorites()[0].bookmark.isEmpty, "an added folder keeps a bookmark")
     }
 
-    func testMissingFavoriteIsDimmedAndToastsInsteadOfNavigating() throws {
+    func testMissingFavoriteIsDimmedAndToastsInsteadOfNavigating() async throws {
         let store = FavoritesStore.inMemory([SidebarFavorite(path: url("Client").path)])
         try FileManager.default.removeItem(at: url("Client"))
         XCTAssertEqual(store.rows().map(\.isMissing), [true])
@@ -89,6 +89,9 @@ final class SidebarFavoritesTests: XCTestCase {
         tree.delegate = delegate
         _ = tree.view
         let outline = tree.outlineViewForTesting
+        // E-3: the first paint shows the folder as present; the check runs off the main thread.
+        XCTAssertFalse(try XCTUnwrap(tree.dataSource.favoritesSection?.children.first).isMissing)
+        await tree.sidebarChecksFinished()
         let node = try XCTUnwrap(tree.dataSource.favoritesSection?.children.first)
         XCTAssertTrue(node.isMissing)
         let row = outline.row(forItem: node)

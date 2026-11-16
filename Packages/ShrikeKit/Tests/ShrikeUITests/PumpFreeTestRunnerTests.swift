@@ -45,7 +45,7 @@ final class PumpFreeTestRunnerTests: XCTestCase {
         struct Marker: Error {}
         var reachedEnd = false
         XCTAssertNoThrow(try runWithoutXCTestEventPump {
-            try? await Task.sleep(nanoseconds: 10_000_000)
+            try? await Task.sleep(nanoseconds: 10_000_000)   // simulated async work in the body; the runner waits for the body, not for a clock
             reachedEnd = true
         })
         XCTAssertTrue(reachedEnd)

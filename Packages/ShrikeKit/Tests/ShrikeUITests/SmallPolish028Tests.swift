@@ -41,14 +41,17 @@ final class SmallPolish028Tests: XCTestCase {
             Contrast.ratio(.secondaryLabelColor, on: .windowBackgroundColor, in: Contrast.dark), 4.5)
     }
 
-    func testOpenFolderIsThePrimaryButton() {
+    func testOpenPhotoIsTheDefaultButton() {
         let welcome = WelcomeWindowController(recentURLs: { [] })
         defer { welcome.close() }
-        XCTAssertEqual(welcome.openFolderButton.keyEquivalent, "\r")
-        XCTAssertEqual(welcome.openButton.keyEquivalent, "")
+        // Spec 28 §8 (amends spec 27 P3-11): Open Photo… is the default, both rounded, no custom colour.
+        XCTAssertEqual(welcome.openButton.keyEquivalent, "\r")
+        XCTAssertEqual(welcome.openFolderButton.keyEquivalent, "")
+        XCTAssertEqual(welcome.openButton.bezelStyle, .rounded)
         XCTAssertEqual(welcome.openFolderButton.bezelStyle, .rounded)
         XCTAssertTrue(welcome.openFolderButton.isBordered)
-        XCTAssertEqual(welcome.openFolderButton.bezelColor, ShrikeAccent.mark)
+        XCTAssertNil(welcome.openFolderButton.bezelColor)
+        XCTAssertNil(welcome.openButton.bezelColor)
         XCTAssertTrue(welcome.openFolderButton.isEnabled)
         XCTAssertTrue(welcome.openFolderButton.acceptsFirstResponder)
         var folderOpens = 0, photoOpens = 0
@@ -134,8 +137,10 @@ final class SmallPolish028Tests: XCTestCase {
         XCTAssertEqual(panes.map(\.footerAlphaForTesting), [0.6, 1.0, 0.6])
         for pane in panes {
             XCTAssertEqual(pane.imageView.alphaValue, 1)
-            // Nothing sits above the image except the footer, the error line and the ring.
-            for sub in pane.subviews where sub !== pane.imageView && sub !== pane.footer
+            // Nothing sits above the image except the footer, the error line, the ring
+            // and (spec 28 §14) the zoom pill, which never dims either.
+            XCTAssertEqual(pane.zoomPill.alphaValue, 1)
+            for sub in pane.subviews where sub !== pane.imageView && sub !== pane.footer && sub !== pane.zoomPill
                 && !(sub is NSTextField) && !String(describing: type(of: sub)).contains("Ring") {
                 XCTFail("unexpected overlay \(sub)")
             }

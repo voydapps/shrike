@@ -165,7 +165,9 @@ final class VisualBundleRegressionTests: XCTestCase {
     }
 
     private func controls(_ view: NSView) -> [NSControl] {
-        ((view as? NSControl).map { [$0] } ?? []) + view.subviews.flatMap(controls)
+        // A borderless NSButton hosts a private NSButtonTextField whose `font` stays 13 pt
+        // whatever the button's font is (it draws the button's title); the button is the control.
+        ((view as? NSControl).map { [$0] } ?? []) + (view is NSButton ? [] : view.subviews.flatMap(controls))
     }
 
     private func commit(_ value: String, in field: NSTextField) {
@@ -256,7 +258,7 @@ final class VisualBundleRegressionTests: XCTestCase {
         NotificationCenter.default.post(name: .shrikeChromePreferencesChanged, object: nil)
         host.layoutSubtreeIfNeeded()
         for (control, size, family) in tracked {
-            XCTAssertEqual(control.font?.pointSize, size + 2)
+            XCTAssertEqual(control.font?.pointSize, size + 2, "\(type(of: control))")
             XCTAssertEqual(control.font?.familyName, family)
         }
         XCTAssertTrue(panel._percentField.currentEditor() === editor)

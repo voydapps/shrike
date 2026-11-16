@@ -96,13 +96,46 @@ final class NavTaskCoalescerTests: XCTestCase {
         let coalescer = NavTaskCoalescer()
         let completed = Box<Bool>(false)
         let task = coalescer.run {
-            try? await Task.sleep(nanoseconds: 100_000_000)  // 100 ms
+            try? await Task.sleep(nanoseconds: 100_000_000)  // simulated work; cancel() runs before it ends, and the test waits on task.value
             if Task.isCancelled { return }
             completed.value = true
         }
         coalescer.cancel()
         await task.value
         XCTAssertFalse(completed.value)
+    }
+    /// Already idle: the wait answers true at once, without registering a waiter.
+    func testWaitUntilIdleAnswersAtOnceWhenAlreadyIdle() async {
+        let coalescer = NavTaskCoalescer()
+        let idle = await coalescer.waitUntilIdle(timeout: .seconds(30))
+        XCTAssertTrue(idle)
+        XCTAssertEqual(coalescer.idleWaiterCountForTesting, 0)
+    }
+
+    /// The bounded wait answers on the idle event (the waiter is registered while the
+    /// task still runs), and false only when time runs out.
+    func testWaitUntilIdleAnswersOnTheIdleEventOrTheTimeout() async {
+        let coalescer = NavTaskCoalescer()
+        var release: CheckedContinuation<Void, Never>?
+        var started = false
+        coalescer.run {
+            await withCheckedContinuation { release = $0; started = true }
+        }
+        // Bounded: a break fails the test instead of hanging the run.
+        let limit = ContinuousClock.now + .seconds(5)
+        while !started, ContinuousClock.now < limit { await Task.yield() }
+        XCTAssertTrue(started, "the task started")
+        let timedOut = await coalescer.waitUntilIdle(timeout: .milliseconds(20))
+        XCTAssertFalse(timedOut, "still running: the wait ends at the timeout")
+        XCTAssertEqual(coalescer.idleWaiterCountForTesting, 0, "the timed-out waiter is gone")
+        let waiter = Task { await coalescer.waitUntilIdle(timeout: .seconds(30)) }
+        while coalescer.idleWaiterCountForTesting == 0, ContinuousClock.now < limit + .seconds(5) { await Task.yield() }
+        XCTAssertEqual(coalescer.idleWaiterCountForTesting, 1, "the waiter is registered")
+        XCTAssertFalse(coalescer.isIdle, "the waiter is registered while the task still runs")
+        release?.resume()
+        let idle = await waiter.value
+        XCTAssertTrue(idle, "the idle event ends the wait long before the timeout")
+        XCTAssertTrue(coalescer.isIdle)
     }
 }
 
@@ -115,4 +148,5 @@ final class NavTaskCoalescerTests: XCTestCase {
 private final class Box<T> {
     var value: T
     init(_ value: T) { self.value = value }
+
 }

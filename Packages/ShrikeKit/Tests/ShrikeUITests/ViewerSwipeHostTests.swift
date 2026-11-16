@@ -68,6 +68,16 @@ final class ViewerSwipeHostTests: XCTestCase {
         return await cond()
     }
 
+    /// Lets everything already queued on the main queue and the main actor run
+    /// (a few queue hops and scheduler turns, no clock). Used to prove "nothing
+    /// happened" after a swipe whose callbacks are all synchronous or queued.
+    private func drainMainQueue() async {
+        for _ in 0..<3 {
+            await withCheckedContinuation { cont in DispatchQueue.main.async { cont.resume() } }
+            for _ in 0..<20 { await Task.yield() }
+        }
+    }
+
     private func makeViewer(_ urls: [URL], start: Int = 0) async throws -> ViewerWindow {
         let window = ViewerWindow(imageSources: urls.map { FileImageSource(url: $0) },
                                   startIndex: start, services: try services())
@@ -94,7 +104,9 @@ final class ViewerSwipeHostTests: XCTestCase {
         // The first photo's own title update must have landed before the
         // title is observed (it raced the neighbour's prefetch).
         _ = await waitUntil { window.displayedItem?.listIndex == 0 }
-        try await Task.sleep(for: .milliseconds(100))
+        let titled = await waitUntil { window.title.contains("p0") }
+        XCTAssertTrue(titled, "the first photo's title never landed: \(window.title)")
+        await drainMainQueue()   // any title/subtitle set queued behind it has run
         let queue = nav.decodeQueue
         let spawnedBefore = await queue.spawnedIndicesForTesting().filter { $0 == 1 }.count
 
@@ -154,7 +166,7 @@ final class ViewerSwipeHostTests: XCTestCase {
         view.handleSwipe(amount: -0.3, phase: .cancelled, isComplete: false)
         view.handleSwipe(amount: -0.1, phase: [], isComplete: false)
         view.handleSwipe(amount: 0, phase: [], isComplete: true)
-        try await Task.sleep(nanoseconds: 150_000_000)
+        await drainMainQueue()
         XCTAssertEqual(window.displayedItem?.listIndex, 0)
         XCTAssertEqual(window.title, title)
         XCTAssertTrue(view.currentDisplayForTesting === before)
@@ -180,7 +192,7 @@ final class ViewerSwipeHostTests: XCTestCase {
             view.handleSwipe(amount: 0, phase: [], isComplete: true)
         }
         stretch(-0.01)   // 8.2 pt with S = 824
-        try await Task.sleep(nanoseconds: 300_000_000)
+        await drainMainQueue()
         XCTAssertFalse(toasts.isShowing, "under 12 pt: no toast")
 
         stretch(-0.02)   // 16.5 pt
@@ -189,7 +201,7 @@ final class ViewerSwipeHostTests: XCTestCase {
         XCTAssertEqual(window.displayedItem?.listIndex, 1, "the photo did not change")
 
         stretch(-0.02)   // a second swipe: still no folder change
-        try await Task.sleep(nanoseconds: 300_000_000)
+        await drainMainQueue()
         XCTAssertEqual(window.groups.map(\.primary), urls, "a swipe never opens another folder")
 
         let ready = await waitUntil { toasts.isShowing && window.endOfFolderCue?.folder != nil }

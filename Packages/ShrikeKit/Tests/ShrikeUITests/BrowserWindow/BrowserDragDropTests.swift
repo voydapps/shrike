@@ -347,6 +347,33 @@ final class BrowserDragDropTests: XCTestCase {
         XCTAssertTrue(fresh.isFolderWritable(selects))
     }
 
+    /// Many pointer moves over one folder row: one "can I write here" check.
+    func testSidebarDragChecksAFolderOncePerDrag() async throws {
+        _ = try makeFiles(["W.jpg"], in: dir)
+        let browser = browser(dir)
+        defer { browser.close() }
+        let loaded = await waitUntil { browser.contentController.visibleItems.count == 1 }
+        XCTAssertTrue(loaded)
+        let item = try XCTUnwrap(browser.contentController.visibleItems.first)
+        let tree = browser.treeControllerForTesting
+        let outline = tree.outlineViewForTesting
+        let row = FolderTreeNode(url: selects, title: "Selects")
+        var checks = 0
+        tree.modifierFlagsProvider = { [] }
+        tree.isFolderWritable = { _ in checks += 1; return true }
+        let info = FakeDraggingInfo(pasteboard: pasteboard([PhotoPasteboard.dragItem(for: item.group, source: browser.contentController.dragSourceID)]),
+                                    mask: [.copy, .move, .generic])
+        for _ in 0..<20 {
+            XCTAssertNotEqual(tree.outlineView(outline, validateDrop: info, proposedItem: row,
+                                               proposedChildIndex: NSOutlineViewDropOnItemIndex), [])
+        }
+        XCTAssertEqual(checks, 1, "one disk check per folder per drag")
+        let next = FakeDraggingInfo(pasteboard: pasteboard([PhotoPasteboard.dragItem(for: item.group, source: browser.contentController.dragSourceID)]),
+                                    mask: [.copy, .move, .generic])
+        _ = tree.outlineView(outline, validateDrop: next, proposedItem: row, proposedChildIndex: NSOutlineViewDropOnItemIndex)
+        XCTAssertEqual(checks, 2, "a new drag asks again")
+    }
+
     func testSidebarDropMovesTheWholeGroupWithOneUndo() async throws {
         let before = ImageGroupingPreference.isEnabled
         ImageGroupingPreference.isEnabled = true

@@ -124,7 +124,7 @@ final class FilmstripView: HUDSurfaceView {
     /// one. The enclosing controller wires this to `navigate(to:)`.
     /// No new `ViewerAction` case is needed.
     var onSelectGlobal: ((Int) -> Void)?
-    /// The viewer's context menu for a right-click on a cell (spec 25 §12.2).
+    /// The viewer's context menu for a right-click on a cell.
     var contextMenuProvider: (() -> NSMenu?)?
 
     /// Rating + flag for a global index; nil draws none.
@@ -411,7 +411,7 @@ final class FilmstripView: HUDSurfaceView {
     /// window are removed; only new cells get a thumbnail request. This
     /// makes forward/backward navigation O(1) cell churn instead of
     /// O(neighbor-count), eliminating the per-keypress rebuild lag.
-    /// Spec 27 B4: the file behind a cell changed (turned, saved, reverted,
+    /// The file behind a cell changed (turned, saved, reverted,
     /// undone). Its thumbnail was just evicted: ask again and let the cell take the
     /// new aspect. The cell keeps its old picture until the new one arrives (no
     /// blank flash); other cells are untouched. Returns how many cells asked.
@@ -681,7 +681,7 @@ final class FilmstripView: HUDSurfaceView {
     /// (see `handleScrollWheel`).
     private var scrollAccumulator: CGFloat = 0
 
-    // MARK: - Hover (spec 24 §2)
+    // MARK: - Hover
     //
     // One tracking area for the whole strip. `mouseMoved` hit-tests the
     // cells; the cell under the pointer (not the selected one) shows the
@@ -1001,7 +1001,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
     private var mouseDownPoint: NSPoint?
 
     private let imageView = NSImageView()
-    /// Shown when the file can't be previewed (spec 25 §2.2).
+    /// Shown when the file can't be previewed.
     private let brokenView = NSImageView()
     private(set) var isUnreadable = false
     private let highlight = NSView()
@@ -1078,7 +1078,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
         }
     }
 
-    // MARK: Hover (spec 24 §2)
+    // MARK: Hover
 
     /// A white 10 % veil on the photo, below the stars and the flag.
     private let hoverOverlay = StripPassThroughView()
@@ -1219,7 +1219,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
             imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
             imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
             imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            // P3: the ring sits outside the thumbnail.
+            // The ring sits outside the thumbnail.
             highlight.topAnchor.constraint(equalTo: topAnchor, constant: -2),
             highlight.bottomAnchor.constraint(equalTo: bottomAnchor, constant: 2),
             highlight.leadingAnchor.constraint(equalTo: leadingAnchor, constant: -2),
@@ -1253,7 +1253,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
     }
 
     /// Right-click: the cell becomes the displayed photo first (the menu acts
-    /// on the displayed photo), then the viewer menu opens (spec 25 §12.2).
+    /// on the displayed photo), then the viewer menu opens.
     override func rightMouseDown(with event: NSEvent) {
         if let menu = menuAfterSelectingCell() {
             NSMenu.popUpContextMenu(menu, with: event, for: self)
@@ -1438,7 +1438,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
         if let name { toolTip = "\(name) — can't preview" }
     }
 
-    /// VoiceOver: name, stars, flag, can't preview (spec 25 §7.2), like the grid cell.
+    /// VoiceOver: name, stars, flag, can't preview, like the grid cell.
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .image }
     /// One element per cell: the picture and glyph inside are not read on their own.
@@ -1452,7 +1452,7 @@ private final class ThumbCell: NSView, NSDraggingSource {
     var brokenGlyphShownForTesting: Bool { !brokenView.isHidden }
 
     /// The uncached read, off the main thread (a large TIFF/PNG takes
-    /// hundreds of ms; audit MP-08). `decode` is a seam for tests.
+    /// hundreds of ms). `decode` is a seam for tests.
     static func fallbackThumbnail(
         url: URL, maxPixelSize: Int,
         decode: @escaping @Sendable (URL, Int) -> CGImage? = { ioThumbnail(url: $0, maxPixelSize: $1) }

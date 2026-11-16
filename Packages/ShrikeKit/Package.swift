@@ -28,7 +28,7 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Sources/ShrikeCore",
-            swiftSettings: sharedSwiftSettings
+            swiftSettings: sharedSwiftSettings + speedOptimizedSettings
         ),
 
         // Rendering — CAMetalLayer host, thumbnail cell view, color pipeline.
@@ -37,7 +37,7 @@ let package = Package(
             name: "ShrikeRendering",
             dependencies: ["ShrikeCore"],
             path: "Sources/ShrikeRendering",
-            swiftSettings: sharedSwiftSettings
+            swiftSettings: sharedSwiftSettings + speedOptimizedSettings
         ),
 
         // UI — AppKit windows (Viewer, Browser, Compare, Batch) + SwiftUI inspectors.
@@ -137,9 +137,26 @@ var sharedSwiftSettings: [SwiftSetting] {
 }
 
 // Release-only -Osize for the UI-shaped modules (ShrikeUI, ShrikeEdit, ShrikeIO).
-// Saves about 2 MB in the universal app. ShrikeCore (decode, thumbnails),
-// ShrikeRendering (Metal) and GRDB stay on -O. Debug builds and `swift test`
+// Saves about 2 MB in the universal app. Debug builds and `swift test`
 // are not affected.
 var sizeOptimizedSettings: [SwiftSetting] {
     [.unsafeFlags(["-Osize"], .when(configuration: .release))]
+}
+
+// Release-only -O for the speed-critical modules: ShrikeCore (decode,
+// thumbnails, prefetch) and ShrikeRendering (Metal). The archive build
+// (`build_archive` in Scripts/lib/common.sh) passes
+// SWIFT_OPTIMIZATION_LEVEL=-Osize to every target, GRDB included, to keep the
+// app under its 20 MB budget (_check_app_size in common.sh). This flag
+// comes after that one on the command line, so these two modules stay on -O.
+// But with that override Xcode also compiles EVERY package module (these two
+// included) file by file: no whole-module and no cross-module optimisation
+// (`-incremental -enable-batch-mode -disable-cmo` in the archive log; 0.2.32
+// had `-O -whole-module-optimization`). Adding "-wmo" here breaks the build
+// (Xcode still expects one .d file per source file). Whole-module everywhere
+// (`SWIFT_COMPILATION_MODE=wholemodule` next to the override) costs +672 KB
+// (19.60 MB) and did not measurably speed up launch (pass 2t, 2026-11-14).
+// Do not remove it without re-measuring launch and next/prev.
+var speedOptimizedSettings: [SwiftSetting] {
+    [.unsafeFlags(["-O"], .when(configuration: .release))]
 }

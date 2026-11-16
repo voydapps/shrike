@@ -3,39 +3,24 @@
 <plist version="1.0">
 <dict>
     <!--
-        Shrike is distributed directly, without the sandbox: a local install in
-        /Applications and a downloadable DMG, signed with the Apple
-        Development certificate, not notarized.
-        Direct distribution is chosen so users can
-        open any folder instantly and launch external editors freely.
-        Hardened runtime is enabled in build settings, not entitlements —
-        runtime exceptions (JIT, library-validation) are added here as needed
-        once real features land (libjpeg-turbo link etc.).
-    -->
+        Shrike is distributed directly, without the App Sandbox, so this
+        file lists no entitlements. The local install in /Applications is
+        signed with the Apple Development certificate; the public DMG is
+        ad-hoc signed. Neither is notarized (there is no Developer ID and
+        no Mac App Store version). Direct distribution lets users open any
+        folder instantly and launch external editors freely.
 
-    <!-- File access: user-selected reads/writes + persistent bookmarks.
-         Both are App Sandbox entitlements: without app-sandbox they have no
-         effect today. Kept for the future Mac App Store variant. -->
-    <key>com.apple.security.files.user-selected.read-write</key>
-    <true/>
-    <key>com.apple.security.files.bookmarks.app-scope</key>
-    <true/>
+        Hardened runtime is enabled in build settings, not entitlements.
+        Runtime exceptions (JIT, library validation) would be added here
+        only if a real feature needs them.
 
-    <!--
-        NOTE: No `com.apple.security.app-sandbox` key.
-        When we eventually build a Mac App Store variant, enable these and
-        add scoped-folder / hardware entitlements:
+        Do not add `com.apple.security.get-task-allow`: Scripts/lib/common.sh
+        rejects it in a signed build.
 
-        <key>com.apple.security.app-sandbox</key>
-        <true/>
-        <key>com.apple.security.files.bookmarks.document-scope</key>
-        <true/>
-        <key>com.apple.security.files.downloads.read-write</key>
-        <true/>
-        <key>com.apple.security.files.pictures.read-write</key>
-        <true/>
-        <key>com.apple.security.print</key>
-        <true/>
+        The sandbox-only keys that used to be listed here
+        (`files.user-selected.read-write`, `files.bookmarks.app-scope`) were
+        removed: without `com.apple.security.app-sandbox` they have no
+        effect, and the app uses plain (not security-scoped) bookmarks.
     -->
 </dict>
 </plist>

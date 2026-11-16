@@ -81,7 +81,7 @@ final class ErrorOverlayView: NSView {
 
     static let message = "This file appears to be damaged or isn't a supported format."
 
-    /// Spec 27 P3-3: a 420 pt card, a 36 pt warning glyph, a 15 pt heading,
+    /// A 420 pt card, a 36 pt warning glyph, a 15 pt heading,
     /// a 13 pt body.
     static let cardWidth: CGFloat = 420
     static let glyphPointSize: CGFloat = 36
@@ -181,7 +181,7 @@ final class ErrorOverlayView: NSView {
         container.setAccessibilityLabel("Can't open. \(Self.message)")
         container.setAccessibilityChildren([nextButton, revealButton])
 
-        // Spec 21b §6: the card is min(420, canvas − 32) wide (never below 208).
+        // The card is min(420, canvas − 32) wide (never below 208).
         let nominalWidth = container.widthAnchor.constraint(equalToConstant: Self.cardWidth)
         // Below windowSizeStayPut (500): a card must never grow the WINDOW.
         nominalWidth.priority = NSLayoutConstraint.Priority(rawValue: 490)

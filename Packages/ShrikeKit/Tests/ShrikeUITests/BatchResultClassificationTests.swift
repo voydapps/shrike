@@ -24,6 +24,28 @@ final class BatchResultClassificationTests: XCTestCase {
         XCTAssertEqual(BatchModel.summary(r, verb: "rotated"), "1 completed · 1 failed · 1 skipped")
     }
 
+    /// Pass 2c task 4: the preview said "skipped", so the result says "skipped" (UI classification only;
+    /// `BatchResult.failedCount` in ShrikeEdit is unchanged and still counts every unreadable file).
+    func testAnnouncedUnreadableIsSkippedNotFailed() {
+        let r = result([.done(URL(fileURLWithPath: "/tmp/a.jpg")), .skipped(.unreadable)])
+        let announced: Set<URL> = [r.items[1].source.primary]
+        XCTAssertEqual(BatchModel.summary(r, verb: "rotated", announcedSkips: announced), "1 completed · 1 skipped")
+        XCTAssertEqual(BatchModel.failedCount(r, announcedSkips: announced), 0)
+        XCTAssertFalse(BatchModel.hasIssues(r, announcedSkips: announced), "title stays 'Batch complete'")
+        // Not announced (it broke during the run): still a failure.
+        XCTAssertEqual(BatchModel.summary(r, verb: "rotated", announcedSkips: []), "1 completed · 1 failed")
+        XCTAssertEqual(BatchModel.failedCount(r, announcedSkips: []), 1)
+        XCTAssertTrue(BatchModel.hasIssues(r, announcedSkips: []))
+    }
+
+    func testAnnouncedSkipDoesNotHideARealFailure() {
+        let r = result([.skipped(.unreadable), .failed(NSError(domain: "x", code: 1)), .skipped(.nameExists)])
+        let announced: Set<URL> = [r.items[0].source.primary]
+        XCTAssertEqual(BatchModel.summary(r, verb: "rotated", announcedSkips: announced), "1 failed · 2 skipped")
+        XCTAssertEqual(BatchModel.failedCount(r, announcedSkips: announced), 1)
+        XCTAssertTrue(BatchModel.hasIssues(r, announcedSkips: announced))
+    }
+
     func testAllUnreadableIsNoPhotosCompleted() {
         let r = result([.skipped(.unreadable)])
         XCTAssertEqual(r.doneCount, 0)
@@ -43,7 +65,7 @@ final class BatchResultClassificationTests: XCTestCase {
         let plan = BatchPlan(items: urls.map { ImageGroup(primary: $0) }, rotate: 1, output: .inPlace)
         let finishOrder = [3, 1, 5, 0, 4, 2]
         let rows = finishOrder.map {
-            BatchModel.SkippedRow(name: urls[$0].lastPathComponent, reason: "Cancelled.", source: urls[$0])
+            BatchModel.SkippedRow(name: urls[$0].lastPathComponent, reason: "Canceled.", source: urls[$0])
         }
         let stranger = BatchModel.SkippedRow(name: "x.jpg", reason: "?", source: URL(fileURLWithPath: "/tmp/shrike-order/x.jpg"))
         let sorted = BatchModel.inQueueOrder(rows + [stranger], plan: plan)

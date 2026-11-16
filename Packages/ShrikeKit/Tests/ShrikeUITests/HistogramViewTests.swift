@@ -123,7 +123,7 @@ final class HistogramViewTests: XCTestCase {
             // always arrives inside the 30 ms settle.
             try await Task.sleep(for: .milliseconds(8))
         }
-        XCTAssertLessThan(worst * 1000, 16, "a histogram request blocked the main thread")
+        perfAssertLessThan(worst * 1000, 16, "a histogram request blocked the main thread")
         await controller.waitForIdle()
         XCTAssertEqual(controller.completedCount, 1, "skipped images were decoded")
         XCTAssertNotNil(controller.state.data)

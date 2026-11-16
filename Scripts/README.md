@@ -34,10 +34,13 @@ What it does:
 3. Checks, before anything in the destination is touched:
    `codesign --verify --deep --strict`, hardened runtime, certificate-based
    identity, timestamp, no `get-task-allow`, both architectures, app icon.
-4. If Shrike is running **from the destination**, sends it SIGTERM (the
-   same "sudden termination" macOS uses; no Automation prompt). Other copies
-   (Xcode builds) are left alone. If it does not quit in 5 s, the script
-   stops and changes nothing.
+4. If Shrike is running **from the destination**, asks it to quit the normal
+   way (an Apple event), so it can ask about unsaved work. It waits up to
+   45 s (`SHRIKE_QUIT_WAIT`). If Shrike is still open, the script stops and
+   changes nothing; it never kills Shrike. `--force` (CI only) sends SIGTERM,
+   then SIGKILL. Other copies (Xcode builds) are left alone. The first time,
+   macOS may ask to let Terminal control Shrike (Automation); if you say no,
+   quit Shrike yourself and run again.
 5. Copies the new app next to the old one (`.Shrike.app.new-<pid>`),
    verifies the copy, then renames it into place. If anything fails, the
    old app is put back.
@@ -48,7 +51,8 @@ What it does:
 
 Environment: `SHRIKE_INSTALL_DIR` (default `/Applications`),
 `SHRIKE_SIGN_IDENTITY` (SHA-1, name, or `adhoc`), `SHRIKE_WORK_DIR`
-(default `build/local`). `SHRIKE_QUIT_MATCH_EXE` is a test hook only.
+(default `build/local`). `SHRIKE_QUIT_MATCH_EXE` and `SHRIKE_QUIT_CMD` are
+test hooks only.
 
 ## `make-package.sh` — the website DMG
 
@@ -141,6 +145,11 @@ the two after the build.
 | `dmg/How to open Shrike.txt` | First-launch steps shown inside the DMG (macOS 14 / 15 / 26). |
 | `generate-test-fixtures.swift` | Writes the small image fixtures for `ShrikeCoreTests`. |
 | `make-icon.sh` | Builds the AppIcon PNGs from `Resources/Icon/shrike-icon*.svg`. |
+| `make-screenshots.sh` | Makes the website WebP pictures (`site/screenshots/<name>.webp`, `full/<name>.webp`) from your local sources in the git-ignored `site/screenshots/src/<name>.png`. Then update `site/screenshots/README.md` and run `bash Scripts/check-site.sh`. |
+| `smoke-launch.sh` | Release smoke test (CI; local only with `SHRIKE_ALLOW_LOCAL_SMOKE=1`): alive 10 s, no crash report, a window on screen, `firstImageFrame` signpost. |
+| `measure-launch.sh` | Cold launch -> first photo frame (`firstImageFrame` signpost), wall-clock from `open`: `Scripts/measure-launch.sh [--warmup N] <photo> <runs> <Shrike.app>...`; several apps alternate runs (A, B, A, B) and get min / median / max each. Scratch Release builds only: refuses a locked screen, an installed app, or a Shrike already running; stops the app with SIGTERM; never sends keys or clicks. |
+| `lib/quit-shrike.sh` | Asks a running Shrike to quit (never kills it unless forced); used by `install-local.sh` and `smoke-launch.sh`. Test: `python3 Scripts/tests/test-quit-shrike.py`. |
+| `swift-test-guarded.py` | Runs `swift test` for `Packages/ShrikeKit` and stops it if it hangs (no output for 120 s, or 25 min in all): samples xctest, kills the run, exits 124. Refuses to start on a locked screen (exit 3). Usage: `Scripts/swift-test-guarded.py -- <swift test args>`. |
 | `generate-embedded-preview-fixture.py` | Writes the JPEG fixture with an embedded EXIF thumbnail (Pillow + piexif). |
 
 ## Troubleshooting

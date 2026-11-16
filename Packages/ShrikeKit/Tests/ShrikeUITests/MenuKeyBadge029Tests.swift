@@ -54,7 +54,7 @@ final class MenuKeyBadge029Tests: XCTestCase {
     }
 
     func testSubmenuRowGetsABadge() {
-        let menu = NSMenu(title: "Image")
+        let menu = NSMenu(title: "Photo")
         let sub = hintItem(.rate3, in: menu, submenu: true)
         MenuKeyHints.apply(to: menu, context: .browser)
         XCTAssertEqual(sub.badge?.stringValue, "3")

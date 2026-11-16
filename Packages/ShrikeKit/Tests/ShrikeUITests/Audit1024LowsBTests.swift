@@ -19,14 +19,16 @@ final class Audit1024LowsBTests: XCTestCase {
         let gone = URL(fileURLWithPath: "/Volumes/NoSuchDisk-\(UUID().uuidString)/DCIM/100CANON")
         let name = gone.pathComponents[2]
         XCTAssertEqual(BrowserWindowController.goneVolumeName(of: gone), name)
-        XCTAssertEqual(BrowserContentViewController.folderGoneSubtitle(for: gone), "“\(name)” was disconnected.")
+        XCTAssertEqual(BrowserContentViewController.folderGoneSubtitle(
+            disk: BrowserWindowController.goneVolumeName(of: gone)), "“\(name)” was disconnected.")
         let target = BrowserWindowController.nearestExistingAncestor(of: gone)
         XCTAssertNotEqual(target.path, "/Volumes")
         XCTAssertTrue(target.path.hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path))
         // A normal missing folder keeps the old wording and its nearest parent.
         let missing = TestScratch.directory.appendingPathComponent("nope-\(UUID().uuidString)")
         XCTAssertNil(BrowserWindowController.goneVolumeName(of: missing))
-        XCTAssertEqual(BrowserContentViewController.folderGoneSubtitle(for: missing),
+        XCTAssertEqual(BrowserContentViewController.folderGoneSubtitle(
+            disk: BrowserWindowController.goneVolumeName(of: missing)),
                        "It may have been moved, or its disk was disconnected.")
     }
 

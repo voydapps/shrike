@@ -29,6 +29,7 @@ extension BrowserWindowController {
         coordinator.dismissProgressToast = { [weak self] ticket in
             self?.dismissTransferProgress(matching: ticket)
         }
+        coordinator.ownsProgressToast = { [weak self] ticket in self?.ownsTransferProgress(ticket) ?? false }
         coordinator.onHUDPick = { [weak self] verb, choice in
             self?.clearChord()
             self?.fileToFolder(verb, choice)
@@ -49,34 +50,73 @@ extension BrowserWindowController {
             transfer(verb, groups, to: folder)
             return
         }
+        let coordinator = transfers
         Task { @MainActor [weak self] in
-            guard let self, let folder = await self.transfers.resolve(resolution) else { return }
-            self.transfer(verb, groups, to: folder)
+            // Reserved in the panel's OK turn: ⌘Q right after asks.
+            let box = ReservationBox()
+            let folder = await coordinator.resolve(resolution) { _ in
+                box.reservation = coordinator.reserveShowingProgress(verb, total: groups.count)
+            }
+            guard let self, let folder else { FileTransferCoordinator.release(box.reservation); return }
+            self.transfer(verb, groups, to: folder, reservation: box.reservation)
         }
     }
 
-    func transfer(_ verb: FileVerb, _ groups: [ImageGroup], to folder: URL) {
-        let target = GroupList.canonical(folder)
-        let work = groups.filter {
-            GroupList.canonical($0.primary.deletingLastPathComponent()) != target
-        }
-        guard !work.isEmpty else {
+    /// `canonical`: resolves a folder path through symbolic links (a disk
+    /// call per path component). Run for every photo on the
+    /// main thread, it froze the window ~2 s after Choose for 2000 photos; it
+    /// now runs off the main thread, once per parent folder, and only for
+    /// photos a plain path comparison cannot settle. Test seam.
+    func transfer(_ verb: FileVerb, _ groups: [ImageGroup], to folder: URL,
+                  reservation: FileTransferCoordinator.TransferReservation? = nil,
+                  canonical: @escaping @Sendable (URL) -> String = { GroupList.canonical($0) }) {
+        // Disk-free: every photo already sits in the folder by its plain path.
+        let plainTarget = folder.standardizedFileURL.path
+        if groups.allSatisfy({ $0.primary.deletingLastPathComponent().standardizedFileURL.path == plainTarget }) {
+            FileTransferCoordinator.release(reservation)
             toast(FileTransferCopy.alreadyIn(groups, folder: folder))
             return
         }
+        // Counts as running from here, with the selection count, while it
+        // waits for earlier work; `run` corrects the total.
+        let reserved = reservation ?? transfers.reserveShowingProgress(verb, total: groups.count)
         transfers.slots.setLast(folder, for: verb)
-        let next = verb == .move
-            ? Self.selectionAfterRemoving(work.map(\.primary), from: contentController.visibleItems.map(\.url))
-            : nil
+        let visible = verb == .move ? contentController.visibleItems.map(\.url) : []
         let ops = fileOps
         let coordinator = transfers
         let previous = trashChain
         let task = Task { @MainActor [weak self] in
             await previous?.value
-            let outcome = await coordinator.run(verb, work, to: folder, ops: ops)
-            self?.finishTransfer(verb, outcome, folder: folder, next: next, fallback: work[0])
+            let work = await Task.detached(priority: .userInitiated) {
+                Self.transferWork(groups, to: folder, canonical: canonical)
+            }.value
+            guard let first = work.first else {
+                FileTransferCoordinator.release(reserved)
+                self?.toast(FileTransferCopy.alreadyIn(groups, folder: folder))
+                return
+            }
+            let next = verb == .move ? Self.selectionAfterRemoving(work.map(\.primary), from: visible) : nil
+            let outcome = await coordinator.run(verb, work, to: folder, ops: ops, reservation: reserved)
+            self?.finishTransfer(verb, outcome, folder: folder, next: next, fallback: first)
         }
         trashChain = task
+    }
+
+    /// The photos not already in `folder` (compared through symbolic
+    /// links). Disk calls: call it off the main thread. One `canonical`
+    /// call per distinct parent folder.
+    nonisolated static func transferWork(_ groups: [ImageGroup], to folder: URL,
+                                         canonical: (URL) -> String) -> [ImageGroup] {
+        let target = canonical(folder)
+        var parents: [String: Bool] = [:]
+        return groups.filter { group in
+            let parent = group.primary.deletingLastPathComponent()
+            let key = parent.standardizedFileURL.path
+            if let inside = parents[key] { return !inside }
+            let inside = canonical(parent) == target
+            parents[key] = inside
+            return !inside
+        }
     }
 
     private func finishTransfer(
@@ -87,7 +127,12 @@ extension BrowserWindowController {
             removeFromList(Set(outcome.items.map(\.source.primary)), next: next)
         }
         if let failure = outcome.failures.first {
-            toast(FileTransferCopy.failed(verb, failure.group, folder: folder, error: failure.error), kind: .error)
+            // With failures there is no band; the error toast carries the
+            // count of the LAST receipt instead (never read twice).
+            let lost = outcome.receipt?.backupsNotSaved ?? 0
+            toast(BackupNotice.appending(
+                to: FileTransferCopy.failed(verb, failure.group, folder: folder, error: failure.error),
+                notSaved: lost, of: max(outcome.items.count, 1), leadNamesPhotos: false), kind: .error)
         } else if outcome.items.isEmpty, let error = outcome.error {
             toast(FileTransferCopy.failed(verb, fallback, folder: folder, error: error), kind: .error)
         }
@@ -103,12 +148,28 @@ extension BrowserWindowController {
             }
             undo.setActionName(receipt.kind == .copy ? "Copy" : "Move")
         }
+        let mark = window?.undoManager.map(undoTopMark.stamp)
         if outcome.failures.isEmpty {
             let text = outcome.cancelled
                 ? FileTransferCopy.cancelled(verb, done: receipt.items.count, total: outcome.total)
                 : FileTransferCopy.done(verb, receipt.items.map(\.source), folder: folder)
-            showTransferNotice(text) { [weak self] in
-                self?.window?.undoManager?.undo()
+            let opening = FileTransferCopy.opening(text, cancelled: outcome.cancelled,
+                                                   replacedPhotos: FileTransferCopy.replacedPhotos(receipt),
+                                                   extraFilesTrashed: receipt.extraFilesTrashed)
+            // The count of the LAST progress receipt.
+            let line = FileTransferCopy.resultLine(opening, backupsNotSaved: receipt.backupsNotSaved,
+                                                   of: receipt.items.count, extraFilesTrashed: receipt.extraFilesTrashed)
+            showTransferNotice(line) { [weak self] in
+                // Only this copy / move; a later change is undone from Edit ▸ Undo.
+                guard let self, let mark else { return }
+                self.undoTopMark.undo(mark, on: self.window?.undoManager)
+            }
+            // A later change disables this notice's Undo (Edit ▸ Undo names it).
+            undoTopMark.onChange = { [weak self] in
+                guard let self, self.transferNotice.message == line, self.transferNotice.buttonTitles == ["Undo"]
+                else { return }
+                self.transferNotice.disableButtons()
+                self.undoTopMark.onChange = nil
             }
         }
     }
@@ -125,13 +186,17 @@ extension BrowserWindowController {
         trashChain = Task { @MainActor [weak self] in
             await previous?.value
             var failure: (any Error)?
-            do { try await ops.undo(receipt) } catch { failure = error }
+            var notSaved = 0
+            do { notSaved = try await ops.undo(receipt) } catch { failure = error }
             guard let self else { return }
             if receipt.kind == .move, let folder = self.currentFolder {
                 self.follow(folder: folder, selecting: receipt.items.first?.source.primary)
             }
             if let failure {
-                self.toast(FileTransferCopy.undoFailed(failure, folder: receipt.destination), kind: .error)
+                self.toast(BackupNotice.appending(to: FileTransferCopy.undoFailed(failure, folder: receipt.destination),
+                                                  notSaved: notSaved, of: receipt.items.count, leadNamesPhotos: false), kind: .error)
+            } else if let notice = BackupNotice.standaloneToast(lead: nil, notSaved: notSaved, of: receipt.items.count) {
+                self.toast(notice)
             }
         }
     }

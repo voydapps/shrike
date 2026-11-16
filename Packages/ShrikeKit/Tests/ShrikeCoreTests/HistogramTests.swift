@@ -322,7 +322,7 @@ final class HistogramTests: XCTestCase {
         #else
         let budget = 5.0
         #endif
-        XCTAssertLessThan(smallMs, budget)
-        XCTAssertLessThan(p3Ms, budget)
+        perfAssertLessThan(smallMs, budget)
+        perfAssertLessThan(p3Ms, budget)
     }
 }

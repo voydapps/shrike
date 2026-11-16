@@ -79,6 +79,6 @@ final class GroupLookupTests: XCTestCase {
             let d = ContinuousClock.now - start
             best = min(best, Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18)
         }
-        XCTAssertLessThan(best, 0.5, "5000 lookups took \(best) s")
+        perfAssertLessThan(best, 0.5, "5000 lookups took \(best) s")
     }
 }

@@ -51,7 +51,7 @@ final class FolderTreeAsyncTests: XCTestCase {
         var calls: [(path: String, onMain: Bool)] { lock.withLock { _calls } }
         func list(_ url: URL, _ hidden: Bool) -> [URL] {
             lock.withLock { _calls.append((url.standardizedFileURL.path, Thread.isMainThread)) }
-            Thread.sleep(forTimeInterval: delay)
+            Thread.sleep(forTimeInterval: delay)   // the simulated slow disk read this test is about
             return FolderTreeDataSource.listSubfolders(of: url, showHidden: hidden)
         }
     }
@@ -85,7 +85,7 @@ final class FolderTreeAsyncTests: XCTestCase {
         let start = Date()
         outline.expandItem(root)
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertLessThan(elapsed, 0.2, "the expand returns at once (the lister sleeps 0.4 s, so a blocking read would take longer); the read runs off main")
+        perfAssertLessThan(elapsed, 0.2, "the expand returns at once (the lister sleeps 0.4 s, so a blocking read would take longer); the read runs off main")
         XCTAssertTrue(outline.isItemExpanded(root), "actual expansion intent is open while loading, so the user can collapse it")
         XCTAssertEqual(outline.numberOfRows, rowsBefore)
 
@@ -111,7 +111,7 @@ final class FolderTreeAsyncTests: XCTestCase {
         XCTAssertTrue(lister.calls.allSatisfy { !$0.onMain })
         let start = Date()
         tree.select(target)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 0.25, "select returns without waiting for a disk read")
+        perfAssertLessThan(Date().timeIntervalSince(start), 0.25, "select returns without waiting for a disk read")
         await tree.selectTask?.value
 
         let selected = try XCTUnwrap(outline.item(atRow: outline.selectedRow) as? FolderTreeNode)

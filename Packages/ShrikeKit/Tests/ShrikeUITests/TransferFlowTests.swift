@@ -10,6 +10,7 @@
 
 import XCTest
 import AppKit
+import os
 @testable import ShrikeUI
 @testable import ShrikeCore
 @testable import ShrikeIO
@@ -188,6 +189,47 @@ final class TransferFlowTests: XCTestCase {
         XCTAssertTrue(exists(urls[0]))
     }
 
+    /// A plain path match needs no disk call on the main thread.
+    func testSameFolderByPlainPathCallsNoDiskCheck() async throws {
+        let urls = try makeFiles(["a.jpg"])
+        let viewer = viewer(urls, start: 0)
+        defer { viewer.close() }
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        viewer.transfer(.move, viewer.groups[0], to: dir, canonical: { url in
+            calls.withLock { $0 += 1 }
+            return url.path
+        })
+        XCTAssertEqual(viewer.contentRoot.toastHost.content?.message, "“a.jpg” is already in “Italy 2026”.")
+        await viewer.waitForPendingFileWork()
+        XCTAssertEqual(calls.withLock { $0 }, 0)
+        XCTAssertEqual(viewer.groups.count, 1)
+    }
+
+    /// A folder reached through a symbolic link: the check runs off the main
+    /// thread, and the photo comes back with the same message.
+    func testSameFolderThroughALinkIsCheckedOffMainAndThePhotoStays() async throws {
+        let urls = try makeFiles(["a.jpg", "b.jpg"])
+        let link = root.appendingPathComponent("Link", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: dir)
+        let viewer = viewer(urls, start: 0)
+        defer { viewer.close() }
+        let onMain = OSAllocatedUnfairLock(initialState: [Bool]())
+        viewer.transfer(.move, viewer.groups[0], to: link, canonical: { url in
+            onMain.withLock { $0.append(Thread.isMainThread) }
+            return GroupList.canonical(url)
+        })
+        XCTAssertEqual(onMain.withLock { $0 }, [], "no disk check in the calling turn")
+        await viewer.waitForPendingFileWork()
+        let back = await waitUntil { viewer.groups.count == 2 }
+        XCTAssertTrue(back)
+        XCTAssertEqual(viewer.groups.map(\.primary.lastPathComponent), ["a.jpg", "b.jpg"])
+        XCTAssertFalse(onMain.withLock { $0 }.isEmpty)
+        XCTAssertFalse(onMain.withLock { $0 }.contains(true))
+        XCTAssertEqual(viewer.contentRoot.toastHost.content?.message, "“a.jpg” is already in “Link”.")
+        XCTAssertTrue(exists(urls[0]))
+        XCTAssertFalse(viewer.undoManagerForTesting.canUndo)
+    }
+
     func testDestinationIsCurrentFolder() async throws {
         let urls = try makeFiles(["a.jpg"])
         slots.set(1, folder: dir)
@@ -259,7 +301,7 @@ final class TransferFlowTests: XCTestCase {
         XCTAssertEqual(FileTransferCopy.done(.copy, three, folder: selects), "Copied 3 items to “Selects”.")
         XCTAssertEqual(FileTransferCopy.progress(.copy, completed: 2, total: 12), "Copying 3 of 12…")
         XCTAssertEqual(FileTransferCopy.cancelled(.copy, done: 3, total: 12),
-                       "Copied 3 of 12 items. The rest were cancelled.")
+                       "Copied 3 of 12 items. The rest were canceled.")
         XCTAssertEqual(FileTransferCopy.conflictTitle("DSC_0042.jpg", folder: selects),
                        "“DSC_0042.jpg” already exists in “Selects”.")
     }
@@ -312,6 +354,34 @@ final class TransferFlowTests: XCTestCase {
         XCTAssertEqual(names(selects), ["P1.ORF", "P1.xmp"])
         XCTAssertTrue(exists(dir.appendingPathComponent("P2.JPG")))
         XCTAssertEqual(viewer.groups.map(\.primary.lastPathComponent), ["P2.JPG"])
+    }
+
+    /// Pass 2k Q1: a Browser copy counts as running for ⌘Q in the turn it
+    /// starts, while it waits for the window's earlier work; the total is
+    /// the photos not already in the folder.
+    func testBrowserTransferCountsAsRunningAtOnce() async throws {
+        let files = try makeFiles(["A.JPG", "B.JPG", "C.JPG"])
+        _ = try makeFiles(["D.JPG"], in: selects)
+        var services = ShrikeServices.makeDefault()
+        services.backupStore = nil
+        let browser = BrowserWindowController(services: services, initialFolder: dir)
+        defer { browser.close() }
+        browser.fileOps = fakeOps()
+        var held = true
+        browser.trashChain = Task { @MainActor in
+            while held { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        let groups = (files + [selects.appendingPathComponent("D.JPG")]).map { ImageGroup(primary: $0) }
+        browser.transfer(.copy, groups, to: selects)
+        XCTAssertEqual(WindowCoordinator().quitPlan, .later)
+        // Pass 2m (28a round 8): reserved with the SELECTION count, no disk
+        // check on the calling path; the run corrects it to the 3 photos to copy.
+        XCTAssertEqual(FileTransferCoordinator.runningWork, [QuitWork.Transfer(verb: .copy, completed: 0, total: 4)])
+        held = false
+        let done = await waitUntil { FileTransferCoordinator.running.isEmpty }
+        XCTAssertTrue(done)
+        _ = await waitUntil { self.names(self.selects).count == 4 }
+        XCTAssertEqual(names(selects), ["A.JPG", "B.JPG", "C.JPG", "D.JPG"])
     }
 
     /// The Browser in "Show both files": trashing the RAW item leaves the

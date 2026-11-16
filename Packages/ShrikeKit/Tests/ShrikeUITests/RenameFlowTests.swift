@@ -65,7 +65,7 @@ final class RenameFlowTests: XCTestCase {
         let fileOps = ops()
         let model = RenameSheetModel(group: group, validate: { fileOps.validate(stem: $0, for: group) })
         let state = model.state(for: "a/b")
-        XCTAssertEqual(state.message, "⚠ Names can't contain “/” or “:”.")
+        XCTAssertEqual(state.message, "Names can't contain “/” or “:”.")
         XCTAssertFalse(state.canRename)
         XCTAssertTrue(model.state(for: "Venice").canRename)
         XCTAssertNil(model.state(for: "Venice").message)
@@ -113,7 +113,31 @@ final class RenameFlowTests: XCTestCase {
         XCTAssertTrue(viewer.undoManagerForTesting.canRedo, "redo renames again")
     }
 
-    func testCancelOrSameNameDoesNothing() async throws {
+    /// R4: Redo pressed while the Undo is still queued (the window's file
+    /// work is busy) renames the file AND updates the list.
+    func testRedoWhileTheUndoIsQueuedUpdatesTheList() async throws {
+        let group = try pair()
+        let viewer = viewer([group])
+        defer { viewer.close() }
+        viewer.renameResponderForTesting = { _ in "Venice" }
+        viewer.renameDisplayed()
+        try await Task.sleep(for: .milliseconds(20))
+        await viewer.waitForPendingFileWork()
+        XCTAssertTrue(exists("Venice.jpg"))
+        var released = false
+        viewer.trashChain = Task { @MainActor in
+            while !released { try? await Task.sleep(for: .milliseconds(5)) }
+        }
+        viewer.performUndo()          // queued behind the busy chain
+        viewer.performRedo()          // its step's result is not filled yet
+        released = true
+        await viewer.waitForPendingFileWork()
+        XCTAssertTrue(exists("Venice.jpg"))
+        XCTAssertFalse(exists("DSC_0042.jpg"))
+        XCTAssertEqual(viewer.groups.first?.primary.lastPathComponent, "Venice.jpg", "the list shows the new name")
+    }
+
+        func testCancelOrSameNameDoesNothing() async throws {
         let group = try pair()
         let viewer = viewer([group])
         defer { viewer.close() }

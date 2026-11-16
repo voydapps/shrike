@@ -87,7 +87,7 @@ final class ToolbarToggleButton: NSButton {
 final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NSMenuItemValidation,
                                  NSSharingServicePickerToolbarItemDelegate {
 
-    static let identifier = NSToolbar.Identifier("shrike.viewer.toolbar.v3")
+    static let identifier = NSToolbar.Identifier("shrike.viewer.toolbar.v4")
 
     enum ID {
         static let nav = NSToolbarItem.Identifier("shrike.viewer.nav")
@@ -113,17 +113,19 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
         static let actualSize = NSToolbarItem.Identifier("shrike.viewer.actualSize")
     }
 
-    /// The 14 default items, left to right (spec 24 §3.1: Show in Browser
+    /// The 14 default items, left to right (Show in Browser
     /// after the nav group; Histogram, then Full Screen, before the
     /// tracking separator and the Inspector). The
     /// identifier carries a version so a stored configuration of the old
     /// set cannot hide them.
+    /// Trash sits at the end,
+    /// apart behind a fixed space; v4 so a stored layout cannot keep the old place.
     static let defaultItems: [NSToolbarItem.Identifier] = [
         ID.nav, ID.showInBrowser, .flexibleSpace, ID.zoom, ID.rotate, ID.rating, ID.flag, ID.share,
-        ID.edit, ID.trash, ID.histogram, ID.fullScreen, .inspectorTrackingSeparator, ID.inspector,
+        ID.edit, ID.histogram, ID.fullScreen, .space, ID.trash, .inspectorTrackingSeparator, ID.inspector,
     ]
 
-    /// Overflow order when the window is narrow (spec 24 §3.1): nav, Show
+    /// Overflow order when the window is narrow: nav, Show
     /// in Browser and the inspector stay longest; Histogram goes first.
     static func visibilityPriority(_ id: NSToolbarItem.Identifier) -> NSToolbarItem.VisibilityPriority {
         switch id {
@@ -152,8 +154,8 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
         (ID.histogram, "chart.bar.xaxis", "Histogram", .toggleHistogram),
         (ID.fullScreen, "arrow.up.left.and.arrow.down.right", "Enter Full Screen", .toggleFullScreen),
         (ID.edit, "slider.horizontal.3", "Edit", .editImage),
-        (ID.trash, "trash", "Delete", .moveToTrash),
-        (ID.inspector, "info.circle", "Inspector", .toggleInspector),
+        (ID.trash, "trash", "Move to Trash", .moveToTrash),
+        (ID.inspector, "info.circle", "Info", .toggleInspector),
     ]
 
     /// Items drawn by a `ToolbarToggleButton`, and the command each sends.
@@ -176,6 +178,7 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
     private var built: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     /// Why Edit is off, shown under the Edit item's tooltip.
     private var editExtraLine: String?
+    private var rotateExtraLine: String?
     private var shownFlag: Bool?
     private var shownRating: Int?
     /// The Zoom item's last accessibility value (outer nil = never set).
@@ -261,7 +264,67 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
     /// The second tooltip line of the Edit item (nil: none).
     func setEditExtraLine(_ line: String?) {
         editExtraLine = line
-        if let item = item(ID.edit) { LiveTooltips.shared.setExtraLine(line, on: item) }
+        if let item = item(ID.edit) {
+            LiveTooltips.shared.setExtraLine(line, on: item)
+            item.view?.setAccessibilityHelp(line)
+        }
+    }
+
+    /// The second tooltip line of Rotate Left/Right.
+    func setRotateExtraLine(_ line: String?) {
+        guard rotateExtraLine != line else { return }
+        rotateExtraLine = line
+        if let group = item(ID.rotate) as? NSToolbarItemGroup { applyRotateTips(group) }
+    }
+
+    /// The group's view gets a name and the group role (the items keep their own labels).
+    /// `NSToolbarItemGroup.view` stays nil for a group made from images and labels: AppKit builds
+    /// the segmented control itself, inside the toolbar, when it lays the bar out. So the control
+    /// is found there (by the description of its first segment's image) and named, once per control.
+    private static let groupFirstSegment: [(id: NSToolbarItem.Identifier, firstSegment: String, name: String)] = [
+        (ID.nav, "Previous", "Photo navigation"),
+        (ID.rotate, "Rotate Left", "Rotate photo"),
+    ]
+    private var namedGroupViews: [NSToolbarItem.Identifier: WeakView] = [:]
+
+    private struct WeakView { weak var view: NSView? }
+
+    /// Names the group controls that exist now. Cheap when they are named: one dictionary check.
+    func nameGroupViews() {
+        guard toolbar.isVisible, let window = host as? NSWindow,
+              let root = window.contentView?.superview else { return }
+        let missing = Self.groupFirstSegment.filter { entry in
+            guard let view = namedGroupViews[entry.id]?.view else { return true }
+            return view.window == nil
+        }
+        guard !missing.isEmpty else { return }
+        func walk(_ view: NSView) {
+            if let control = view as? NSSegmentedControl, control.segmentCount == 2,
+               let description = control.image(forSegment: 0)?.accessibilityDescription,
+               let entry = missing.first(where: { $0.firstSegment == description }) {
+                control.setAccessibilityRole(.group)
+                control.setAccessibilityLabel(entry.name)
+                namedGroupViews[entry.id] = WeakView(view: control)
+                return
+            }
+            for sub in view.subviews { walk(sub) }
+        }
+        // The toolbar is a sibling of the content view: never walk the photo views.
+        for sub in root.subviews where sub !== window.contentView { walk(sub) }
+    }
+
+    func toolbarWillAddItem(_ notification: Notification) {
+        guard let group = notification.userInfo?["item"] as? NSToolbarItemGroup,
+              Self.groupFirstSegment.contains(where: { $0.id == group.itemIdentifier }) else { return }
+        // AppKit makes the control after this call: name it on the next turn.
+        Task { @MainActor [weak self] in self?.nameGroupViews() }
+    }
+
+    private func applyRotateTips(_ group: NSToolbarItemGroup) {
+        guard group.subitems.count == 2 else { return }
+        let suffix = rotateExtraLine.map { "\n" + $0 } ?? ""
+        group.subitems[0].toolTip = tip(.rotateLeft) + suffix
+        group.subitems[1].toolTip = tip(.rotateRight) + suffix
     }
 
     /// The item for `id` as the toolbar shows it (tests, validation).
@@ -305,8 +368,7 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
                 target: self, action: #selector(rotateGroup(_:)))
             group.label = "Rotate"
             group.paletteLabel = "Rotate"
-            group.subitems[0].toolTip = tip(.rotateLeft)
-            group.subitems[1].toolTip = tip(.rotateRight)
+            applyRotateTips(group)
             group.menuFormRepresentation = submenuRow(
                 "Rotate", symbol: "rotate.right",
                 rows: [(.rotateLeft, "Rotate Left", "rotate.left"), (.rotateRight, "Rotate Right", "rotate.right")])
@@ -410,11 +472,22 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
                 if id == ID.flag { shownFlag = nil }
                 return item
             }
-            item.image = symbol(name, label)
             item.label = label
             item.paletteLabel = label
             if id == ID.edit {
-                // Live key text, plus a second line when Edit is off (spec 26 §2).
+                // A text button, no icon (as Photos). The »
+                // overflow row keeps the glyph, like every other row.
+                item.title = "Edit"
+                item.menuFormRepresentation = commandRow(command, title: label, symbol: name)
+                // VoiceOver reads "Edit Photo" (it holds the visible word, so
+                // Voice Control "click Edit" works). `NSToolbarItem` has no accessibility
+                // label; its AX description comes from `label`. Customize keeps `Edit`.
+                item.label = "Edit Photo"
+            } else {
+                item.image = symbol(name, label)
+            }
+            if id == ID.edit {
+                // Live key text, plus a second line when Edit is off.
                 LiveTooltips.shared.bind(item, command: command, context: .viewer)
                 LiveTooltips.shared.setExtraLine(editExtraLine, on: item)
             } else {
@@ -467,6 +540,7 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
     /// window's `update()`, once per event-loop pass.
     func validate() {
         guard let host else { return }
+        nameGroupViews()
         for item in toolbar.items {
             switch item.itemIdentifier {
             case ID.nav:
@@ -511,7 +585,7 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
                 applyToggle(item, command: .toggleInspector, host: host)
                 let shown = host.toolbarInspectorShown
                 let key = ShortcutTable.tooltip(for: .toggleInspector, context: .viewer)
-                    .replacingOccurrences(of: "Show Inspector", with: shown ? "Hide Inspector" : "Show Inspector")
+                    .replacingOccurrences(of: "Show Info", with: shown ? "Hide Info" : "Show Info")
                 if item.toolTip != key {
                     item.toolTip = key
                     item.view?.toolTip = key
@@ -549,7 +623,7 @@ final class ViewerWindowToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate, NS
         if command == .toggleHistogram { applyHistogramLook(item, button: button, on: on) }
     }
 
-    /// Spec 24 §3.1: the Histogram button's glyph is accent-coloured while
+    /// The Histogram button's glyph is accent-coloured while
     /// the histogram is on, and its tooltip names the next action.
     private func applyHistogramLook(_ item: NSToolbarItem, button: ToolbarToggleButton, on: Bool) {
         let tint: NSColor? = on ? ShrikeAccent.mark : nil

@@ -44,10 +44,10 @@ final class ToastTwoLineTests: XCTestCase {
             ViewerWindow.edgeCopy(.next, current: longName, target: longName),
             ViewerWindow.edgeCopy(.previous, current: longName, target: nil),
             CompareSources.truncatedToast,
-            "Uncheck Keep Photo to change this photo.",
+            "Uncheck Keep photo to change this photo.",
             "The photo on screen no longer matches this edit. Your edits are still open. No file was changed.",
             "Opened 12 folders. Drop fewer folders to open the rest.",
-            "Can’t open “\(FileNameFit.short(longName))”. Continuing after the interval.",
+            "Can’t open “\(FileNameFit.short(longName))”. Skipping to the next photo.",
         ]
     }
 

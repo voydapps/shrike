@@ -2,7 +2,7 @@
 //  FileNameFit.swift
 //  ShrikeUI
 //
-//  Cuts a long file name so its identity survives (spec 25 §6.1). The
+//  Cuts a long file name so its identity survives. The
 //  tail with the frame number and the extension is kept; the head is cut
 //  and replaced by "…". A pure function: the caller measures with its own
 //  font and width.

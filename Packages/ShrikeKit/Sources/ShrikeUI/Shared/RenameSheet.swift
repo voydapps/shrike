@@ -44,7 +44,7 @@ struct RenameSheetModel {
 
     func state(for stem: String) -> State {
         let result = validate(stem)
-        return State(message: result.message.map { "⚠ \($0)" }, canRename: result.isValid)
+        return State(message: result.message, canRename: result.isValid)
     }
 }
 
@@ -55,7 +55,7 @@ final class RenameSheet: NSObject, NSTextFieldDelegate {
     private let model: RenameSheetModel
     private let panel: NSPanel
     private let field = NSTextField()
-    private let errorLabel = NSTextField(labelWithString: "")
+    private let errorView = ErrorMessageView()
     private let renameButton = NSButton(title: "Rename", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
 
@@ -91,16 +91,14 @@ final class RenameSheet: NSObject, NSTextFieldDelegate {
             label.textColor = .secondaryLabelColor
             rows.append(label)
         }
-        errorLabel.font = ChromeTypography.font(11)
-        errorLabel.textColor = .systemRed
-        errorLabel.isHidden = true
-        rows.append(errorLabel)
+        rows.append(errorView)
 
         cancelButton.keyEquivalent = "\u{1b}"
         cancelButton.target = self
         cancelButton.action = #selector(cancel(_:))
         renameButton.keyEquivalent = "\r"
-        renameButton.useAccentFill()   // one accent
+        renameButton.bezelStyle = .rounded   // The system default button (Return)
+        cancelButton.bezelStyle = .rounded
         renameButton.target = self
         renameButton.action = #selector(rename(_:))
         let buttons = NSStackView(views: [cancelButton, renameButton])
@@ -133,10 +131,12 @@ final class RenameSheet: NSObject, NSTextFieldDelegate {
     }
 
     private func apply(_ state: RenameSheetModel.State) {
-        errorLabel.stringValue = state.message ?? ""
-        errorLabel.isHidden = state.message == nil
+        errorView.set(state.message, for: field)
         renameButton.isEnabled = state.canRename
     }
+
+    var errorViewForTesting: ErrorMessageView { errorView }
+    var fieldForTesting: NSTextField { field }
 
     func controlTextDidChange(_ obj: Notification) {
         apply(model.state(for: field.stringValue))
@@ -169,7 +169,7 @@ final class RenameSheet: NSObject, NSTextFieldDelegate {
 }
 
 enum RenameCopy {
-    /// T4: "Couldn't rename “DSC_0042.jpg”. (reason)"
+    /// "Couldn't rename “DSC_0042.jpg”. (reason)"
     static func failed(_ group: ImageGroup, error: any Error) -> String {
         let base = "Couldn't rename “\(group.displayName)”."
         if let ops = error as? FileOpsError {

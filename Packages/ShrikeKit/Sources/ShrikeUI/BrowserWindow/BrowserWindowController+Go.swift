@@ -50,8 +50,9 @@ extension BrowserWindowController {
 
     /// True when the Browser shows the Workspace root: ⌘↑ stops here.
     var isAtWorkspaceRoot: Bool {
-        guard let folder = currentFolder, let row = treeController.workspace.row() else { return false }
-        return row.url.standardizedFileURL.path == folder.standardizedFileURL.path
+        // Stored path only: this runs in menu validation, so no disk check.
+        guard let folder = currentFolder, let saved = treeController.workspace.saved() else { return false }
+        return saved.url.standardizedFileURL.path == folder.standardizedFileURL.path
     }
 
     // MARK: Go to Folder…
@@ -99,8 +100,8 @@ extension BrowserWindowController {
     }
 
     /// True when the sidebar shows `folder`'s subfolders: the sidebar is
-    /// open. The current folder is always a row of its tree (spec
-    /// 22-sidebar §4.3), so nothing else is needed; the check keeps its
+    /// open. The current folder is always a row of its tree,
+    /// so nothing else is needed; the check keeps its
     /// shape so the empty-folder text stays one rule.
     func sidebarShowsSubfolders(of folder: URL) async -> Bool {
         splitController.splitViewItems.first?.isCollapsed == false

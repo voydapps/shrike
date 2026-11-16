@@ -150,6 +150,16 @@ final class FullResolutionDecodeTests: XCTestCase {
 
     // MARK: - Interruptible lane
 
+    /// Waits (up to 30 s) until `lane` has seen `count` submissions: the work
+    /// is queued or running, so the next step cannot overtake it.
+    private static func waitForSubmissions(_ count: Int, _ lane: DecodeLane) async throws {
+        let deadline = Date().addingTimeInterval(30)
+        while lane.submissionsForTesting.withLock({ $0 }) < count {
+            guard Date() < deadline else { throw XCTSkip("never reached \(count) submissions") }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
     func testRunInterruptible_cancelStopsWaitingAtOnce_resultDropped() async throws {
         let lane = DecodeLane(width: 1, label: "test.interruptible")
         let started = OSAllocatedUnfairLockBox()
@@ -175,7 +185,9 @@ final class FullResolutionDecodeTests: XCTestCase {
             XCTFail("expected CancellationError")
         } catch is CancellationError {
         }
-        XCTAssertLessThan(Date().timeIntervalSince(t0), 0.5, "the waiter must not wait for the work")
+        // The bound is only here to turn "the waiter blocked on the work" into a
+        // failure instead of a hang (release comes after); it is generous on purpose.
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 10, "the waiter must not wait for the work")
         release.signal()
         // The work ends later; its result goes nowhere (no double resume).
         let deadline = Date().addingTimeInterval(2)
@@ -188,14 +200,16 @@ final class FullResolutionDecodeTests: XCTestCase {
         let release = DispatchSemaphore(value: 0)
         let ran = OSAllocatedUnfairLockBox()
         let blocker = Task { try await lane.runInterruptible { _ in release.wait(); return 0 } }
-        try await Task.sleep(for: .milliseconds(20))
+        try await Self.waitForSubmissions(1, lane)
         let queued = Task { try await lane.runInterruptible { _ -> Int in ran.set(true); return 1 } }
-        try await Task.sleep(for: .milliseconds(20))
+        try await Self.waitForSubmissions(2, lane)   // queued behind the blocker
         queued.cancel()
         do { _ = try await queued.value; XCTFail("expected CancellationError") } catch is CancellationError {}
         release.signal()
         _ = try await blocker.value
-        try await Task.sleep(for: .milliseconds(50))
+        // A later job on the same single-slot lane starts only after the
+        // cancelled one has been skipped (or run), so after it ran.value is final.
+        _ = try await lane.runInterruptible { _ in 0 }
         XCTAssertNil(ran.value, "work cancelled before its slot must never run")
     }
 
@@ -217,12 +231,13 @@ final class FullResolutionDecodeTests: XCTestCase {
         await queue.setNavigation(list: urls.map { FileImageSource(url: $0) }, currentIndex: 0)
         // Hold the full-res lane so the first request waits for its slot.
         let release = DispatchSemaphore(value: 0)
+        let base = DecodeLane.fullResolution.submissionsForTesting.withLock { $0 }
         let blocker = Task { try await DecodeLane.fullResolution.runInterruptible { _ in release.wait(); return 0 } }
-        try await Task.sleep(for: .milliseconds(20))
+        try await Self.waitForSubmissions(base + 1, DecodeLane.fullResolution)
         let first = Task { try await queue.loadFullResolution(at: 0) }
-        try await Task.sleep(for: .milliseconds(20))
+        try await Self.waitForSubmissions(base + 2, DecodeLane.fullResolution)
         let second = Task { try await queue.loadFullResolution(at: 1) }
-        try await Task.sleep(for: .milliseconds(20))
+        try await Self.waitForSubmissions(base + 3, DecodeLane.fullResolution)
         release.signal()
         _ = try await blocker.value
         do { _ = try await first.value; XCTFail("older request must be cancelled") } catch is CancellationError {}

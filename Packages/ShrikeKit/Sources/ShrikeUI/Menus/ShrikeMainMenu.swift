@@ -25,17 +25,23 @@ import ShrikeCore
 
 /// Which kind of window is main.
 public enum MenuSurface: Sendable, Equatable, CaseIterable {
-    case browser, viewer, viewerEditMode, other
+    case browser, viewer, viewerEditMode, compare, other
 
     @MainActor
     public static func of(_ window: NSWindow?) -> MenuSurface {
         if let viewer = window as? ViewerWindow {
             return viewer.contentRoot.isEditModeActive ? .viewerEditMode : .viewer
         }
+        if window is CompareWindow { return .compare }
         if window?.windowController is BrowserWindowController { return .browser }
         if window?.delegate is BrowserWindowController { return .browser }
         return .other
     }
+}
+
+extension MenuSurface {
+    /// The viewer-only View ▸ Zoom items Compare also shows.
+    static let compareZoomCommands: Set<ShrikeCommand> = [.zoomIn, .zoomOut, .zoomToFit, .actualSize]
 }
 
 /// Where an item shows.
@@ -165,6 +171,31 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
     /// `.other` keeps the last set.
     public func apply(surface newSurface: MenuSurface) {
         guard newSurface != .other else { return }
+        // Compare keeps the last set but shows (and keys) View ▸ Zoom In /
+        // Zoom Out / Zoom to Fit / Actual Size: its panes zoom.
+        if newSurface == .compare {
+            var zoomKeys: [(String, NSEvent.ModifierFlags)] = []
+            for entry in surfaceItems {
+                guard let command = entry.item.shrikeCommand,
+                      MenuSurface.compareZoomCommands.contains(command) else { continue }
+                entry.item.isHidden = false
+                // ⌘1–⌘4 focus a pane in Compare: Actual Size shows no key there.
+                let key = command == .actualSize ? "" : entry.key
+                entry.item.keyEquivalent = key
+                entry.item.keyEquivalentModifierMask = key.isEmpty ? [] : entry.modifiers
+                if !key.isEmpty { zoomKeys.append((key, entry.modifiers)) }
+            }
+            // The Browser's ⌘+ / ⌘− (thumbnail size) would take the key first.
+            for entry in surfaceItems where !entry.key.isEmpty {
+                guard let command = entry.item.shrikeCommand,
+                      !MenuSurface.compareZoomCommands.contains(command),
+                      zoomKeys.contains(where: { $0.0 == entry.key && $0.1 == entry.modifiers }) else { continue }
+                entry.item.keyEquivalent = ""
+                entry.item.keyEquivalentModifierMask = []
+            }
+            Self.tidySeparators(in: menu, skipping: [windowMenu, helpMenu, servicesMenu])
+            return
+        }
         surface = newSurface
         for entry in surfaceItems {
             let visible = entry.placement.isVisible(on: newSurface)
@@ -319,14 +350,13 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         // The hints are NOT drawn here: that cost ~4 ms of the `mainMenu`
         // launch signpost. Each top-level menu draws its own the first time
         // it opens (`menuNeedsUpdate`), and again after a preset switch
-        // (spec 25 §13.1).
         for item in menu.items {
             guard let sub = item.submenu, sub !== servicesMenu, sub !== windowMenu, sub !== helpMenu,
                   sub.items.contains(where: { $0.shrikeCommand != nil || $0.submenu != nil }) else { continue }
             if sub.delegate == nil { sub.delegate = self }
             hintMenus.append(sub)
         }
-        // The Window menu draws no hints but carries the Welcome icon (spec 27 P3-9).
+        // The Window menu draws no hints but carries the Welcome icon.
         if windowMenu.delegate == nil { windowMenu.delegate = self }
         presetObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
@@ -379,7 +409,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         hintedMenus.insert(ObjectIdentifier(opened))
     }
 
-    // MARK: Menu icons (spec 27 P3-9)
+    // MARK: Menu icons
 
     /// Whether the system draws icons on its own standard items. macOS 26 does (Copy,
     /// Paste, Select All, ...), so our items beside them get one too, or the labels
@@ -635,7 +665,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         add(.toggleToolbar, to: m, action: #selector(NSWindow.toggleToolbarShown(_:)))
         add(.customizeToolbar, to: m, action: #selector(NSWindow.runToolbarCustomizationPalette(_:)))
         add(.toggleInspector, to: m)
-        let reviewControls = NSMenuItem(title: "Show Review Controls", action: #selector(ViewerWindow.toggleReviewControls(_:)), keyEquivalent: "")
+        let reviewControls = NSMenuItem(title: ViewerWindow.ratingBarMenuTitle(visible: Prefs.reviewControlsVisible), action: #selector(ViewerWindow.toggleReviewControls(_:)), keyEquivalent: "")
         register(reviewControls, command: nil, placement: .viewer); m.addItem(reviewControls)
         add(.toggleFilmstrip, to: m, .viewer)
         add(.toggleHistogram, to: m, .viewer)
@@ -658,7 +688,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
     }
 
     private func makeImageMenu() -> NSMenu {
-        let m = NSMenu(title: "Image")
+        let m = NSMenu(title: "Photo")
         add(.rotateLeft, to: m)
         add(.rotateRight, to: m)
         add(.rotate180, to: m)
@@ -672,7 +702,7 @@ public final class ShrikeMainMenu: NSObject, NSMenuDelegate {
         addSubmenu(rating, to: m)
         add(.toggleFlag, to: m)
         m.addItem(.separator())
-        add(.editImage, to: m, .viewer)
+        add(.editImage, to: m)   // Also in the Browser: opens the photo in edit mode
         let tools = NSMenu(title: "Edit Tools")
         for command in [ShrikeCommand.editCrop, .editRotate, .editResize, .editColor] {
             add(command, to: tools, .viewer)

@@ -18,7 +18,7 @@ extension BrowserWindowController {
     /// anchored on `anchor` (the inspector's Tags row) or the selected cell.
     @discardableResult
     func showTagEditor(anchor: NSView? = nil) -> TagEditSession? {
-        guard let session = makeTagSession() else {
+        guard let session = makeTagSession(read: TagEditSession.readOffMain) else {
             NSSound.beep()
             return nil
         }
@@ -27,8 +27,13 @@ extension BrowserWindowController {
             return session
         }
         let controller = TagsPopoverController(session: session)
-        let view = anchor ?? contentController.anchorForSelection()
-        controller.present(relativeTo: view.bounds, of: view, edge: anchor == nil ? .maxY : .minX)
+        if let anchor {
+            controller.present(relativeTo: anchor.bounds, of: anchor, edge: .minX)
+        } else {
+            // The browser toolbar has no Tags item; below the selected cell.
+            let cell = contentController.anchorForSelection()
+            controller.present(below: cell.bounds, of: cell)
+        }
         return session
     }
 
@@ -45,7 +50,7 @@ extension BrowserWindowController {
         return session
     }
 
-    private func makeTagSession() -> TagEditSession? {
+    private func makeTagSession(read: TagEditSession.Reader? = nil) -> TagEditSession? {
         let items = contentController.selectedItems
         guard !items.isEmpty else { return nil }
         return TagEditSession(
@@ -55,7 +60,7 @@ extension BrowserWindowController {
                 self?.pairedViewer?.refreshTags(for: primaries)
             },
             onError: { [weak self] line in self?.toast(line, kind: .error) },
-            suppressing: watcherScope
+            suppressing: watcherScope, read: read
         )
     }
 

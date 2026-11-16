@@ -9,8 +9,8 @@
 //  `ViewerAction` enum owned by ViewerWindow.
 //
 //  Capsule: 44 pt high, no pin (the capsule shows when the pointer rests
-//  in the bottom zone, or while its menu is open; spec 24 §1.2).
-//   * 11 buttons + 5 hairlines in one NSStackView (spec 24 §1.3). Each button has an
+//  in the bottom zone, or while its menu is open).
+//   * 11 buttons + 5 hairlines in one NSStackView. Each button has an
 //     explicit 32×32 frame and its OWN target/action (fixes issue #10 —
 //     previously overlapping hit-test rects caused zoom-minus to be
 //     silently absorbed by its neighbour and rotate-left to double-dispatch).
@@ -120,7 +120,7 @@ final class ViewerToolbar: HUDSurfaceView {
             contentContainer.heightAnchor.constraint(equalToConstant: Self.height),
         ])
 
-        // Authoritative inventory (spec 24 §1.3): 11 buttons in 6 groups.
+        // Authoritative inventory: 11 buttons in 6 groups.
         // The capsule holds what you do to the photo or to get around;
         // flag, rating and histogram live in the inspector / View menu.
         // Move
@@ -158,7 +158,7 @@ final class ViewerToolbar: HUDSurfaceView {
         addSeparator()
         // Panel
         addButton(symbol: "info.circle",
-                  accessibility: "Inspector",
+                  accessibility: "Info",
                   selector: #selector(handleInfo(_:)), action: .toggleInspector)
         addButton(symbol: "arrow.down.right.and.arrow.up.left",
                   accessibility: "Exit full screen",
@@ -297,10 +297,21 @@ final class ViewerToolbar: HUDSurfaceView {
         buttonsByAction[Self.key(for: action)] = btn
     }
 
-    /// Why Edit is off, as a second tooltip line (nil: none).
+    /// Why Edit is off, as a second tooltip line and VoiceOver help (nil: none).
     func setEditExtraLine(_ line: String?) {
-        guard let btn = buttonsByAction[Self.key(for: .openEditMode)] else { return }
+        setReason(line, on: .openEditMode)
+    }
+
+    /// Why Rotate Left/Right are off.
+    func setRotateExtraLine(_ line: String?) {
+        setReason(line, on: .rotateLeft)
+        setReason(line, on: .rotateRight)
+    }
+
+    private func setReason(_ line: String?, on action: ViewerAction) {
+        guard let btn = buttonsByAction[Self.key(for: action)] else { return }
         LiveTooltips.shared.setExtraLine(line, on: btn)
+        btn.setAccessibilityHelp(line)
     }
 
     private func addSeparator() {

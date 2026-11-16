@@ -2,7 +2,7 @@
 //  TrashKeyHint.swift
 //  ShrikeUI
 //
-//  Mac preset: only ⌘⌫ trashes (spec 25 §5.2). A plain ⌫ or ⌦ trashes
+//  Mac preset: only ⌘⌫ trashes. A plain ⌫ or ⌦ trashes
 //  nothing and shows one hint per app run, so a learned habit does not
 //  break silently and a held key does not nag.
 //

@@ -95,6 +95,8 @@ public actor LosslessRotator {
     /// Apply `op` to the displayed image by rewriting the orientation tag.
     @discardableResult
     public func apply(_ op: OrientationOp, to url: URL) async throws -> LosslessRotateResult {
+        let activeWork = ActiveWork.shared.begin(kind: .rotateWrite, detail: url.lastPathComponent)
+        defer { ActiveWork.shared.end(activeWork) }
         try Task.checkCancellation()
         let fm = FileManager.default
         guard fm.fileExists(atPath: url.path) else { throw LosslessRotateError.sourceMissing }
@@ -107,8 +109,9 @@ public actor LosslessRotator {
         let old = ExifOrientation(properties: props)
         let new = old.applying(op)
 
-        let tmp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).shrikerotate.\(UUID().uuidString)")
+        TemporaryFileSweeper.sweep(in: url.deletingLastPathComponent())   // old crash leftovers
+        let tmp = url.deletingLastPathComponent().appendingPathComponent(
+            TemporaryFileSweeper.hiddenTempName(for: url.lastPathComponent, marker: "shrikerotate"))
         defer { try? fm.removeItem(at: tmp) }
 
         guard let dest = CGImageDestinationCreateWithURL(tmp as CFURL, type, 1, nil) else {
@@ -146,11 +149,16 @@ public actor LosslessRotator {
         } catch {
             throw LosslessRotateError.atomicReplaceFailed(underlying: "\(error)")
         }
+        await backupStore.noteWritten(url)   // the chain applies only while the file looks like this
         return LosslessRotateResult(url: url, oldOrientation: old, newOrientation: new, backup: record)
     }
 
-    /// Undo a rotate by restoring the pre-rotate backup (byte-exact).
-    public func undo(_ result: LosslessRotateResult) async throws {
-        try await backupStore.restore(result.backup)
+    /// Undo a rotate by restoring the pre-rotate backup (byte-exact). Returns how many photos' backup
+    /// information could not be saved (0 or 1, `BackupStore.restoreReporting`).
+    @discardableResult
+    public func undo(_ result: LosslessRotateResult) async throws -> Int {
+        let activeWork = ActiveWork.shared.begin(kind: .rotateWrite, detail: result.url.lastPathComponent)
+        defer { ActiveWork.shared.end(activeWork) }
+        return try await backupStore.restoreReporting(result.backup).notSaved
     }
 }

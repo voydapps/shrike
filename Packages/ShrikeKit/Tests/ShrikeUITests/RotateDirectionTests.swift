@@ -270,11 +270,11 @@ final class RotateDirectionTests: XCTestCase {
         try check("bare keys", ("L", keys("l", 37, [])), ("R", keys("r", 15, [])))
         Prefs.shortcutPreset = savedPreset
 
-        // Rotate 180° (⇧⌘R, Image menu): upside down; twice = upright.
+        // Rotate 180° (⇧⌘R, Photo menu): upside down; twice = upright.
         try keys("R", 15, [.command, .shift])()
         XCTAssertEqual(shown(viewer), Self.turned180, "⇧⌘R")
         viewer.perform(.rotate180)
-        XCTAssertEqual(shown(viewer), Self.upright, "Image ▸ Rotate 180°")
+        XCTAssertEqual(shown(viewer), Self.upright, "Photo ▸ Rotate 180°")
         viewer.flushPendingOrientation()
     }
 

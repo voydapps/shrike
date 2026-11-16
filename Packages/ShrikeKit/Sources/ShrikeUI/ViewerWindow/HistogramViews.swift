@@ -116,6 +116,30 @@ enum HistogramPlot {
         return String(format: "%.1f %%", percent)
     }
 
+    enum ClipCorner { case black, white }
+
+    /// Below this HUD width a corner shows only the number.
+    static let wordsMinimumWidth: CGFloat = 160
+
+    /// "Black 7.9 %" / "White 19 %"; only the number below 160 pt; nil at or under the threshold.
+    static func cornerText(_ corner: ClipCorner, percent: Double, hudWidth: CGFloat) -> String? {
+        guard let number = clipLabel(percent: percent) else { return nil }
+        guard hudWidth >= wordsMinimumWidth else { return number }
+        return (corner == .black ? "Black " : "White ") + number
+    }
+
+    /// "7.9 % of the pixels are pure black."
+    static func cornerTooltip(_ corner: ClipCorner, percent: Double) -> String? {
+        guard let number = clipLabel(percent: percent) else { return nil }
+        return "\(number) of the pixels are pure \(corner == .black ? "black" : "white")."
+    }
+
+    /// "Pure black pixels: 7.9 percent"
+    static func cornerAccessibilityLabel(_ corner: ClipCorner, percent: Double) -> String? {
+        guard let number = clipLabel(percent: percent) else { return nil }
+        return "Pure \(corner == .black ? "black" : "white") pixels: " + number.replacingOccurrences(of: " %", with: " percent")
+    }
+
     static func showsShadowClip(_ data: HistogramData) -> Bool {
         data.anyChannelShadowsClippedPercent > clipThresholdPercent
     }
@@ -152,12 +176,74 @@ final class HistogramPlotView: NSView {
         }
     }
 
+    /// The corner texts read "Black 7.9 %" / "White 19 %".
+    /// The Levels panel keeps the bare number: it draws its own histogram and has little room.
+    var showsCornerWords = true
+
+    /// The lit corner `corner` of `state`: its share in percent; nil when the corner is not lit.
+    static func clipPercent(_ corner: HistogramPlot.ClipCorner, in state: HistogramDisplayState) -> Double? {
+        guard let data = state.data else { return nil }
+        switch corner {
+        case .black:
+            return HistogramPlot.showsShadowClip(data) ? data.anyChannelShadowsClippedPercent : nil
+        case .white:
+            return HistogramPlot.showsHighlightClip(data) ? data.anyChannelHighlightsClippedPercent : nil
+        }
+    }
+
+    /// The black (left) and white (right) halves.
+    static func cornerTooltipRects(in bounds: NSRect) -> [NSRect] {
+        let half = floor(bounds.width / 2)
+        return [NSRect(x: bounds.minX, y: bounds.minY, width: half, height: bounds.height),
+                NSRect(x: bounds.minX + half, y: bounds.minY, width: bounds.width - half, height: bounds.height)]
+    }
+
+    /// The tooltip for a point on the plot: the sentence of the corner on that side, if it is lit.
+    static func cornerTooltip(at point: NSPoint, in bounds: NSRect, state: HistogramDisplayState) -> String? {
+        let corner: HistogramPlot.ClipCorner = point.x < bounds.midX ? .black : .white
+        return clipPercent(corner, in: state).flatMap { HistogramPlot.cornerTooltip(corner, percent: $0) }
+    }
+
+    /// The tooltip belongs to each corner, not to the whole plot (one rect, the text follows the pointer).
+    @objc func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint,
+                    userData data: UnsafeMutableRawPointer?) -> String {
+        Self.cornerTooltip(at: point, in: bounds, state: state) ?? ""
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        removeAllToolTips()
+        // One tooltip rect per corner, so moving from one half to the other
+        // shows the other corner's text (one rect kept the first text until the pointer left).
+        for rect in Self.cornerTooltipRects(in: NSRect(origin: .zero, size: newSize)) {
+            addToolTip(rect, owner: self, userData: nil)
+        }
+    }
+
+    /// VoiceOver reads each lit corner by itself: "Pure black pixels: 7.9 percent".
+    override func accessibilityChildren() -> [Any]? {
+        var out: [NSAccessibilityElement] = []
+        let half = NSSize(width: bounds.width / 2, height: bounds.height)
+        for corner in [HistogramPlot.ClipCorner.black, .white] {
+            guard let percent = Self.clipPercent(corner, in: state),
+                  let label = HistogramPlot.cornerAccessibilityLabel(corner, percent: percent) else { continue }
+            let element = NSAccessibilityElement()
+            element.setAccessibilityRole(.staticText)
+            element.setAccessibilityLabel(label)
+            element.setAccessibilityParent(self)
+            element.setAccessibilityFrameInParentSpace(
+                NSRect(origin: NSPoint(x: corner == .black ? 0 : half.width, y: 0), size: half))
+            out.append(element)
+        }
+        return out
+    }
+
     /// Inset of the plot inside this view (the overlay passes 0; its
     /// container already insets).
     var plotInset: CGFloat = 0
 
     /// The highlight mark (top right) moves this far left (the overlay's
-    /// close button sits in that corner; spec 24 §3.3).
+    /// close button sits in that corner).
     var highlightMarkTrailingInset: CGFloat = 0
 
     /// Draw one channel alone, in its colour (the Levels panel's Red /
@@ -280,12 +366,12 @@ final class HistogramPlotView: NSView {
             .foregroundColor: NSColor.white.withAlphaComponent(0.9),
         ]
         if HistogramPlot.showsShadowClip(data),
-           let text = HistogramPlot.clipLabel(percent: data.anyChannelShadowsClippedPercent) {
+           let text = HistogramPlot.cornerText(.black, percent: data.anyChannelShadowsClippedPercent, hudWidth: showsCornerWords ? bounds.width : 0) {
             NSAttributedString(string: text, attributes: attributes)
                 .draw(at: NSPoint(x: plot.minX + 9, y: plot.maxY - 11))
         }
         if HistogramPlot.showsHighlightClip(data),
-           let text = HistogramPlot.clipLabel(percent: data.anyChannelHighlightsClippedPercent) {
+           let text = HistogramPlot.cornerText(.white, percent: data.anyChannelHighlightsClippedPercent, hudWidth: showsCornerWords ? bounds.width : 0) {
             let label = NSAttributedString(string: text, attributes: attributes)
             label.draw(at: NSPoint(x: right - 9 - label.size().width, y: plot.maxY - 11))
         }

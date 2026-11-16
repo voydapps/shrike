@@ -82,7 +82,7 @@ final class BatchRenameChainTests: XCTestCase {
         XCTAssertEqual(width(folder.appendingPathComponent("IMG_3.jpg")), 110)
         XCTAssertEqual(width(folder.appendingPathComponent("IMG_4.jpg")), 120)
 
-        try await runner.undo(result)
+        _ = try await runner.undo(result)
         XCTAssertEqual(names(in: folder), ["IMG_1.jpg", "IMG_2.jpg", "IMG_3.jpg"])
         XCTAssertEqual(width(folder.appendingPathComponent("IMG_1.jpg")), 100)
         XCTAssertEqual(width(folder.appendingPathComponent("IMG_2.jpg")), 110)
@@ -100,7 +100,7 @@ final class BatchRenameChainTests: XCTestCase {
         XCTAssertEqual(names(in: folder), ["1.jpg", "2.jpg"])
         XCTAssertEqual(width(folder.appendingPathComponent("1.jpg")), 110)
         XCTAssertEqual(width(folder.appendingPathComponent("2.jpg")), 100)
-        try await runner.undo(result)
+        _ = try await runner.undo(result)
         XCTAssertEqual(width(folder.appendingPathComponent("1.jpg")), 100)
         XCTAssertEqual(width(folder.appendingPathComponent("2.jpg")), 110)
         XCTAssertEqual(names(in: folder), ["1.jpg", "2.jpg"])
@@ -120,9 +120,10 @@ final class BatchRenameChainTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: other), otherBytes)
     }
 
-    /// Stop between the two phases: no photo is lost. One that could not get
-    /// its old name back (an earlier item already took it) is reported by name.
-    func testStopBetweenPhasesLosesNothingAndReportsTempNames() async throws {
+    /// Stop between the two phases: no photo is lost and none stays under a temporary name (B-1).
+    /// IMG_1 took IMG_2's name before the Stop, so IMG_2 moves on to IMG_3 and IMG_3 to IMG_4: the
+    /// open shift is closed, and Undo walks every step back.
+    func testStopBetweenPhasesLosesNothingAndLeavesNoTempName() async throws {
         let srcs = try numbered(["IMG_1.jpg", "IMG_2.jpg", "IMG_3.jpg"])
         let folder = srcs[0].deletingLastPathComponent()
         let stop = BatchStop()
@@ -131,17 +132,14 @@ final class BatchRenameChainTests: XCTestCase {
         let plan = BatchPlan(items: groups(srcs), rename: try RenameTemplate(parsing: "IMG_{counter}", counterStart: 2),
                              output: .inPlace)
         let result = try await drain(gated.run(plan, stop: stop))
-        let left = names(in: folder)
-        XCTAssertEqual(left.count, 3, "no photo lost: \(left)")
-        for temp in left where temp.contains("shrike-tmp") {
-            let reported = result.items.contains { item in
-                if case .failed(let error) = item.outcome { return error.localizedDescription.contains(temp) }
-                return false
-            }
-            XCTAssertTrue(reported, "\(temp) must be named in a failed item")
-        }
+        XCTAssertTrue(stop.isStopped)
+        XCTAssertEqual(names(in: folder), ["IMG_2.jpg", "IMG_3.jpg", "IMG_4.jpg"])
+        XCTAssertEqual(width(folder.appendingPathComponent("IMG_2.jpg")), 100)
+        XCTAssertEqual(width(folder.appendingPathComponent("IMG_3.jpg")), 110)
+        XCTAssertEqual(width(folder.appendingPathComponent("IMG_4.jpg")), 120)
+        XCTAssertEqual(result.doneCount, 3, "\(result.items.map(\.outcome))")
         // Undo walks the recorded steps back.
-        try await runner.undo(result)
+        _ = try await runner.undo(result)
         XCTAssertEqual(names(in: folder), ["IMG_1.jpg", "IMG_2.jpg", "IMG_3.jpg"])
     }
 }

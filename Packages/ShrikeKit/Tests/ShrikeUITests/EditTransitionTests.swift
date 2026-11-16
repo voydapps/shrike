@@ -451,7 +451,8 @@ final class EditTransitionTests: XCTestCase {
         }
     }
 
-    private func editingViewer(highPrecision: Bool = false, failingBackup: Bool = false) async throws -> (ViewerWindow, [URL]) {
+    private func editingViewer(highPrecision: Bool = false, failingBackup: Bool = false,
+                               coordinator: WindowCoordinator? = nil) async throws -> (ViewerWindow, [URL]) {
         let root = TestScratch.directory.appendingPathComponent("shrike-transitions-\(UUID())")
         ownedRoots.append(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -476,7 +477,9 @@ final class EditTransitionTests: XCTestCase {
             ? BackupStore(root: root.appendingPathComponent("Backups"), retentionDays: { 30 }, maxBytes: { 1 << 30 },
                           now: { Date() }, copier: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
             : BackupStore(root: root.appendingPathComponent("Backups"))
-        let viewer = ViewerWindow(groups: urls.map { ImageGroup(primary: $0) }, startIndex: 0, services: services)
+        let groups = urls.map { ImageGroup(primary: $0) }
+        let viewer = coordinator?.openViewer(groups: groups, startIndex: 0, services: services)
+            ?? ViewerWindow(groups: groups, startIndex: 0, services: services)
         viewer.alphaValue = 0; viewer.ignoresMouseEvents = true
         viewer.makeKeyAndOrderFront(nil); viewer.setContentSize(NSSize(width: 1000, height: 700))
         do {
@@ -1019,11 +1022,26 @@ final class EditTransitionTests: XCTestCase {
         var entered = false
         private var released = false
         private var continuation: CheckedContinuation<Void, Never>?
+        private var enteredWaiters: [Int: CheckedContinuation<Bool, Never>] = [:]
+        private var nextWaiter = 0
         func hold() async {
             entered = true
+            let waiters = enteredWaiters.values; enteredWaiters = [:]
+            for waiter in waiters { waiter.resume(returning: true) }
             if !released { await withCheckedContinuation { continuation = $0 } }
         }
         func open() { released = true; continuation?.resume(); continuation = nil }
+        /// True when `hold` is reached (the event), false when `timeout` passes first.
+        func waitUntilEntered(timeout: Duration) async -> Bool {
+            if entered { return true }
+            nextWaiter += 1
+            let id = nextWaiter
+            return await withCheckedContinuation { continuation in
+                enteredWaiters[id] = continuation
+                Task { try? await Task.sleep(for: timeout); self.timeOut(id) }
+            }
+        }
+        private func timeOut(_ id: Int) { enteredWaiters.removeValue(forKey: id)?.resume(returning: false) }
     }
 
     func testCompletedOldExportWritesItsOriginalButCannotFinalizeOrNavigateNewPhoto() async throws {
@@ -1040,10 +1058,7 @@ final class EditTransitionTests: XCTestCase {
             viewer.dispatch(.nextImage)
             let oldDeparture = viewer.editExitTask
             do {
-                let deadline = Date().addingTimeInterval(3)
-                while !(await gate.entered), Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
-                let entered = await gate.entered
-                XCTAssertTrue(entered, "The actual exporter reached its pre-commit checkpoint")
+                try await waitForGate(gate)
                 c.finalizeExit()
                 await viewer.navigate(to: 2)
                 try await until { viewer.canPerform(.editImage) && viewer.displayedItem?.group.primary == urls[2] }
@@ -1051,15 +1066,25 @@ final class EditTransitionTests: XCTestCase {
                 c.appendSnapped90(quarters: 1); await c.settleForTesting()
                 let newSession = try XCTUnwrap(c.recipe), history = await newSession.checkpoint()
                 let undoName = viewer.undoManagerForTesting.undoActionName
-                let toast = viewer.contentRootForTesting.toastHost.content?.message
                 await gate.open(); await oldDeparture?.value
                 try await until { viewer.navCoalescer.isIdle }
                 XCTAssertTrue(c.recipe === newSession, "An old completed export cannot finalize the new edit")
                 XCTAssertTrue(c.isActive)
                 XCTAssertEqual(viewer.displayedItem?.group.primary, urls[2], "The old departure cannot navigate the new photo")
                 let unchanged = await newSession.checkpoint(); XCTAssertEqual(unchanged, history)
+                // No undo for the old export: it would hold the old photo's path.
                 XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName)
-                XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message, toast)
+                if copy {
+                    // The written copy gets a plain toast too: no "Show", which would
+                    // navigate away from the new photo's edit.
+                    XCTAssertEqual(viewer.contentRootForTesting.toastHost.content,
+                                   ToastContent(SaveCopy.savedCopy(destination.lastPathComponent)))
+                } else {
+                    // The written original gets a plain toast (no Undo button), without
+                    // touching the new photo's edit.
+                    XCTAssertEqual(viewer.contentRootForTesting.toastHost.content,
+                                   ToastContent(SaveCopy.saved(urls[0].lastPathComponent)))
+                }
                 XCTAssertEqual(try Data(contentsOf: urls[2]), before[2])
                 XCTAssertEqual(try Data(contentsOf: urls[1]), before[1])
                 let written = copy ? destination : urls[0]
@@ -1067,12 +1092,627 @@ final class EditTransitionTests: XCTestCase {
                 let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
                 XCTAssertEqual(image.width, 200); XCTAssertEqual(image.height, 150)
                 if copy { XCTAssertEqual(try Data(contentsOf: urls[0]), before[0]) }
-                else { XCTAssertNotEqual(try Data(contentsOf: urls[0]), before[0]) }
+                else {
+                    XCTAssertNotEqual(try Data(contentsOf: urls[0]), before[0])
+                    try await assertOriginalInBackup(urls[0], before[0])
+                }
             } catch {
                 await gate.open(); await oldDeparture?.value
                 throw error
             }
         }
+    }
+
+    private func waitForGate(_ gate: ExportGate) async throws {
+        let entered = await gate.waitUntilEntered(timeout: .seconds(3))
+        XCTAssertTrue(entered, "the exporter reached its checkpoint")
+    }
+
+    /// ⌘S held before the write; a navigation (list rebuild) starts. Returns the
+    /// save task, the navigation gate and the original bytes.
+    private func saveDuringNavigation(_ viewer: ViewerWindow, _ urls: [URL], rotate: Bool = false)
+        async throws -> (Task<Bool, Never>, ExportGate, Data) {
+        let c = viewer.contentRootForTesting.editModeController
+        if rotate { c.appendSnapped90(quarters: 1); await c.settleForTesting() }
+        else { c.selectTool(.resize); try width("200", c) }
+        let original = try Data(contentsOf: urls[0])
+        let exportGate = ExportGate(), navigationGate = ExportGate()
+        viewer.exportCheckpointForTesting = { point in if point == .beforeCommit { await exportGate.hold() } }
+        let save = Task { await viewer.saveEditedFile(asPanel: false) }
+        try await waitForGate(exportGate)
+        viewer.navCoalescer.run { await navigationGate.hold() }
+        XCTAssertFalse(viewer.navCoalescer.isIdle)
+        await exportGate.open()
+        try await until { (try? Data(contentsOf: urls[0])) != original }
+        return (save, navigationGate, original)
+    }
+
+    /// A: the list is rebuilt during the export of the same photo. The save waits
+    /// for the rebuild, then finishes as a normal save: edit mode ends, the toast
+    /// has Undo, and Undo puts the original bytes back.
+    func testInPlaceSaveFinishesNormallyAfterTheListIsRebuiltDuringTheExport() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls)
+        viewer.reloadList(showing: 0)   // the real rebuild replaces the held navigation
+        await navigationGate.open()
+        let saved = await save.value
+        XCTAssertTrue(saved, "the save owns the window again once the list is ready")
+        XCTAssertFalse(c.isActive, "edit mode is left as after a normal save")
+        XCTAssertEqual(viewer.displayedItem?.group.primary, urls[0])
+        let name = urls[0].lastPathComponent
+        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content,
+                       ToastContent(SaveCopy.saved(name), actionTitle: "Undo"))
+        XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, "Save")
+        viewer.performUndo(); await viewer.waitForFileVersionSwap()
+        XCTAssertEqual(try Data(contentsOf: urls[0]), original, "Undo restores the original bytes")
+    }
+
+    /// A, the list does not settle within the wait: plain toast and NO Save undo
+    /// (it would hold the path from save time); the original is in the backup.
+    func testInPlaceSaveOutlastingTheWaitShowsThePlainToastWithoutUndo() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        viewer.saveOwnershipWait = .milliseconds(50)
+        let undoName = viewer.undoManagerForTesting.undoActionName
+        let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls)
+        try await until { viewer.contentRootForTesting.toastHost.content == ToastContent(SaveCopy.saved(urls[0].lastPathComponent)) }
+        XCTAssertTrue(c.isActive)
+        XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName, "no Save entry on the undo stack")
+        await navigationGate.open()
+        _ = await save.value
+        XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName, "no Save entry on the undo stack")
+        let edited = try Data(contentsOf: urls[0])
+        XCTAssertNotEqual(edited, original)
+        if viewer.undoManagerForTesting.canUndo { viewer.performUndo(); await viewer.waitForFileVersionSwap() }
+        XCTAssertEqual(try Data(contentsOf: urls[0]), edited, "Undo does not touch the saved file")
+        try await assertOriginalInBackup(urls[0], original)
+    }
+
+    /// The wait runs out on the SAME photo (the list is still being rebuilt): the
+    /// edit is never applied twice. Rotation shows it (two quarter turns = 400 × 300).
+    func testInPlaceSaveThatOutlastsTheWaitOnTheSamePhotoIsNeverAppliedTwice() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        viewer.saveOwnershipWait = .milliseconds(50)
+        let undoName = viewer.undoManagerForTesting.undoActionName
+        let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls, rotate: true)
+        let name = urls[0].lastPathComponent
+        try await until { viewer.contentRootForTesting.toastHost.content == ToastContent(SaveCopy.saved(name)) }
+        await navigationGate.open()
+        let saved = await save.value
+        try await until { viewer.navCoalescer.isIdle }
+        // The path taken: the close-out (the list settled within the limit), so the
+        // session is closed and a further ⌘S has nothing to write.
+        XCTAssertTrue(saved, "the save closes out once the list is ready")
+        XCTAssertFalse(c.isActive)
+        var alerts: [String] = []
+        viewer.alertResponderForTesting = { message in alerts.append(message); return 1 }   // "Save Anyway"
+        let again = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertFalse(again, "nothing open to save")
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(urls[0] as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual([image.width, image.height], [300, 400], "one quarter turn, never two")
+        XCTAssertEqual(alerts, [], "no changed-on-disk question for Shrike's own write")
+        XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName, "no Save undo: ownership was not proved in time")
+        try await assertOriginalInBackup(urls[0], original)
+    }
+
+    /// The wait answers "idle" while a SECOND navigation has already started (in the
+    /// same turn as the idle event): the save is not given up, it closes out normally
+    /// once that navigation ends too.
+    func testInPlaceSaveClosesOutWhenASecondNavigationStartsOnTheIdleEvent() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        let undoName = viewer.undoManagerForTesting.undoActionName
+        let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls, rotate: true)
+        let secondGate = ExportGate()
+        let previousOnIdle = viewer.navCoalescer.onIdle
+        var started = false
+        viewer.navCoalescer.onIdle = { [weak viewer] in
+            previousOnIdle?()
+            guard !started, let viewer else { return }
+            started = true
+            viewer.navCoalescer.run { await secondGate.hold() }
+        }
+        await navigationGate.open()
+        try await until { started }
+        let name = urls[0].lastPathComponent
+        try await until { viewer.contentRootForTesting.toastHost.content == ToastContent(SaveCopy.saved(name)) }
+        XCTAssertTrue(c.isActive, "still waiting, locked, for the second navigation")
+        XCTAssertTrue(c.isSaving)
+        await secondGate.open()
+        let saved = await save.value
+        XCTAssertTrue(saved, "the save closes out once the second navigation ends")
+        XCTAssertFalse(c.isActive)
+        XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName, "no Save undo: ownership was not proved in time")
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(urls[0] as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual([image.width, image.height], [300, 400], "one quarter turn")
+        try await assertOriginalInBackup(urls[0], original)
+    }
+
+    /// Same as above through a departure (Next with Save): after "Saved" the user is
+    /// not asked again, and the move to the next photo goes on.
+    func testDepartureSaveThatOutlastsTheWaitIsNotAskedAgainAndMovesOn() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        viewer.saveOwnershipWait = .milliseconds(50)
+        c.appendSnapped90(quarters: 1); await c.settleForTesting()
+        let exportGate = ExportGate(), navigationGate = ExportGate()
+        viewer.exportCheckpointForTesting = { point in if point == .beforeCommit { await exportGate.hold() } }
+        var asked = 0
+        EditExitModal.responderForTesting = { _ in asked += 1; return .save }
+        viewer.dispatch(.nextImage)
+        try await waitForGate(exportGate)
+        viewer.navCoalescer.run { await navigationGate.hold() }
+        await exportGate.open()
+        try await until { viewer.contentRootForTesting.toastHost.content == ToastContent(SaveCopy.saved(urls[0].lastPathComponent)) }
+        await navigationGate.open()
+        await viewer.waitForEditExit()
+        try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[1] }
+        XCTAssertEqual(asked, 1, "asked once")
+        XCTAssertNotEqual(c.sourceURL, urls[0], "the first photo's session is closed (edit mode may follow to the next photo)")
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(urls[0] as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual([image.width, image.height], [300, 400])
+        _ = viewer.cancelEditLoad()
+    }
+
+    /// The rebuilt list shows another photo while the session is still open: the file
+    /// holds the edit, so the session is ended (as Don't Save ends it). The shown photo
+    /// and its file are untouched, and leaving asks nothing about the old edit.
+    func testSaveLostToAnotherPhotoEndsTheSessionWithoutAQuestion() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        viewer.saveOwnershipWait = .milliseconds(50)
+        let undoName = viewer.undoManagerForTesting.undoActionName
+        let other = try Data(contentsOf: urls[1])
+        let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls, rotate: true)
+        viewer.reloadList(showing: 1)
+        await navigationGate.open()
+        let saved = await save.value
+        XCTAssertFalse(saved)
+        XCTAssertFalse(c.isActive, "the session over the written file is ended")
+        try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[1] }
+        try await until { viewer.canBeginEditingDisplayedPhoto }   // the view shows the photo now listed
+        XCTAssertEqual(try Data(contentsOf: urls[1]), other, "the shown photo's file is untouched")
+        XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName, "no Save entry on the undo stack")
+        var asked = 0
+        EditExitModal.responderForTesting = { _ in asked += 1; return .cancel }
+        viewer.dispatch(.nextImage)
+        try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[2] }
+        XCTAssertEqual(asked, 0, "no question about the old edit")
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(urls[0] as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual([image.width, image.height], [300, 400], "one quarter turn, never two")
+        try await assertOriginalInBackup(urls[0], original)
+    }
+
+    /// The close-out limit runs out on the SAME photo: the session is ended (the file
+    /// already holds the edit), so nothing is left that could save it twice, and leaving
+    /// asks nothing. A new edit session on that photo then saves normally.
+    func testCloseOutLimitOnTheSamePhotoEndsTheSessionAndANewEditSavesNormally() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        viewer.saveOwnershipWait = .milliseconds(50)
+        viewer.saveCloseOutLimit = .milliseconds(200)
+        let undoName = viewer.undoManagerForTesting.undoActionName
+        let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls, rotate: true)
+        let saved = await save.value   // the limit runs out while the navigation is held
+        XCTAssertFalse(saved)
+        XCTAssertFalse(c.isActive, "the session is ended, not left in a refused state")
+        // The saved photo is the one shown: its pencil mark is read again all the same.
+        try await until { viewer.fileBadges[urls[0]]?.edited == true }
+        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content, ToastContent(SaveCopy.saved(urls[0].lastPathComponent)))
+        XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName, "no Save entry on the undo stack")
+        await navigationGate.open()
+        try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[0] }
+        try await until { viewer.canBeginEditingDisplayedPhoto && (viewer.contentRootForTesting.imageView.image.map { $0.width < $0.height } ?? false) }
+        func fileSize() throws -> [Int] {
+            let source = try XCTUnwrap(CGImageSourceCreateWithURL(urls[0] as CFURL, nil))
+            let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            return [image.width, image.height]
+        }
+        XCTAssertEqual(try fileSize(), [300, 400], "one quarter turn, never two")
+        try await assertOriginalInBackup(urls[0], original)
+        var asked = 0
+        EditExitModal.responderForTesting = { _ in asked += 1; return .cancel }
+        let again = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertFalse(again, "⌘S with no open edit does nothing")
+        viewer.dispatch(.nextImage)
+        try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[1] }
+        XCTAssertEqual(asked, 0, "no Save question on departure")
+        viewer.dispatch(.prevImage)
+        try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[0] && viewer.canPerform(.editImage) }
+        viewer.enterEditMode(landOn: .crop); await viewer.waitForEditLoad()
+        XCTAssertTrue(c.isActive)
+        viewer.exportCheckpointForTesting = nil
+        c.appendSnapped90(quarters: 1); await c.settleForTesting()
+        let next = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(next, "a new session saves normally")
+        XCTAssertFalse(c.isActive)
+        XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, "Save")
+        XCTAssertEqual(try fileSize(), [400, 300], "the new turn is applied once to the saved file")
+    }
+
+    /// A resize ended through the close-out limit on the same photo: the title, the
+    /// Info panel and "100 %" use the new pixel size, not the one read before the edit.
+    func testCloseOutLimitAfterAResizeShowsTheNewPixelSize() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        viewer.saveOwnershipWait = .milliseconds(50)
+        viewer.saveCloseOutLimit = .milliseconds(200)
+        XCTAssertEqual(viewer.headerPixelSizes[urls[0]], CGSize(width: 400, height: 300), "the old size is known before the edit")
+        let (save, navigationGate, _) = try await saveDuringNavigation(viewer, urls)   // resize to width 200
+        let saved = await save.value
+        // Before the redraw that ending the session starts has run.
+        XCTAssertNotEqual(viewer.headerPixelSizes[urls[0]], CGSize(width: 400, height: 300), "the old size is dropped at once")
+        XCTAssertFalse(saved)
+        XCTAssertFalse(c.isActive, "ended through the close-out limit")
+        let new = CGSize(width: 200, height: 150)
+        try await until { viewer.contentRootForTesting.imageView.sourcePixelSize == new }
+        XCTAssertEqual(viewer.subtitle, WindowTitles.viewerSubtitle(index: 0, total: viewer.list.count, pixelSize: new))
+        await navigationGate.open()
+        try await until { viewer.navCoalescer.isIdle }
+        XCTAssertEqual(viewer.contentRootForTesting.imageView.sourcePixelSize, new)
+        XCTAssertNotEqual(viewer.headerPixelSizes[urls[0]], CGSize(width: 400, height: 300))
+    }
+
+    /// Fallback: the recipe changed after the write (every edit command is refused
+    /// while saving, so only a direct recipe write can do it). Those edits really are
+    /// unsaved: the session stays open, but its Save is refused, because exporting
+    /// from the written file would apply the earlier turn twice.
+    func testRecipeChangedAfterAnUnownedWriteKeepsTheSessionAndRefusesItsSave() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        viewer.saveOwnershipWait = .milliseconds(50)
+        viewer.saveCloseOutLimit = .milliseconds(200)
+        let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls, rotate: true)
+        let session = try XCTUnwrap(c.recipe)
+        await session.append(.rotate90(quarters: 1))
+        let saved = await save.value
+        XCTAssertFalse(saved)
+        XCTAssertTrue(c.isActive, "the changed session stays open")
+        await navigationGate.open()
+        try await until { viewer.navCoalescer.isIdle }
+        var alerts: [String] = []
+        viewer.alertResponderForTesting = { message in alerts.append(message); return 1 }   // "Save Anyway"
+        let again = await viewer.saveEditedFile(asPanel: false)
+        let asCopy = await viewer.saveEditedFile(asPanel: true)
+        XCTAssertFalse(again); XCTAssertFalse(asCopy)
+        XCTAssertEqual(alerts, [], "refused before the changed-on-disk question")
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(urls[0] as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual([image.width, image.height], [300, 400], "one quarter turn, never two")
+        try await assertOriginalInBackup(urls[0], original)
+        c.finalizeExit()   // Don't Save still leaves
+        XCTAssertFalse(c.isActive)
+    }
+
+    /// Another program writes the file after Shrike's write, while the save waits for
+    /// the list (it settles in time, or the limit runs out): the file is no longer what
+    /// the save wrote, so the session is not ended. It stays open, its Save is refused
+    /// (nothing more is written, the other program's version is untouched) and Don't
+    /// Save leaves.
+    func testOutsideWriteDuringTheCloseOutWaitKeepsTheSessionAndRefusesItsSave() async throws {
+        for settles in [true, false] {
+            let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+            let c = viewer.contentRootForTesting.editModeController
+            viewer.saveOwnershipWait = .milliseconds(50)
+            viewer.saveCloseOutLimit = settles ? .seconds(20) : .seconds(1)
+            let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls, rotate: true)
+            let name = urls[0].lastPathComponent
+            try await until { viewer.contentRootForTesting.toastHost.content == ToastContent(SaveCopy.saved(name)) }
+            let written = FileStamp(of: urls[0])
+            let outside = try Data(contentsOf: urls[2])
+            try outside.write(to: urls[0])
+            XCTAssertNotEqual(FileStamp(of: urls[0]), written, "the outside write changed the file")
+            if settles { await navigationGate.open() }
+            let saved = await save.value
+            XCTAssertFalse(saved)
+            XCTAssertTrue(c.isActive, "the session is not ended over a file it did not write")
+            if !settles { await navigationGate.open() }
+            try await until { viewer.navCoalescer.isIdle }
+            try await assertRefusedAndLeaves(viewer, urls[0], outside, original)
+        }
+    }
+
+    /// Same with another photo shown by the rebuilt list: the session is kept. Its
+    /// later saves are refused because the photo on screen is not the edited one
+    /// (`acceptsEditSave`), before the written-file guard is reached; that guard is
+    /// covered by the close-out test above and by
+    /// `testWrittenFileGuardSaysChangedOnDiskOnlyWhenItIsKnown`.
+    func testOutsideWriteWhileAnotherPhotoIsShownKeepsTheSessionAndRefusesSavesForTheMismatch() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        viewer.saveOwnershipWait = .milliseconds(50)
+        let other = try Data(contentsOf: urls[1])
+        let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls, rotate: true)
+        try await until { viewer.contentRootForTesting.toastHost.content == ToastContent(SaveCopy.saved(urls[0].lastPathComponent)) }
+        let written = FileStamp(of: urls[0])
+        let outside = try Data(contentsOf: urls[2])
+        try outside.write(to: urls[0])
+        viewer.reloadList(showing: 1)
+        XCTAssertNotEqual(FileStamp(of: urls[0]), written, "the outside write changed the file")
+        await navigationGate.open()
+        let saved = await save.value
+        XCTAssertFalse(saved)
+        XCTAssertTrue(c.isActive, "the session is not ended over a file it did not write")
+        try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[1] }
+        XCTAssertEqual(try Data(contentsOf: urls[1]), other, "the shown photo's file is untouched")
+        try await assertRefusedAndLeaves(viewer, urls[0], outside, original, toast: Self.mismatchToast)
+    }
+
+    private static let mismatchToast = "The photo on screen no longer matches this edit. Your edits are still open. No file was changed."
+
+    /// The written-file guard (a session whose save wrote the file but could not end
+    /// it): "changed on disk" only when the file is known to differ from what the save
+    /// wrote; with no stamp after the write (the stat failed) nothing proves another
+    /// program touched it, so the plain refusal is said. Nothing is written either way.
+    func testWrittenFileGuardSaysChangedOnDiskOnlyWhenItIsKnown() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        c.appendSnapped90(quarters: 1); await c.settleForTesting()
+        let before = try Data(contentsOf: urls[0])
+        let other = try XCTUnwrap(FileStamp(of: urls[1]))
+        let cases: [(FileStamp?, String)] = [
+            (nil, Self.mismatchToast),
+            (FileStamp(of: urls[0]), Self.mismatchToast),
+            (other, SaveCopy.changedOnDiskTitle(urls[0].lastPathComponent)),
+        ]
+        for (written, expected) in cases {
+            viewer.unclosedInPlaceWrite = UnclosedInPlaceWrite(recipe: c.recipe, url: urls[0], written: written)
+            var alerts = 0
+            viewer.alertResponderForTesting = { _ in alerts += 1; return 1 }
+            let saved = await viewer.saveEditedFile(asPanel: false)
+            XCTAssertFalse(saved)
+            XCTAssertEqual(viewer.contentRootForTesting.toastHost.content, ToastContent(expected, kind: .error))
+            XCTAssertEqual(alerts, 0)
+            XCTAssertTrue(c.isActive)
+            XCTAssertEqual(try Data(contentsOf: urls[0]), before, "nothing written")
+        }
+    }
+
+    /// On-screen report: one viewer editing, a Resize applied, undone and redone
+    /// ("Editing · Unsaved changes"), then Shrike ▸ Quit. The quit goes through
+    /// `terminateRequest`: it is held (`.terminateLater`), the unsaved-edits question
+    /// is shown once, and Cancel keeps the app, the session and the file.
+    func testQuitAfterResizeApplyUndoRedoAsksTheQuestion() async throws {
+        for focused in [false, true] { try await quitAfterResizeApplyUndoRedo(widthFieldFocused: focused) }
+    }
+
+    private func quitAfterResizeApplyUndoRedo(widthFieldFocused: Bool) async throws {
+        let coordinator = WindowCoordinator()
+        coordinator.runningWorkOverride = { QuitWork() }
+        let (viewer, urls) = try await editingViewer(coordinator: coordinator); defer { viewer.close() }
+        XCTAssertTrue(coordinator.viewers.contains { $0 === viewer })
+        let c = viewer.contentRootForTesting.editModeController
+        c.selectTool(.resize); await c.settleForTesting()
+        try stageGeometry(.resize, width: 200, c); try applyGeometry(.resize, c); await c.settleForTesting()
+        c.performUndo(); await c.settleForTesting()
+        c.performRedo(); await c.settleForTesting()
+        try await until { c.chromeState.hasUnsavedChanges && !c.chromeState.isTransitioning }
+        XCTAssertEqual(c.chromeState.subtitle, "Editing · Unsaved changes")
+        XCTAssertTrue(c._installedToolForTesting is ResizePanel, "the Resize panel is still up")
+        if widthFieldFocused {
+            // As on screen: the typed-in width field still has the keyboard at quit.
+            let panel = try XCTUnwrap(c._installedToolForTesting as? ResizePanel)
+            XCTAssertTrue(viewer.makeFirstResponder(panel._widthField))
+            XCTAssertTrue((viewer.firstResponder as? NSTextView)?.delegate === panel._widthField)
+        }
+        let before = try Data(contentsOf: urls[0])
+        var asked: [EditExitModal.Content] = []
+        EditExitModal.responderForTesting = { content in asked.append(content); return .cancel }
+        var replies: [Bool] = []
+        let reply = coordinator.terminateRequest(endSheets: {}) { replies.append($0) }
+        XCTAssertEqual(reply, .terminateLater, "the quit is held")
+        try await until { !replies.isEmpty }
+        XCTAssertEqual(asked.count, 1, "the question is shown once")
+        XCTAssertEqual(asked.first?.message, "Save changes to “\(urls[0].lastPathComponent)”?")
+        XCTAssertEqual(replies, [false], "Cancel keeps the app")
+        XCTAssertTrue(c.isActive)
+        XCTAssertTrue(c.chromeState.hasUnsavedChanges)
+        XCTAssertEqual(try Data(contentsOf: urls[0]), before)
+    }
+
+    private func assertRefusedAndLeaves(_ viewer: ViewerWindow, _ url: URL, _ outside: Data, _ original: Data,
+                                        toast: String? = nil) async throws {
+        let c = viewer.contentRootForTesting.editModeController
+        var alerts: [String] = []
+        viewer.alertResponderForTesting = { message in alerts.append(message); return 1 }   // "Save Anyway"
+        viewer.savePanelResponderForTesting = { _, _ in url.deletingLastPathComponent().appendingPathComponent("refused-copy.png") }
+        let again = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content,
+                       ToastContent(toast ?? SaveCopy.changedOnDiskTitle(url.lastPathComponent), kind: .error))
+        let asCopy = await viewer.saveEditedFile(asPanel: true)
+        XCTAssertFalse(again); XCTAssertFalse(asCopy)
+        XCTAssertEqual(alerts, [], "refused before the changed-on-disk question")
+        XCTAssertEqual(try Data(contentsOf: url), outside, "the other program's version is untouched")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.deletingLastPathComponent().appendingPathComponent("refused-copy.png").path))
+        try await assertOriginalInBackup(url, original)
+        var asked = 0
+        EditExitModal.responderForTesting = { _ in asked += 1; return .discard }
+        let left = await viewer.resolveUnsavedEdits(reason: .userToggled)
+        XCTAssertTrue(left, "Don't Save leaves")
+        XCTAssertEqual(asked, 1)
+        XCTAssertFalse(c.isActive)
+        XCTAssertEqual(try Data(contentsOf: url), outside)
+    }
+
+    /// ⌘W during a save is dropped (as in 0.2.32); a ⌘Q that comes after it waits for
+    /// the save and goes on when it ends well: the quit is never cancelled by it.
+    func testCloseDuringASaveThenQuitIsNotCancelledWhenTheSaveEndsWell() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        c.selectTool(.resize); try width("200", c)
+        let gate = ExportGate()
+        viewer.exportCheckpointForTesting = { point in if point == .beforeCommit { await gate.hold() } }
+        let save = Task { await viewer.saveEditedFile(asPanel: false) }
+        try await waitForGate(gate)
+        let delegate = try XCTUnwrap(viewer.delegate)
+        XCTAssertEqual(delegate.windowShouldClose?(viewer), false, "the save holds the window")
+        let quit = Task { await viewer.resolveUnsavedEditsForQuit() }
+        try await until { viewer.contentRootForTesting.toastHost.content == ToastContent(ViewerWindow.quitWaitsForSave) }
+        await gate.open()
+        let saved = await save.value
+        let quits = await quit.value
+        XCTAssertTrue(saved)
+        XCTAssertTrue(quits, "the quit goes on after a save that ended well")
+        XCTAssertFalse(viewer.didTearDown, "the dropped ⌘W does not close the window")
+        XCTAssertFalse(c.isActive)
+        _ = urls
+    }
+
+    /// Save Copy… that ends after the window moved on (the list being rebuilt): a
+    /// failure is said (backup or write), and a success says "Saved copy" without "Show".
+    func testSaveCopyAfterTheWindowMovedOnIsNeverSilent() async throws {
+        for outcome in ["written", "writeFails", "backupFails"] {
+            let (viewer, urls) = try await editingViewer(failingBackup: outcome == "backupFails"); defer { viewer.close() }
+            let c = viewer.contentRootForTesting.editModeController
+            c.selectTool(.resize); try width("200", c)
+            let original = try Data(contentsOf: urls[0])
+            let destination = urls[0].deletingLastPathComponent().appendingPathComponent("moved-on-copy.png")
+            // A backup is kept only of a file the copy replaces.
+            if outcome == "backupFails" { try FileManager.default.copyItem(at: urls[2], to: destination) }
+            let destinationBefore = try? Data(contentsOf: destination)
+            viewer.savePanelResponderForTesting = { _, _ in destination }
+            let exportGate = ExportGate(), navigationGate = ExportGate()
+            let checkpoint: ImageExporter.Checkpoint = outcome == "backupFails" ? .beforeBackup : .beforeCommit
+            viewer.exportCheckpointForTesting = { point in
+                guard point == checkpoint else { return }
+                await exportGate.hold()
+                if outcome == "writeFails" { throw CocoaError(.fileWriteUnknown) }
+            }
+            var alerts: [String] = []
+            viewer.alertResponderForTesting = { message in alerts.append(message); return 0 }
+            let save = Task { await viewer.saveEditedFile(asPanel: true) }
+            try await waitForGate(exportGate)
+            viewer.navCoalescer.run { await navigationGate.hold() }
+            await exportGate.open()
+            let saved = await save.value
+            XCTAssertFalse(saved)
+            let name = destination.lastPathComponent
+            let expected: ToastContent = switch outcome {
+            case "written": ToastContent(SaveCopy.savedCopy(name))
+            case "writeFails": ToastContent(SaveCopy.saveFailed(name), kind: .error)
+            default: ToastContent(SaveCopy.backupFailedTitle(name), kind: .error)
+            }
+            XCTAssertEqual(viewer.contentRootForTesting.toastHost.content, expected, outcome)
+            XCTAssertNil(viewer.contentRootForTesting.toastHost.content?.actionTitle, "no Show button")
+            XCTAssertEqual(alerts, [], "no alert over the photo shown now")
+            XCTAssertEqual(try Data(contentsOf: urls[0]), original, "the original is unchanged")
+            if outcome == "written" { XCTAssertNotNil(try? Data(contentsOf: destination)) }
+            else { XCTAssertEqual(try? Data(contentsOf: destination), destinationBefore, "nothing written") }
+            await navigationGate.open()
+        }
+    }
+
+    /// The window closes while the save waits, still locked, after the plain toast:
+    /// nothing more is shown or registered, and the window goes away.
+    func testWindowClosedWhileTheSaveWaitsShowsNothingMoreAndIsReleased() async throws {
+        weak var weakViewer: ViewerWindow?
+        var urls: [URL] = [], original = Data(), undoName = ""
+        var save: Task<Bool, Never>?, navigationGate: ExportGate?
+        do {
+            let (viewer, files) = try await editingViewer()
+            weakViewer = viewer; urls = files
+            viewer.saveOwnershipWait = .milliseconds(50)
+            undoName = viewer.undoManagerForTesting.undoActionName
+            let started = try await saveDuringNavigation(viewer, urls)
+            save = started.0; navigationGate = started.1; original = started.2
+            let saved = ToastContent(SaveCopy.saved(urls[0].lastPathComponent))
+            try await until { viewer.contentRootForTesting.toastHost.content == saved }
+            viewer.contentRootForTesting.toastHost.dismiss(animated: false)
+            viewer.close()
+            let finished = await save?.value
+            XCTAssertEqual(finished, false)
+            XCTAssertNil(viewer.contentRootForTesting.toastHost.content, "nothing more is shown")
+            XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName, "nothing is registered")
+        }
+        await navigationGate?.open()
+        save = nil
+        try await until { weakViewer == nil }
+        try await assertOriginalInBackup(urls[0], original)
+    }
+
+    /// D: the export reports no backup record (the file was gone when it wrote, so
+    /// nothing was replaced): plain toast, no Undo button, no undo entry.
+    func testInPlaceSaveWithoutABackupRecordShowsThePlainToastAndNoUndo() async throws {
+        let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
+        let c = viewer.contentRootForTesting.editModeController
+        c.selectTool(.resize); try width("200", c)
+        let undoName = viewer.undoManagerForTesting.undoActionName
+        let target = urls[0]
+        viewer.exportCheckpointForTesting = { point in
+            if point == .encoded { try FileManager.default.removeItem(at: target) }
+        }
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(saved)
+        XCTAssertFalse(c.isActive)
+        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content, ToastContent(SaveCopy.saved(target.lastPathComponent)))
+        XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    /// A save that FAILS after the window moved on (the list being rebuilt) still
+    /// says so; the backup-failed case gets its title as a toast, never the alert.
+    func testFailedSaveAfterTheWindowMovedOnShowsTheFailureToast() async throws {
+        for backupFails in [false, true] {
+            let (viewer, urls) = try await editingViewer(failingBackup: backupFails); defer { viewer.close() }
+            let c = viewer.contentRootForTesting.editModeController
+            c.selectTool(.resize); try width("200", c)
+            let original = try Data(contentsOf: urls[0])
+            let exportGate = ExportGate(), navigationGate = ExportGate()
+            let checkpoint: ImageExporter.Checkpoint = backupFails ? .beforeBackup : .beforeCommit
+            viewer.exportCheckpointForTesting = { point in
+                guard point == checkpoint else { return }
+                await exportGate.hold()
+                if !backupFails { throw CocoaError(.fileWriteUnknown) }
+            }
+            var alerts: [String] = []
+            viewer.alertResponderForTesting = { message in alerts.append(message); return 1 }
+            let save = Task { await viewer.saveEditedFile(asPanel: false) }
+            try await waitForGate(exportGate)
+            viewer.navCoalescer.run { await navigationGate.hold() }
+            await exportGate.open()
+            let saved = await save.value
+            XCTAssertFalse(saved)
+            let name = urls[0].lastPathComponent
+            let expected = backupFails ? SaveCopy.backupFailedTitle(name) : SaveCopy.saveFailed(name)
+            XCTAssertEqual(viewer.contentRootForTesting.toastHost.content, ToastContent(expected, kind: .error))
+            XCTAssertEqual(alerts, [], "no alert whose buttons would act on the photo shown now")
+            XCTAssertEqual(try Data(contentsOf: urls[0]), original, "the file was not changed")
+            await navigationGate.open()
+        }
+    }
+
+    private func assertOriginalInBackup(_ url: URL, _ original: Data) async throws {
+        let store = BackupStore(root: url.deletingLastPathComponent().appendingPathComponent("Backups"))
+        let records = await store.records(for: url)
+        XCTAssertTrue(records.contains { (try? Data(contentsOf: $0.backupURL)) == original }, "the original is in the backup")
+    }
+
+    /// C: the window closes while the export runs. Nothing is shown, nothing
+    /// crashes, and the original is in the backup.
+    func testInPlaceSaveAfterTheWindowClosedDoesNothingAndKeepsTheBackup() async throws {
+        let (viewer, urls) = try await editingViewer()
+        let c = viewer.contentRootForTesting.editModeController
+        c.selectTool(.resize); try width("200", c)
+        let original = try Data(contentsOf: urls[0])
+        let gate = ExportGate()
+        viewer.exportCheckpointForTesting = { point in if point == .beforeCommit { await gate.hold() } }
+        let save = Task { await viewer.saveEditedFile(asPanel: false) }
+        try await waitForGate(gate)
+        let undoName = viewer.undoManagerForTesting.undoActionName
+        viewer.close()
+        await gate.open()
+        let saved = await save.value
+        XCTAssertFalse(saved)
+        XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName, "no undo for a closed window")
+        let store = BackupStore(root: urls[0].deletingLastPathComponent().appendingPathComponent("Backups"))
+        let records = await store.records(for: urls[0])
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(records.first).backupURL), original)
     }
 
     func testRemovedAdjacentFolderIsNotOpenedFromPreDecisionSnapshot() async throws {

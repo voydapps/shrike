@@ -151,7 +151,7 @@ extension ViewerWindow {
     func applyRemovals(_ removed: [URL], changed: inout Bool) -> (Int, ImageGroup)? {
         guard !removed.isEmpty else { return nil }
         // Look the removed files up (a few) instead of resolving every
-        // group's paths (audit MP-01).
+        // group's paths.
         let gone = Set(removed.map(GroupList.canonical))
         let touched = Set(removed.compactMap { list.index(of: $0) })
         var primaries: Set<URL> = []
@@ -227,7 +227,7 @@ extension ViewerWindow {
     func syncListKeepingDisplayed() {
         guard !list.isEmpty else { return }
         let sources: [any ImageSource] = list.groups.map { FileImageSource(url: $0.primary) }
-        // COR-4: a navigation still in flight (→ onto a slow photo) is cancelled by the
+        // A navigation still in flight (→ onto a slow photo) is cancelled by the
         // coalesced list sync below, and nothing would ask for that photo again: the
         // viewer stayed on the low-res preview, or the dimmed old photo. The intent
         // cursor holds the photo the user asked for; find it in the NEW list.
@@ -295,7 +295,7 @@ extension ViewerWindow {
             self.contentRoot.histogramImageShown(entry.image, url: url)
             // The fresh decode carries the file's orientation.
             view.resetOrientation()
-            // The file changed: its size is read again (spec 25 §1.1).
+            // The file changed: its size is read again.
             self.headerPixelSizes[url] = nil
             self.headerPixelSizes[item.shownURL] = nil
             view.sourcePixelSize = knownDrawnSize

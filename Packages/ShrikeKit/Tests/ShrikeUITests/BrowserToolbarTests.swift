@@ -377,7 +377,7 @@ final class BrowserToolbarTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(rect(band).minX, rect(sidebar).maxX - 0.5, "the band starts right of the sidebar")
         XCTAssertLessThanOrEqual(rect(band).maxX, rect(inspector).minX + 0.5, "and ends left of the inspector")
         XCTAssertEqual(rect(band).minX, rect(browser.contentController.view).minX, accuracy: 0.5)
-        let label = try XCTUnwrap(notice.arrangedSubviews.first as? NSTextField)
+        let label = try XCTUnwrap(notice.arrangedSubviews.first { $0 is NSTextField } as? NSTextField)
         XCTAssertEqual(notice.convert(label.alignmentRect(forFrame: label.frame), to: nil).minX - rect(notice).minX, BrowserWindowController.noticeInset, accuracy: 1,
                        "text inset matches the content margin")
         XCTAssertLessThan(grid.contentView.bounds.height, before)

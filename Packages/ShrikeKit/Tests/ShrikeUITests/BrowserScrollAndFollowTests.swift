@@ -255,6 +255,200 @@ final class BrowserScrollAndFollowTests: XCTestCase {
         XCTAssertTrue(ok2, "visible \(scroll.contentView.bounds), lead cell \(frame2)")
     }
 
+    // MARK: pass 2zc - a thumbnail size change keeps the selected photo in view
+
+    /// A grid at 100 pt with the top at y = 0; returns the last item whose
+    /// cell is fully on screen.
+    private func gridAtSmallSize(_ browser: BrowserWindowController) -> Int {
+        let content = browser.contentController
+        content.setMode(.grid)
+        content.thumbnailPixelSize = 100
+        browser.window?.contentView?.layoutSubtreeIfNeeded()
+        let cv = content.collectionViewForTesting
+        let scroll = content.gridScrollViewForTesting
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
+        let visible = scroll.contentView.bounds
+        return (0..<content.visibleItems.count).last {
+            visible.contains(cv.layoutAttributesForItem(at: IndexPath(item: $0, section: 0))!.frame)
+        } ?? 0
+    }
+
+    func testLargerThumbnailsKeepAVisibleSelectionInView() async throws {
+        let browser = try await makeBrowser(count: 120)
+        defer { browser.close() }
+        let content = browser.contentController
+        let last = gridAtSmallSize(browser)
+        XCTAssertGreaterThan(last, 10)
+        let cv = content.collectionViewForTesting
+        let scroll = content.gridScrollViewForTesting
+        cv.selectionIndexPaths = [IndexPath(item: last, section: 0)]
+        content.thumbnailPixelSize = 300
+        browser.window?.contentView?.layoutSubtreeIfNeeded()
+        let frame = cv.layoutAttributesForItem(at: IndexPath(item: last, section: 0))!.frame
+        XCTAssertTrue(scroll.contentView.bounds.intersects(frame),
+                      "visible \(scroll.contentView.bounds), selected cell \(frame)")
+    }
+
+    // MARK: pass 3b - a size change with the selection out of view keeps the top row
+
+    private func frames(_ content: BrowserContentViewController) -> [CGRect] {
+        let cv = content.collectionViewForTesting
+        return (0..<content.visibleItems.count).map { cv.layoutAttributesForItem(at: IndexPath(item: $0, section: 0))!.frame }
+    }
+
+    /// Worked out from the frames alone (not through the production picker):
+    /// the lowest index of the first row showing at least a third of its height.
+    private func expectedTopItem(_ content: BrowserContentViewController) -> Int? {
+        let visible = content.gridScrollViewForTesting.contentView.bounds
+        let all = frames(content)
+        guard let row = all.first(where: {
+            min($0.maxY, visible.maxY) - max($0.minY, visible.minY) >= $0.height / 3
+        }) else { return nil }
+        return all.firstIndex { abs($0.minY - row.minY) < 0.5 }
+    }
+
+    private func columns(_ content: BrowserContentViewController) -> Int {
+        let all = frames(content)
+        return all.filter { abs($0.minY - all[0].minY) < 0.5 }.count
+    }
+
+    private func scrollGrid(_ content: BrowserContentViewController, to y: CGFloat) {
+        let scroll = content.gridScrollViewForTesting
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
+    private func topEdge(_ content: BrowserContentViewController, of item: Int) -> (item: CGFloat, origin: CGFloat) {
+        (frames(content)[item].minY, content.gridScrollViewForTesting.contentView.bounds.origin.y)
+    }
+
+    private func setSize(_ browser: BrowserWindowController, _ size: Int) {
+        browser.contentController.thumbnailPixelSize = size
+        browser.window?.contentView?.layoutSubtreeIfNeeded()
+    }
+
+    /// Grid at 100 pt, scrolled so row 5 is the top row; returns that row's first item.
+    private func gridScrolledToRow5(_ browser: BrowserWindowController) -> Int {
+        let content = browser.contentController
+        _ = gridAtSmallSize(browser)
+        let first = 5 * columns(content)
+        scrollGrid(content, to: frames(content)[first].minY)
+        return first
+    }
+
+    func testLargerThumbnailsKeepTheTopRowWhenTheSelectionIsOffScreen() async throws {
+        let browser = try await makeBrowser(count: 120)
+        defer { browser.close() }
+        let content = browser.contentController
+        let anchor = gridScrolledToRow5(browser)
+        content.collectionViewForTesting.selectionIndexPaths = [IndexPath(item: 0, section: 0)]
+        XCTAssertFalse(content.gridScrollViewForTesting.contentView.bounds.intersects(frames(content)[0]))
+        XCTAssertEqual(expectedTopItem(content), anchor)
+        setSize(browser, 140)
+        let edge = topEdge(content, of: anchor)
+        XCTAssertEqual(edge.origin, edge.item, accuracy: 0.5, "the anchor photo is at the top")
+        XCTAssertEqual(content.collectionViewForTesting.selectionIndexPaths, [IndexPath(item: 0, section: 0)], "selection untouched")
+    }
+
+    func testLargerThumbnailsKeepTheTopRowWithNoSelection() async throws {
+        let browser = try await makeBrowser(count: 120)
+        defer { browser.close() }
+        let content = browser.contentController
+        let anchor = gridScrolledToRow5(browser)
+        content.collectionViewForTesting.selectionIndexPaths = []
+        setSize(browser, 140)
+        let edge = topEdge(content, of: anchor)
+        XCTAssertEqual(edge.origin, edge.item, accuracy: 0.5)
+        XCTAssertTrue(content.collectionViewForTesting.selectionIndexPaths.isEmpty, "nothing gets selected")
+    }
+
+    func testARowShowingLessThanAThirdDoesNotCountAsTheTopRow() async throws {
+        let browser = try await makeBrowser(count: 120)
+        defer { browser.close() }
+        let content = browser.contentController
+        let row5 = gridScrolledToRow5(browser)
+        let cols = columns(content)
+        let f = frames(content)[row5]
+        scrollGrid(content, to: f.minY + f.height - 20)   // 20 pt of row 5 shows
+        content.collectionViewForTesting.selectionIndexPaths = []
+        XCTAssertEqual(expectedTopItem(content), row5 + cols, "the next row is the top row")
+        setSize(browser, 140)
+        let edge = topEdge(content, of: row5 + cols)
+        XCTAssertEqual(edge.origin, edge.item, accuracy: 0.5)
+    }
+
+    func testLargerThenSmallerReturnsToTheSameTopPhoto() async throws {
+        let browser = try await makeBrowser(count: 120)
+        defer { browser.close() }
+        let content = browser.contentController
+        let anchor = gridScrolledToRow5(browser)
+        content.collectionViewForTesting.selectionIndexPaths = []
+        setSize(browser, 140)
+        // Precondition: at 140 pt the anchor is NOT first in its row, so
+        // picking afresh would give another photo.
+        XCTAssertNotEqual(anchor % columns(content), 0, "anchor \(anchor), \(columns(content)) columns")
+        setSize(browser, 100)
+        let edge = topEdge(content, of: anchor)
+        XCTAssertEqual(edge.origin, edge.item, accuracy: 0.5, "the same photo is at the top again")
+    }
+
+    func testAScrollBetweenTwoSizeStepsPicksANewAnchor() async throws {
+        let browser = try await makeBrowser(count: 120)
+        defer { browser.close() }
+        let content = browser.contentController
+        let anchor = gridScrolledToRow5(browser)
+        content.collectionViewForTesting.selectionIndexPaths = []
+        setSize(browser, 140)
+        scrollGrid(content, to: content.gridScrollViewForTesting.contentView.bounds.origin.y + 700)   // the user scrolls
+        let expected = try XCTUnwrap(expectedTopItem(content))
+        XCTAssertNotEqual(expected, anchor)
+        setSize(browser, 100)
+        let edge = topEdge(content, of: expected)
+        XCTAssertEqual(edge.origin, edge.item, accuracy: 0.5, "the photo that was on top after the scroll")
+    }
+
+    func testAFolderChangeForgetsTheAnchor() async throws {
+        let browser = try await makeBrowser(count: 120)
+        defer { browser.close() }
+        let content = browser.contentController
+        let anchor = gridScrolledToRow5(browser)
+        content.collectionViewForTesting.selectionIndexPaths = []
+        setSize(browser, 140)
+        content.setItems(content.allItems)
+        browser.window?.contentView?.layoutSubtreeIfNeeded()
+        content.collectionViewForTesting.selectionIndexPaths = []
+        let expected = try XCTUnwrap(expectedTopItem(content))
+        XCTAssertNotEqual(expected, anchor, "a fresh pick differs from the old anchor here")
+        setSize(browser, 100)
+        let edge = topEdge(content, of: expected)
+        XCTAssertEqual(edge.origin, edge.item, accuracy: 0.5)
+    }
+
+    func testLargerThumbnailsNearTheEndClampToTheContent() async throws {
+        let browser = try await makeBrowser(count: 120)
+        defer { browser.close() }
+        let content = browser.contentController
+        _ = gridAtSmallSize(browser)
+        content.collectionViewForTesting.selectionIndexPaths = []
+        let scroll = content.gridScrollViewForTesting
+        scrollGrid(content, to: 1_000_000)   // clamps to the end
+        setSize(browser, 140)
+        let docHeight = content.collectionViewForTesting.frame.height
+        let y = scroll.contentView.bounds.origin.y
+        XCTAssertLessThanOrEqual(y, docHeight - scroll.contentView.bounds.height + 0.5)
+        XCTAssertGreaterThanOrEqual(y, 0)
+    }
+
+    func testLargerThumbnailsInAnEmptyFolderDoNothing() async throws {
+        let browser = try await makeBrowser(count: 0)
+        defer { browser.close() }
+        let content = browser.contentController
+        content.setMode(.grid)
+        setSize(browser, 140)
+        XCTAssertEqual(content.gridScrollViewForTesting.contentView.bounds.origin.y, 0, accuracy: 0.5)
+    }
+
     func testListShiftDownFollowsTheMovingEnd() async throws {
         let browser = try await makeBrowser(count: 80)
         defer { browser.close() }

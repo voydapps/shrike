@@ -407,6 +407,13 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
 
     func controlTextDidBeginEditing(_ notification: Notification) { trackDraft(notification) }
     func controlTextDidChange(_ notification: Notification) { trackDraft(notification) }
+    /// Before an edit undo / redo: typed text goes, so no draft is read from it.
+    func discardTyping() {
+        guard fields.values.contains(where: { ($0 as? PanelTextField)?.discardTyping() == true }) else { return }
+        draftRevision &+= 1
+        editedField = nil
+        onDraftChanged?()
+    }
     func controlTextDidEndEditing(_ notification: Notification) {
         draftRevision &+= 1
         editedField = nil
@@ -423,6 +430,7 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
     /// Consume the first numeric Return before NSTextField's Return completion
     /// can fall through to the toolbar/capsule primary's key equivalent.
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if (control as? PanelTextField)?.cancelTyping(textView, commandSelector) == true { return true }
         guard commandSelector == #selector(NSResponder.insertNewline(_:)),
               let field = control as? PanelTextField,
               let kind = fields.first(where: { $0.value === field })?.key,
@@ -459,7 +467,11 @@ final class LevelsPanel: NSView, NSTextFieldDelegate {
     private let titleLabel = NSTextField(labelWithString: "Levels")
     private let channelLabel = NSTextField(labelWithString: "Channel")
     private let channelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let histogramView = HistogramPlotView(frame: .zero)
+    private let histogramView: HistogramPlotView = {
+        let view = HistogramPlotView(frame: .zero)
+        view.showsCornerWords = false   // The words are for the histogram HUD
+        return view
+    }()
     private let inputTrack = LevelsTrackView(kinds: [.inBlack, .gamma, .inWhite])
     private let outputLabel = NSTextField(labelWithString: "Output")
     private let outputTrack = LevelsTrackView(kinds: [.outBlack, .outWhite])

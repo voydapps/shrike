@@ -3,8 +3,8 @@
 //  ShrikeUI
 //
 //  The Batch window. One window, made on first use; a second
-//  Image ▸ Batch… (⌥⌘B) adds items to it. 880 × 600 pt, min 760 × 520,
-//  titled "Batch — 42 images". No toolbar.
+//  Photo ▸ Batch… (⌥⌘B) adds items to it. 880 × 600–760 pt, min 760 × 520,
+//  titled "Batch" with the subtitle "42 photos". No toolbar.
 //
 //  Closing while a batch runs asks "Stop the batch?". Keep Running (the
 //  default) hides the window and shows the percent on the Dock icon; at
@@ -30,19 +30,35 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
 
     /// The open Batch window, if any.
     public private(set) static var current: BatchWindowController?
+    #if DEBUG
+    static func setCurrentForTesting(_ controller: BatchWindowController?) { current = controller }
+    #endif
 
     /// Tests set this to false: the window is built but never shown.
     static var presentsWindows = true
 
     public static let contentSize = NSSize(width: 880, height: 600)
     public static let minContentSize = NSSize(width: 760, height: 520)
+    /// The first height fits the form, up to 90 % of the screen.
+    static let screenShare: CGFloat = 0.9
+
+    static let fittedFloor: CGFloat = 600
+    static let fittedCeiling: CGFloat = 760
+
+    /// The form's controls (the preview list counts at its smallest) plus the
+    /// window's other parts, between 600 pt and min(760 pt, 90 % of the
+    /// visible screen height); never below the 520 pt minimum.
+    static func fittedHeight(content: CGFloat, chrome: CGFloat, visibleScreenHeight: CGFloat) -> CGFloat {
+        let cap = min(fittedCeiling, visibleScreenHeight * screenShare)
+        return max(min(max(content + chrome, fittedFloor), cap), minContentSize.height)
+    }
 
     public enum Copy {
         public static let stopAlert = "Stop the batch?"
         public static let stop = "Stop"
         public static let keepRunning = "Keep Running"
         public static let undoFailed = "Couldn't undo — some files were moved or renamed since the batch."
-        public static let savePresetTitle = "Save Preset"
+        public static let savePresetTitle = "Save preset"
         public static let savePresetInfo = "Name the preset. A saved preset with the same name is replaced."
         public static let presetFailed = "Shrike couldn't save the preset."
         public static let logCopied = "Batch log copied"
@@ -60,12 +76,15 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
 
     /// The window that opened the batch: it gets the undo.
     private(set) weak var launcher: NSWindow?
-    private var launcherToast: (@MainActor @Sendable (String) -> Void)?
+    private var launcherToast: (@MainActor @Sendable (ToastContent) -> Void)?
 
     /// Keep Running hid the window; the Dock badge shows the percent.
     public private(set) var isHiddenWhileRunning = false
     private var closeWhenStopped = false
     private var isAskingToStop = false
+    private var didFirstFit = false
+    /// The user resized the window: the form no longer moves it.
+    private(set) var resizedByHand = false
 
     // MARK: Seams (tests replace them)
 
@@ -75,7 +94,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
     var presetNameResponder: (() -> String?)?
     /// Answers "Delete the preset “Name”?": true = Delete.
     var deletePresetResponder: ((String) -> Bool)?
-    /// Answers "Change N original photos?": true = Change Originals.
+    /// Answers "Change N original photos?": true = Change Original(s).
     var changeOriginalsResponder: ((_ title: String, _ information: String) -> Bool)?
     var dockBadge: (String?) -> Void = { NSApplication.shared.dockTile.badgeLabel = $0 }
     var requestAttention: () -> Void = { _ = NSApplication.shared.requestUserAttention(.informationalRequest) }
@@ -96,8 +115,11 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         launcher: NSWindow?,
         renameOn: Bool = false,
         originScope: String? = nil,
-        toast: (@MainActor @Sendable (String) -> Void)? = nil
+        toast: (@MainActor @Sendable (ToastContent) -> Void)? = nil
     ) -> BatchWindowController {
+        // While "Change N original photos?" is up, nothing joins the queue
+        // and Undo stays on the window that asked; the window just comes forward.
+        if let open = current, open.model.isConfirming { open.present(); return open }
         let isNew = current == nil
         let controller = current ?? BatchWindowController(model: BatchModel(runner: makeRunner(services)))
         current = controller
@@ -129,6 +151,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
         window.title = model.title
+        window.subtitle = model.subtitle
         window.center()
         announce = { text in
             NSAccessibility.post(element: NSApplication.shared, notification: .announcementRequested,
@@ -136,25 +159,43 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
                                             .priority: NSAccessibilityPriorityLevel.high.rawValue])
         }
         super.init(window: window)
+        // `Change Original(s)` starts the run inside the sheet's completion, so
+        // from that moment the batch is `.running` for the quit plan (⌘Q right
+        // after the click asks the work question).
         model.confirmChangeOriginals = { [weak self] title, information in
-            if let responder = self?.changeOriginalsResponder { return responder(title, information) }
-            let choice = await ShrikeAlert.run(
-                message: title, information: information,
-                buttons: [ShrikeAlert.Button(BatchModel.ConfirmCopy.confirm, role: .destructive), .safeCancel()],
-                on: self?.window)
-            return choice == 0
+            if let responder = self?.changeOriginalsResponder {
+                let ok = responder(title, information)
+                if ok { self?.model.startConfirmedRun() }
+                return ok
+            }
+            return await withCheckedContinuation { continuation in
+                ShrikeAlert.begin(
+                    message: title, information: information,
+                    buttons: [ShrikeAlert.Button(self?.model.confirmButtonTitle ?? BatchModel.ConfirmCopy.confirm(2), role: .destructive), .safeCancel()],
+                    on: self?.window
+                ) { choice in
+                    if choice == 0 { self?.model.startConfirmedRun() }
+                    continuation.resume(returning: choice == 0)
+                }
+            }
         }
         self.launcher = launcher
         window.delegate = self
         window.escapeHandler = { [weak self] in self?.escapePressed() }
+        window.batchUndoName = { [weak self] in
+            // Only the Done screen: in the form (Review Remaining) ⌘Z is the fields' text undo.
+            guard let self, self.model.phase == .done, self.canUndoBatch else { return nil }
+            return self.model.undoActionName
+        }
+        window.undoBatch = { [weak self] in self?.undoBatch() }
 
         // One accent, the system's.
         let contentRoot = NSView(frame: NSRect(origin: .zero, size: Self.contentSize))
         contentRoot.autoresizingMask = [.width, .height]
         window.contentView = contentRoot
 
-        let host = NSHostingView(rootView: BatchRootView(model: model, actions: makeActions(), inserter: inserter)
-            .tint(Color(nsColor: ShrikeAccent.fill)))
+        // The system accent, no tint.
+        let host = NSHostingView(rootView: BatchRootView(model: model, actions: makeActions(), inserter: inserter))
         host.frame = contentRoot.bounds
         host.autoresizingMask = [.width, .height]
         host.sizingOptions = []
@@ -165,7 +206,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         window.setContentSize(Self.contentSize)
 
         model.$queue
-            .sink { [weak window] queue in window?.title = BatchModel.Copy.title(queue.count) }
+            .sink { [weak window] queue in window?.subtitle = BatchModel.Copy.subtitle(queue.count) }
             .store(in: &subs)
         model.onProgress = { [weak self] done, total in self?.progressed(done, total) }
         model.onFinished = { [weak self] result, _ in self?.runFinished(result) }
@@ -211,6 +252,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         a.addItems = { [weak self] in self?.chooseItems() }
         a.chooseOutput = { [weak self] in self?.chooseOutputFolder() }
         a.savePreset = { [weak self] in self?.savePreset() }
+        a.formMeasured = { [weak self] content, viewport in self?.formMeasured(content: content, viewport: viewport) }
         a.deletePreset = { [weak self] name in self?.deletePreset(name) }
         a.cancel = { [weak self] in self?.close() }
         a.copyLog = { [weak self] in self?.copyLog() }
@@ -230,7 +272,50 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         return false
     }
 
+    /// A photo skipped as unreadable may have been repaired in another app:
+    /// read it again when the user comes back, so Run can turn on.
+    public func windowDidEndLiveResize(_ notification: Notification) { resizedByHand = true }
+
+    /// The first measure sets the height; later the window only
+    /// grows to a longer form, and never after the user resized it. Width
+    /// stays; the top edge stays put and the window stays on the screen.
+    /// The two heights come in separate callbacks, also while a resize lays
+    /// the form out again, so the fit runs once on the next turn with the
+    /// latest pair (a pair read mid-layout gave a wrong chrome height).
+    func formMeasured(content: CGFloat, viewport: CGFloat) {
+        lastMeasure = (content, viewport)
+        guard fitTask == nil, !resizedByHand else { return }
+        fitTask = Task { @MainActor [weak self] in
+            self?.fitTask = nil
+            self?.fitToForm()
+        }
+    }
+
+    private var lastMeasure: (content: CGFloat, viewport: CGFloat) = (0, 0)
+    /// The scheduled fit (tests await it).
+    private(set) var fitTask: Task<Void, Never>?
+
+    private func fitToForm() {
+        let (content, viewport) = lastMeasure
+        guard let window, let view = window.contentView, content > 0, viewport > 0, !resizedByHand else { return }
+        let current = view.bounds.height
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let target = Self.fittedHeight(content: content, chrome: current - viewport, visibleScreenHeight: visible.height)
+        defer { didFirstFit = true }
+        guard abs(target - current) >= 1, !didFirstFit || target > current else { return }
+        // By the difference: the toolbar is not in `frameRect(forContentRect:)`.
+        var frame = window.frame
+        frame.size.height += target - current
+        frame.origin.y = max(window.frame.maxY - frame.height, visible.minY)
+        window.setFrame(frame, display: window.isVisible)
+    }
+
+    public func windowDidBecomeKey(_ notification: Notification) {
+        model.refreshSkippedPhotos()
+    }
+
     public func windowWillClose(_ notification: Notification) {
+        model.forgetDroppedDuplicates()
         if isHiddenWhileRunning { dockBadge(nil) }
         isHiddenWhileRunning = false
         if Self.current === self { Self.current = nil }
@@ -242,11 +327,14 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
         close()
     }
 
+    /// Stop left, Keep Running right and default (the safe choice).
+    static let stopAlertButtons = [ShrikeAlert.Button(Copy.stop), ShrikeAlert.Button(Copy.keepRunning, role: .default)]
+
     /// "Stop the batch?" — Stop · Keep Running (default).
     func askStopOrKeepRunning() {
         guard !isAskingToStop else { return }
         isAskingToStop = true
-        let info = BatchModel.Copy.stopAlertInfo(model.completed, model.total)
+        let info = BatchModel.Copy.stopAlertInfo
         Task { @MainActor [weak self] in
             guard let self else { return }
             let choice: Int?
@@ -255,8 +343,7 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
             } else {
                 choice = await ShrikeAlert.run(
                     message: Copy.stopAlert, information: info,
-                    buttons: [ShrikeAlert.Button(Copy.stop), ShrikeAlert.Button(Copy.keepRunning, role: .default)],
-                    on: self.window)
+                    buttons: Self.stopAlertButtons, on: self.window)
             }
             self.isAskingToStop = false
             guard self.model.phase == .running else {
@@ -343,10 +430,10 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
 
     var canUndoBatch: Bool { model.undoActionName != nil && undoOnce?.isAvailable == true }
 
-    /// Done screen, Actions ▸ Undo Batch (audit on-screen L6).
+    /// Done screen, Actions ▸ Undo Batch.
     func undoBatch() {
         guard canUndoBatch, let result = model.result, let gate = undoOnce, gate.take() else { return }
-        // Edit > Undo would otherwise still offer this batch (audit on-screen L6).
+        // Edit > Undo would otherwise still offer this batch.
         launcher?.undoManager?.removeAllActions(withTarget: gate)
         BatchUndo.run(runner: model.runner, result: result, toast: launcherToast) { [model] in model.markUndone() }
     }
@@ -489,8 +576,43 @@ public final class BatchWindowController: NSWindowController, NSWindowDelegate {
 /// The Batch window: Esc closes it when no batch runs.
 final class BatchWindow: NSWindow {
     var escapeHandler: (() -> Void)?
+    /// The batch's undo lives on the launching window; while the Done screen
+    /// offers Undo Batch, Edit > Undo here runs that same undo (once).
+    var batchUndoName: (() -> String?)?
+    var undoBatch: (() -> Void)?
+
+    /// While a field is edited its typing undo lives on the field editor's
+    /// undo manager (the SwiftUI host's, not the window's).
+    private var textUndoManager: UndoManager? { BatchFieldKeys.editor(in: self)?.undoManager ?? undoManager }
+
+    @objc func undo(_ sender: Any?) {
+        if batchUndoName?() != nil { undoBatch?() } else if let editor = BatchFieldKeys.editor(in: self) {
+            editor.undoManager?.undo()
+            // The text undo tells nobody: the field (and so the form) would keep the undone text.
+            editor.didChangeText()
+        } else {
+            undoManager?.undo()
+        }
+    }
+
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(undo(_:)) else { return super.validateMenuItem(menuItem) }
+        let undo = batchUndoName?() != nil ? undoManager : textUndoManager
+        if let name = batchUndoName?() {
+            menuItem.title = undo?.undoMenuTitle(forUndoActionName: name) ?? "Undo \(name)"
+            return true
+        }
+        menuItem.title = undo?.undoMenuItemTitle ?? "Undo"
+        return undo?.canUndo ?? false
+    }
 
     override func cancelOperation(_ sender: Any?) {
+        // Esc in a text field cancels that edit and keeps the window.
+        if let editor = BatchFieldKeys.editor(in: self) {
+            (editor.delegate as? NSTextField)?.abortEditing()
+            makeFirstResponder(nil)
+            return
+        }
         escapeHandler?()
     }
 }
@@ -499,19 +621,49 @@ final class BatchWindow: NSWindow {
 /// files can't go back.
 @MainActor
 enum BatchUndo {
+    /// The real reason when a replaced photo could not be put back
+    /// (`BatchVictimNotRestoredError` says where each one is); the generic
+    /// line for every other failure.
+    nonisolated static func failureText(_ error: any Error) -> String {
+        if let victims = error as? BatchVictimNotRestoredError { return victims.localizedDescription }
+        return BatchWindowController.Copy.undoFailed
+    }
+
+    /// The toast when Undo threw, names fitted to 20 characters.
+    static func failureToast(_ error: any Error, fitsFourLines: (String) -> Bool) -> ToastContent {
+        guard let victims = error as? BatchVictimNotRestoredError else {
+            return ToastContent(BatchWindowController.Copy.undoFailed, kind: .error)
+        }
+        let pieces = BatchVictimNotRestoredError.pieces(inTrash: victims.inTrash, inBackups: victims.inBackups,
+                                                        restoredAs: victims.restoredAs, name: BatchUndoToast.name)
+        // The throw path carries no backup count (BatchRunner.undo throws instead of returning it).
+        return BatchUndoToast.failure(main: pieces.main, restoredAs: pieces.restoredAs,
+                                      alsoFailed: victims.alsoFailed?.localizedDescription, notSaved: 0,
+                                      fitsFourLines: fitsFourLines)
+    }
+
     /// The last undo's work (tests wait on it).
     static var lastTask: Task<Void, Never>?
 
-    static func run(runner: BatchRunner, result: BatchResult, toast: (@MainActor @Sendable (String) -> Void)?,
+    static func run(runner: BatchRunner, result: BatchResult, toast: (@MainActor @Sendable (ToastContent) -> Void)?,
                     onUndone: (@MainActor () -> Void)? = nil) {
         let previous = lastTask
+        // ⌘Q waits for the undo, and the system does not end the app during it.
+        let hold = ActiveWorkHold(kind: .batchRun)
+        hold.set(true, detail: "Undo Batch")
         lastTask = Task { @MainActor in
+            defer { hold.set(false) }
             await previous?.value
             do {
-                try await runner.undo(result)
+                let report = try await runner.undo(result)
                 onUndone?()
+                // The undo's own count, never added to the batch's; photos restored under a new name are named too.
+                if let content = BatchUndoToast.success(
+                    restoredAs: report.restoredAs, notSaved: report.backupsNotSaved,
+                    fitsTwoLines: { ToastTextFit.fits($0, lines: 2, kind: .text) },
+                    fitsFourLines: { ToastTextFit.fits($0, lines: 4, kind: .error) }) { toast?(content) }
             } catch {
-                toast?(BatchWindowController.Copy.undoFailed)
+                toast?(failureToast(error, fitsFourLines: { ToastTextFit.fits($0, lines: 4, kind: .error) }))
             }
         }
     }

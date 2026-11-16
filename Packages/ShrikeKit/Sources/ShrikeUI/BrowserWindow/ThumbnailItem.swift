@@ -63,7 +63,7 @@ public final class ThumbnailItem: NSCollectionViewItem {
     private let nameRow = NSStackView()
     /// Selection ring, 3 pt outside the card.
     private let ringView = PassThroughView()
-    /// Spec 24 §2 (the filmstrip view's strip): the hover ring on the card's
+    /// Filmstrip strip: the hover ring on the card's
     /// edge and a white veil on the photo.
     private let hoverRing = PassThroughView()
     private let hoverOverlay = PassThroughView()
@@ -472,8 +472,8 @@ public final class ThumbnailItem: NSCollectionViewItem {
     }
 
     /// Shows only set values: no empty stars, nothing for rating 0.
-    /// One accessibility element per cell, words instead of glyphs
-    /// (spec 25 §7.2): "IMG_4222.JPG, 3 stars, flagged".
+    /// One accessibility element per cell, words instead of glyphs:
+    /// "IMG_4222.JPG, 3 stars, flagged".
     private var accessibilityBadges = ItemBadges()
 
     private func updateAccessibility() {
@@ -548,18 +548,18 @@ public final class ThumbnailItem: NSCollectionViewItem {
         if isFailed {
             text = "Shrike can't read this file."
         } else {
-            // The full name always (spec 25 §6.3); the layout changes with the window.
+            // The full name always; the layout changes with the window.
             text = shownFileName ?? currentItem?.displayName
         }
         guard view.toolTip != text else { return }
         // Clear first: AppKit then drops a tip that is still on screen for the
-        // old name and builds the new one for this cell's place (audit
-        // on-screen L14: a reused cell kept showing its old file's name).
+        // old name and builds the new one for this cell's place:
+        // a reused cell kept showing its old file's name.
         view.toolTip = nil
         view.toolTip = text
     }
 
-    /// The name of the file the pair is showing (spec 27 N5): the RAW's
+    /// The name of the file the pair is showing: the RAW's
     /// name while the RAW is shown, nil for the pair's own name.
     private(set) var shownFileName: String?
 
@@ -659,7 +659,7 @@ final class ThumbnailCellView: NSView {
 
     override func updateLayer() { onUpdateLayer?() }
 
-    /// The pointing hand over a filmstrip-strip cell (spec 24 §2).
+    /// The pointing hand over a filmstrip-strip cell.
     override func resetCursorRects() {
         var ancestor = superview
         while let view = ancestor {

@@ -82,9 +82,29 @@ final class InspectorFillTests: XCTestCase {
         let filled = await waitUntil { !model.facts.capture.isEmpty }
         XCTAssertTrue(filled, "File and Capture rows arrive with no toggle")
         XCTAssertEqual(model.url, url)
-        XCTAssertEqual(model.facts.file.first?.value, "A.JPG")
+        XCTAssertEqual(model.url?.lastPathComponent, "A.JPG") // spec 28 §7: the name is the title line
         XCTAssertTrue(model.facts.file.contains { $0.label == "Dimensions" })
         XCTAssertTrue(model.facts.capture.contains { $0.label == "Camera" })
+    }
+
+    /// S4a: a photo change reads nothing on the main thread; the Size row
+    /// arrives with the header read.
+    func testPhotoChangeReadsTheFileSizeOffTheMainThread() async throws {
+        Prefs.viewerInspectorVisibleWindowed = true
+        let a = dir.appendingPathComponent("A.JPG"), b = dir.appendingPathComponent("B.JPG")
+        try jpegData().write(to: a)
+        try jpegData(camera: "Other").write(to: b)
+        let window = await open([ImageGroup(primary: a), ImageGroup(primary: b)])
+        defer { window.close() }
+        let panel = window.contentRootForTesting.inspectorPanel
+        let model = panel.viewModel
+        let size: () -> String? = { model.facts.file.first { $0.label == "Size" }?.value }
+        _ = await waitUntil { model.url == a && size() != InspectorRows.emptyValue }
+        panel.updateForURL(b)
+        XCTAssertEqual(model.url, b)
+        XCTAssertEqual(size(), InspectorRows.emptyValue, "no disk call on the photo change itself")
+        let filled = await waitUntil { size() != InspectorRows.emptyValue }
+        XCTAssertTrue(filled, "the size arrives off the main thread")
     }
 
     func testInspectorKeepsFollowingNavigationAfterAFullScreenRoundTrip() async throws {
@@ -136,11 +156,26 @@ final class InspectorFillTests: XCTestCase {
         window.perform(.toggleRAWFile)
         let onRAW = await waitUntil { model.url == raw && model.facts.capture.contains { $0.value.contains("RawCam") } }
         XCTAssertTrue(onRAW, "name, facts and EXIF follow the RAW")
-        XCTAssertEqual(model.facts.file.first?.value, "P1.ORF")
+        XCTAssertEqual(model.url?.lastPathComponent, "P1.ORF"); XCTAssertEqual(model.facts.file.first?.value, "Olympus raw image")
         XCTAssertTrue(model.facts.file.contains { $0.label == "Dimensions" && $0.value.contains("320") })
 
         window.perform(.toggleRAWFile)
         let back = await waitUntil { model.url == jpeg && model.facts.capture.contains { $0.value.contains("JpgCam") } }
         XCTAssertTrue(back, "and back to the JPEG")
+    }
+
+    /// On a photo change the Type row is filled in the same turn (from the
+    /// file name, no disk read); the rest waits for the read off the main thread.
+    func testTypeRowIsFilledInTheSameTurnAsAPhotoChange() async throws {
+        let first = dir.appendingPathComponent("T1.JPG"), second = dir.appendingPathComponent("T2.png")
+        try jpegData(width: 160, height: 120, camera: "Cam").write(to: first)
+        try jpegData(width: 160, height: 120, camera: "Cam").write(to: second)
+        let window = await open([ImageGroup(primary: first)])
+        defer { window.close() }
+        let panel = window.contentRootForTesting.inspectorPanel
+        panel.headerReadsEnabled = true
+        panel.updateForURL(second)
+        let type = panel.viewModel.facts.file.first { $0.label == "Type" }?.value
+        XCTAssertEqual(type, "PNG image", "no blank Type row while the read runs")
     }
 }

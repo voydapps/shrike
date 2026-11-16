@@ -118,7 +118,7 @@ final class SharedPrimitivesTests: XCTestCase {
             buttons: [.cancel(), .init("Delete Immediately", role: .destructive)]
         )
         // NSAlert's first button is the rightmost: the last in visual order.
-        XCTAssertEqual(alert.buttons.map(\.title), ["Delete Immediately", "Cancel"])
+        XCTAssertEqual(alert.buttons.map { $0.accessibilityLabel() ?? $0.title }, ["Delete Immediately", "Cancel"])
         XCTAssertTrue(alert.buttons[0].hasDestructiveAction)
         XCTAssertEqual(alert.buttons[0].keyEquivalent, "", "destructive is never the default")
         XCTAssertEqual(alert.buttons[1].keyEquivalent, "\u{1b}")

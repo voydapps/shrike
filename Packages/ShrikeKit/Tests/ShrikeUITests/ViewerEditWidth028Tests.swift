@@ -2,7 +2,7 @@
 //  ViewerEditWidth028Tests.swift
 //  ShrikeUITests
 //
-//  Spec 27 V7 and N2: edit mode needs a 648 pt canvas. The inspector steps
+//  Spec 27 V7 and N2: edit mode needs a 900 pt canvas (spec 28 §20.1, measured; was 720, before that 648). The inspector steps
 //  aside first, then the window widens (and returns on exit unless the user
 //  resized). The edit toolbar is never left hidden.
 //
@@ -60,12 +60,12 @@ final class ViewerEditWidth028Tests: XCTestCase {
     }
 
     func testDerivation() {
-        XCTAssertEqual(EditLayout.minCanvasWidth, 648)
+        XCTAssertEqual(EditLayout.minCanvasWidth, 900, "spec 28 §20.1 (measured)")
         XCTAssertEqual(EditLayout.columnWidth, 296)
-        XCTAssertEqual(ViewerSplitController.canvasWidthForEditPanel, 648)
+        XCTAssertEqual(ViewerSplitController.canvasWidthForEditPanel, 900)
     }
 
-    // 1 and 2. A 480 pt window widens to 648; the inspector goes aside; leaving returns it.
+    // 1 and 2. A 480 pt window widens to 900; the inspector goes aside; leaving returns it.
     func testNarrowWindowWidensAndReturns() throws {
         Prefs.viewerInspectorVisibleWindowed = true
         let viewer = makeViewer(width: 480, height: 320)
@@ -75,8 +75,8 @@ final class ViewerEditWidth028Tests: XCTestCase {
         let original = viewer.frame
         enterEdit(viewer)
         XCTAssertFalse(split.isInspectorShown, "the inspector steps aside first")
-        XCTAssertEqual(contentWidth(viewer), 648, accuracy: 0.5)
-        XCTAssertEqual(viewer.contentMinSize.width, 648, accuracy: 0.5)
+        XCTAssertEqual(contentWidth(viewer), 900, accuracy: 0.5)
+        XCTAssertEqual(viewer.contentMinSize.width, 900, accuracy: 0.5)
         XCTAssertEqual(viewer.frame.minX, original.minX, accuracy: 0.5, "the left edge stays")
 
         viewer.contentRootForTesting.editModeController.finalizeExit()
@@ -87,16 +87,16 @@ final class ViewerEditWidth028Tests: XCTestCase {
         XCTAssertTrue(Prefs.viewerInspectorVisibleWindowed)
     }
 
-    // 2. A window the user widened to 900 meanwhile stays at 900.
+    // 2. A window the user widened to 1000 meanwhile stays at 1000.
     func testWindowTheUserResizedStaysOnExit() {
         let viewer = makeViewer(width: 480, height: 320)
         defer { viewer.close() }
         enterEdit(viewer)
         var frame = viewer.frame
-        frame.size.width = 900
+        frame.size.width = 1000
         viewer.setFrame(frame, display: false)
         viewer.contentRootForTesting.editModeController.finalizeExit()
-        XCTAssertEqual(viewer.frame.width, 900, accuracy: 0.5)
+        XCTAssertEqual(viewer.frame.width, 1000, accuracy: 0.5)
         XCTAssertEqual(viewer.minSize.width, 480, accuracy: 0.5)
     }
 
@@ -111,7 +111,7 @@ final class ViewerEditWidth028Tests: XCTestCase {
         enterEdit(viewer)
         XCTAssertLessThanOrEqual(viewer.frame.maxX, visible.maxX + 0.5)
         XCTAssertGreaterThan(rightBefore, visible.maxX - 1 - 0, "the case needs a window near the edge")
-        XCTAssertEqual(contentWidth(viewer), 648, accuracy: 0.5)
+        XCTAssertEqual(contentWidth(viewer), 900, accuracy: 0.5)
         viewer.contentRootForTesting.editModeController.finalizeExit()
     }
 
@@ -126,7 +126,7 @@ final class ViewerEditWidth028Tests: XCTestCase {
         var narrow = viewer.frame
         narrow.size.width = 480
         viewer.setFrame(narrow, display: false)
-        XCTAssertEqual(contentWidth(viewer), 648, accuracy: 0.5, "widened again")
+        XCTAssertEqual(contentWidth(viewer), 900, accuracy: 0.5, "widened again")
         XCTAssertEqual(viewer.frame.minX, original.minX, accuracy: 0.5)
         viewer.contentRootForTesting.layoutSubtreeIfNeeded()
         let content = viewer.contentRootForTesting
@@ -151,7 +151,7 @@ final class ViewerEditWidth028Tests: XCTestCase {
         narrow.size.width = 480
         viewer.setFrame(narrow, display: false)
         enterEdit(viewer)
-        XCTAssertEqual(contentWidth(viewer), 648, accuracy: 0.5)
+        XCTAssertEqual(contentWidth(viewer), 900, accuracy: 0.5)
         viewer.contentRootForTesting.editModeController.finalizeExit()
     }
 
@@ -176,7 +176,7 @@ final class ViewerEditWidth028Tests: XCTestCase {
         content.layoutSubtreeIfNeeded()
         let insets = content.currentFitInsets()
         let canvas = content.imageView.frame.width
-        XCTAssertEqual(canvas, 648, accuracy: 1)
+        XCTAssertEqual(canvas, 900, accuracy: 1)
         XCTAssertGreaterThanOrEqual(canvas - insets.left - insets.right, 319.5)
         viewer.contentRootForTesting.editModeController.finalizeExit()
     }
@@ -238,12 +238,12 @@ final class ViewerEditWidth028Tests: XCTestCase {
         let split = try XCTUnwrap(viewer.splitController)
         let original = viewer.frame
         enterEdit(viewer)
-        XCTAssertEqual(contentWidth(viewer), 648, accuracy: 0.5)
+        XCTAssertEqual(contentWidth(viewer), 900, accuracy: 0.5)
         viewer.fullScreenOverrideForTesting = true
         viewer.contentRootForTesting.editModeController.finalizeExit()
         XCTAssertNotNil(viewer.editWidenRestore, "kept until full screen ends")
         XCTAssertTrue(viewer.editWidenReturnPending)
-        XCTAssertEqual(contentWidth(viewer), 648, accuracy: 0.5, "no resize inside full screen")
+        XCTAssertEqual(contentWidth(viewer), 900, accuracy: 0.5, "no resize inside full screen")
         // Leaving full screen: AppKit puts the inspector back, then the widened frame returns.
         viewer.fullScreenOverrideForTesting = false
         split.willExitFullScreen()
@@ -282,10 +282,10 @@ final class ViewerEditWidth028Tests: XCTestCase {
         viewer.contentRootForTesting.editModeController.finalizeExit()
         viewer.fullScreenOverrideForTesting = false
         var frame = viewer.frame
-        frame.size.width = 900
+        frame.size.width = 1000
         viewer.setFrame(frame, display: false)
         viewer.finishEditWidthReturnAfterFullScreen()
-        XCTAssertEqual(viewer.frame.width, 900, accuracy: 0.5)
+        XCTAssertEqual(viewer.frame.width, 1000, accuracy: 0.5)
     }
 
     // 5. Edit started again inside full screen and still on when full screen ends: no shrink.
@@ -298,8 +298,8 @@ final class ViewerEditWidth028Tests: XCTestCase {
         enterEdit(viewer)   // second edit, inside full screen
         viewer.fullScreenOverrideForTesting = false
         viewer.finishEditWidthReturnAfterFullScreen()
-        XCTAssertEqual(contentWidth(viewer), 648, accuracy: 0.5, "still editing: stays wide")
-        XCTAssertEqual(viewer.contentMinSize.width, 648, accuracy: 0.5)
+        XCTAssertEqual(contentWidth(viewer), 900, accuracy: 0.5, "still editing: stays wide")
+        XCTAssertEqual(viewer.contentMinSize.width, 900, accuracy: 0.5)
         viewer.contentRootForTesting.editModeController.finalizeExit()
         XCTAssertEqual(contentWidth(viewer), 480, accuracy: 0.5, "the normal exit gives the size back")
     }

@@ -433,7 +433,11 @@ extension BrowserWindowController {
         panel.isExtensionHidden = false
         if let folder = currentFolder { panel.directoryURL = folder }
         guard let window else {
-            completion(panel.runModal() == .OK ? panel.url : nil)
+            // Never `runModal`: if this ever runs inside a main-actor task it
+            // would stop every other main-actor job while the panel is up.
+            panel.begin { response in
+                ShrikeAlert.onMain { completion(response == .OK ? panel.url : nil) }
+            }
             return
         }
         // Save panel completions run on the main thread (as FileTransfer).

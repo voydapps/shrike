@@ -156,7 +156,10 @@ final class ViewerEdgeCaseTests: XCTestCase {
         XCTAssertTrue(computed, "the shown photo was computed")
         // Already fed: nothing more.
         viewer.feedHistogramWithShownPhoto()
-        try await Task.sleep(nanoseconds: 150_000_000)
+        for _ in 0..<3 {
+            await withCheckedContinuation { cont in DispatchQueue.main.async { cont.resume() } }
+            for _ in 0..<20 { await Task.yield() }
+        }   // everything already queued on the main queue / actor has run
         await histogram.waitForIdle()
         XCTAssertEqual(histogram.completedCount, before + 1)
     }

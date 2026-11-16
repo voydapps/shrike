@@ -2,8 +2,8 @@
 //  CapsuleZoomMenu.swift
 //  ShrikeUI
 //
-//  The View menu the full-screen capsule's zoom button opens (spec 24
-//  §1.3): the same rows as the window toolbar's Zoom pull-down, built
+//  The View menu the full-screen capsule's zoom button opens:
+//  the same rows as the window toolbar's Zoom pull-down, built
 //  from the window (`ViewerToolbarHost`) each time it opens, so the
 //  current value, the enabled state and the Show / Hide Histogram title
 //  are always right.

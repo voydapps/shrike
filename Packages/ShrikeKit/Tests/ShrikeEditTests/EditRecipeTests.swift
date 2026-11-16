@@ -306,7 +306,7 @@ final class EditRecipeTests: XCTestCase {
                        "identity filtering belongs to checkpoint comparison only")
     }
 
-    func test_contentChangesStillDetectRealAnglesAndDoNotNormalizeInverseGeometry() async {
+    func test_contentChangesStillDetectRealAnglesAndNetOnlyAdjacentQuarterTurns() async {
         let recipe = EditRecipe()
         let entry = await recipe.checkpoint()
         await recipe.append(.rotate(degrees: 0.00001))
@@ -316,7 +316,13 @@ final class EditRecipeTests: XCTestCase {
         await recipe.append(.rotate90(quarters: 1))
         await recipe.append(.rotate90(quarters: -1))
         changed = await recipe.hasContentChanges(since: entry)
-        XCTAssertTrue(changed, "do not add general composite or inverse geometry normalization")
+        XCTAssertFalse(changed, "adjacent opposite quarter turns net to nothing")
+        await recipe.restore(entry)
+        await recipe.append(.rotate90(quarters: 1))
+        await recipe.append(.crop(CropRect(originX: 0.25, originY: 0.1, width: 0.5, height: 0.6)))
+        await recipe.append(.rotate90(quarters: -1))
+        changed = await recipe.hasContentChanges(since: entry)
+        XCTAssertTrue(changed, "turns split by a real crop are not netted")
     }
 
     // MARK: - Helpers

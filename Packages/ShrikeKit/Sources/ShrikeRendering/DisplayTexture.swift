@@ -95,7 +95,7 @@ public final class DisplayTexture: PreparedDisplayImage, @unchecked Sendable {
     /// Display P3: sRGB primaries → P3 for `.srgb8`, identity otherwise.
     public var toLinearP3: simd_float3x3 {
         guard encoding == .srgb8 else { return matrix_identity_float3x3 }
-        // Columns of the linear sRGB → linear Display P3 matrix (D65).
+        // Columns of the linear sRGB → linear Display P3 matrix.
         return simd_float3x3(
             SIMD3<Float>(0.822462, 0.033194, 0.017083),
             SIMD3<Float>(0.177538, 0.966806, 0.072397),

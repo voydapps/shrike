@@ -173,6 +173,6 @@ final class PhotoInfoTests: XCTestCase {
         print(String(format: "[timing] PhotoInfo.readSync 24 MP JPEG (%.1f MB): first=%.3f ms "
                      + "median=%.3f ms p90=%.3f ms min=%.3f ms", Double(size) / 1e6,
                      first, times[25], times[45], times[0]))
-        XCTAssertLessThan(times[25], 10, "median; target < 2 ms, loose guard for loaded CI")
+        perfAssertLessThan(times[25], 10, "median; target < 2 ms, loose guard for loaded CI")
     }
 }

@@ -67,38 +67,113 @@ public final class BrowserContentViewController: NSViewController {
     /// True while the list's sort descriptors are set from `sort`.
     private var isSyncingSortDescriptors = false
 
-    /// The list column key for a sort key; nil for keys with no column.
-    static func tableColumnKey(for key: BrowserSortKey) -> String? {
-        switch key {
-        case .name: return "name"
-        case .dateModified: return "date"
-        case .size: return "size"
-        case .rating: return "rating"
-        case .dimensions: return "dim"
-        case .dateCaptured, .kind: return nil
-        }
-    }
-
-    /// The sorted column shows the arrow; a sort chosen in
-    /// the menu or the toolbar moves it.
+    /// The sorted column shows the arrow; a sort chosen in the menu or the toolbar moves it.
+    /// A sort with no column of its own adds one temporary last column.
     private func syncTableSortIndicator() {
         isSyncingSortDescriptors = true
         defer { isSyncingSortDescriptors = false }
-        let key = Self.tableColumnKey(for: sort.key)
-        let ascending = sort.direction == .ascending
-        tableView.sortDescriptors = key.map { [NSSortDescriptor(key: $0, ascending: ascending)] } ?? []
+        let plan = ListSortIndicator.plan(key: sort.key, direction: sort.direction,
+                                          hiddenColumnIDs: Set(Prefs.browserListHiddenColumns))
+        syncExtraSortColumn(title: plan.extraColumnTitle)
+        tableView.sortDescriptors = [NSSortDescriptor(key: plan.arrowKey, ascending: plan.ascending)]
         var highlighted: NSTableColumn?
         for column in tableView.tableColumns {
-            if let key, column.sortDescriptorPrototype?.key == key {
+            if column.sortDescriptorPrototype?.key == plan.arrowKey {
                 highlighted = column
                 tableView.setIndicatorImage(
-                    NSImage(named: ascending ? "NSAscendingSortIndicator" : "NSDescendingSortIndicator"),
+                    NSImage(named: plan.ascending ? "NSAscendingSortIndicator" : "NSDescendingSortIndicator"),
                     in: column)
+                column.headerCell.setAccessibilityValue(plan.accessibilityValue)
             } else {
                 tableView.setIndicatorImage(nil, in: column)
+                column.headerCell.setAccessibilityValue(nil)
             }
         }
         tableView.highlightedTableColumn = highlighted
+    }
+
+    /// Adds, renames or removes the temporary last column named after the sort.
+    private func syncExtraSortColumn(title: String?) {
+        let id = NSUserInterfaceItemIdentifier(ListSortIndicator.extraColumnID)
+        let existing = tableView.tableColumn(withIdentifier: id)
+        guard let title else {
+            if let existing { tableView.removeTableColumn(existing); refitListColumnsAfterChange() }
+            return
+        }
+        if let existing {
+            guard existing.title != title else { return }
+            existing.title = title
+            existing.headerCell = ListHeaderCell(textCell: title)
+            applySortColumnWidth(existing)
+            tableView.reloadData()
+            refitListColumnsAfterChange()
+            return
+        }
+        let column = NSTableColumn(identifier: id)
+        column.title = title
+        // As wide as one formatted value needs, before the re-fit,
+        // so a date is never cut in the middle while Name has room.
+        applySortColumnWidth(column)
+        column.resizingMask = [.autoresizingMask, .userResizingMask]
+        column.headerCell = ListHeaderCell(textCell: title)
+        column.sortDescriptorPrototype = NSSortDescriptor(key: ListSortIndicator.extraKey, ascending: true)
+        tableView.addTableColumn(column)
+        refitListColumnsAfterChange()
+    }
+
+    /// After the temporary column comes or goes, the columns fill the list's
+    /// width again (as a Columns-menu change does), instead of a scroll bar or an empty strip.
+    private func refitListColumnsAfterChange() {
+        guard mode == .list, listScrollView.contentView.bounds.width > 0 else { return }
+        tableView.sizeToFit()
+    }
+
+    /// Width = max(150, one measured value); for a date the measured width is
+    /// also the minimum, so the re-fit after it never cuts the date.
+    private func applySortColumnWidth(_ column: NSTableColumn) {
+        let needed = Self.sortColumnWidth(sample: Self.sortColumnSample(sort.key), font: Self.listFont)
+        column.minWidth = sort.key == .dateCaptured ? needed : 100
+        column.width = max(150, needed)
+    }
+
+    /// The width of the temporary column: one sample value in the list font
+    /// plus the cell's insets and the column gap (pure; one measurement, not per row).
+    nonisolated static func sortColumnWidth(sample: String, font: NSFont, padding: CGFloat = 20) -> CGFloat {
+        let width = (sample as NSString).size(withAttributes: [.font: font]).width
+        return max(100, ceil(width) + padding)
+    }
+
+    /// A long value of the temporary column for `key` (a two-digit day and
+    /// hour in December, which is the widest month name in most languages
+    /// only approximately; the padding covers the rest).
+    static func sortColumnSample(_ key: BrowserSortKey) -> String {
+        switch key {
+        case .dateCaptured:
+            var parts = DateComponents(year: 2026, month: 12, day: 28, hour: 23, minute: 58)
+            parts.calendar = Calendar.current
+            return parts.date.map { dateFormatter.string(from: $0) } ?? "28 Dec 2026 at 23:58"
+        default:
+            return "JPEG image"
+        }
+    }
+
+    /// The temporary column's text for one row: the value the list is sorted by.
+    private func sortValueText(_ item: BrowserItem) -> String {
+        switch sort.key {
+        case .dateCaptured:
+            var date = item.captureDate ?? item.creationDate
+            if case .date(let read)? = readValues[item.group.primary] { date = read }
+            return date.map { Self.dateFormatter.string(from: $0) } ?? "—"
+        case .kind:
+            return item.utType.localizedDescription ?? item.utType.identifier
+        case .rating:
+            return Badges.compactStars(item.rating)
+        case .dimensions:
+            return listDimensionsText(item)
+        case .name: return item.displayName
+        case .dateModified: return Self.dateFormatter.string(from: item.modificationDate)
+        case .size: return FileSizeText.string(item.fileSize)
+        }
     }
 
     func refreshChromePreferences() {
@@ -381,7 +456,7 @@ public final class BrowserContentViewController: NSViewController {
         tableView.setDraggingSourceOperationMask(BrowserDropRules.insideMask, forLocal: true)
     }
 
-    // MARK: - List columns (spec 27 P3-14)
+    // MARK: - List columns
 
     /// Rating shows "★3" or nothing, so it is narrow; Flag is a single glyph.
     static let ratingColumnWidth: CGFloat = 56
@@ -427,6 +502,7 @@ public final class BrowserContentViewController: NSViewController {
         var hidden = Set(Prefs.browserListHiddenColumns)
         if column.isHidden { hidden.insert(id) } else { hidden.remove(id) }
         Prefs.browserListHiddenColumns = tableView.tableColumns.map(\.identifier.rawValue).filter(hidden.contains)
+        syncTableSortIndicator()   // a sorted column that was hidden or shown moves the arrow
     }
 
     /// Test seams.
@@ -575,7 +651,7 @@ public final class BrowserContentViewController: NSViewController {
         listScrollView.removeFromSuperview()
         emptyStateView.removeFromSuperview()
 
-        // Spec 24 §2: the hover look belongs to the filmstrip view's strip.
+        // The hover look belongs to the filmstrip view's strip.
         collectionView.hoverEnabled = mode == .filmstrip
         let activeScroll: NSView
         switch mode {
@@ -647,6 +723,7 @@ public final class BrowserContentViewController: NSViewController {
     /// ratings, Q, Delete and drags act on what the user sees.
     public func setMode(_ newMode: BrowserViewMode) {
         guard newMode != mode else { return }
+        thumbnailAnchor = nil
         let selected = selectedItems.map(\.url)
         let anchor = selectionAnchorURL
         let hadKeys = isViewLoaded && view.window != nil && view.window?.firstResponder === focusView
@@ -712,7 +789,7 @@ public final class BrowserContentViewController: NSViewController {
     /// anchor, and scrolls the first selected item into view.
     private func restoreSelection(_ urls: [URL], anchor: URL?, scrollToFirst: Bool = true) {
         let groups = visibleItems.map(\.group)
-        // One lookup table for the whole selection (audit MP-02).
+        // One lookup table for the whole selection.
         let lookup = GroupLookup(groups)
         let find: (URL) -> Int? = { lookup.index(of: $0, in: groups, caseInsensitiveFallback: true) }
         let indices = urls.compactMap(find).sorted()
@@ -835,7 +912,7 @@ public final class BrowserContentViewController: NSViewController {
         keepSelectionInView()
     }
 
-    /// Spec 27 N7: after a sort or a filter the first selected item stays on
+    /// After a sort or a filter the first selected item stays on
     /// screen. It scrolls (to the middle) only when it is off screen; an item
     /// already visible does not move the view.
     func keepSelectionInView() {
@@ -894,24 +971,31 @@ public final class BrowserContentViewController: NSViewController {
     /// disk was disconnected. Cleared by the next `setItems`.
     private var folderLoadingState: URL?
     private var folderReadErrorState: (folder: URL, reason: String, retry: () -> Void, openPrivacy: (() -> Void)?)?
-    private var folderGoneState: (folder: URL, action: () -> Void)?
+    private var folderGoneState: (folder: URL, disk: String?, action: () -> Void)?
     var isShowingFolderGone: Bool { folderGoneState != nil }
 
-    /// Names the disk when the folder was on one that is no longer there (audit L11).
-    static func folderGoneSubtitle(for folder: URL) -> String {
-        if let disk = BrowserWindowController.goneVolumeName(of: folder) {
-            return "“\(disk)” was disconnected."
-        }
+    /// Names the disk when the folder was on one that is no longer there,
+    /// from a disk name found earlier: no disk read while drawing.
+    static func folderGoneSubtitle(disk: String?) -> String {
+        if let disk { return "“\(disk)” was disconnected." }
         return "It may have been moved, or its disk was disconnected."
     }
 
-    func showFolderGone(_ folder: URL, goToEnclosingFolder: @escaping () -> Void) {
+    func showFolderGone(_ folder: URL, disk: String? = nil, goToEnclosingFolder: @escaping () -> Void) {
         listDimensionsTask?.cancel()
         listDimensionsTask = nil
         allItems = []
         visibleItems = []
-        folderGoneState = (folder, goToEnclosingFolder)
+        folderGoneState = (folder, disk, goToEnclosingFolder)
         refresh()
+        updateEmptyState()
+    }
+
+    /// The gone disk's name, found off the main thread. Dropped when
+    /// another folder or state is on screen by then.
+    func setFolderGoneDisk(_ disk: String, for folder: URL) {
+        guard folderGoneState?.folder == folder, folderGoneState?.disk == nil else { return }
+        folderGoneState?.disk = disk
         updateEmptyState()
     }
 
@@ -1132,6 +1216,7 @@ public final class BrowserContentViewController: NSViewController {
     }
 
     private func recomputeVisibleItems() {
+        thumbnailAnchor = nil
         visibleItems = BrowserPipeline.filterAndSort(
             allItems, filter: filter, sort: appliedSort,
             values: readValuesKey == appliedSort.key ? readValues : nil
@@ -1157,6 +1242,47 @@ public final class BrowserContentViewController: NSViewController {
             return "\(w) × \(h)"
         }
         return "—"
+    }
+
+    /// What the listing knows of each shown photo, for a viewer's File
+    /// rows (no disk call). Pixel sizes only where the grid or list
+    /// would show them.
+    func listingFacts() -> [URL: InspectorFileInput] {
+        Self.listingFacts(visibleItems, listDimensions, listingSizeDistrusted)
+    }
+
+    /// The facts of one photo now (the one a new viewer shows first), so its
+    /// rows do not arrive late; nil when the listing does not hold it.
+    func listingFacts(for url: URL) -> InspectorFileInput? {
+        guard let item = visibleItems.first(where: { $0.url == url }) else { return nil }
+        return Self.listingFacts([item], listDimensions, listingSizeDistrusted)[url]
+    }
+
+    /// `listingFacts()` built off the main thread: the walk over a big folder
+    /// (thousands of photos) does not hold up opening the viewer. The three
+    /// inputs are value copies taken now.
+    func listingFactsOffMain() async -> [URL: InspectorFileInput] {
+        let items = visibleItems, dimensions = listDimensions, distrusted = listingSizeDistrusted
+        return await Task.detached(priority: .utility) {
+            Self.listingFacts(items, dimensions, distrusted)
+        }.value
+    }
+
+    nonisolated private static func listingFacts(_ items: [BrowserItem],
+                                                 _ dimensions: [URL: (modified: Date, width: Int?, height: Int?)],
+                                                 _ distrusted: Set<URL>) -> [URL: InspectorFileInput] {
+        var facts: [URL: InspectorFileInput] = [:]
+        facts.reserveCapacity(items.count)
+        for item in items {
+            var input = InspectorFileInput(type: item.utType, fileSize: item.fileSize, modified: item.modificationDate)
+            if let known = dimensions[item.url], known.modified == item.modificationDate {
+                input.pixelWidth = known.width; input.pixelHeight = known.height
+            } else if !distrusted.contains(item.url) {
+                input.pixelWidth = item.pixelWidth; input.pixelHeight = item.pixelHeight
+            }
+            facts[item.url] = input
+        }
+        return facts
     }
 
     /// In list mode, finds the sizes the listing lacks: the header cache
@@ -1296,7 +1422,7 @@ public final class BrowserContentViewController: NSViewController {
             emptyStateView.configure(
                 symbol: "questionmark.folder",
                 title: "“\(gone.folder.lastPathComponent)” is no longer available.",
-                subtitle: Self.folderGoneSubtitle(for: gone.folder),
+                subtitle: Self.folderGoneSubtitle(disk: gone.disk),
                 buttonTitle: "Go to Enclosing Folder",
                 action: gone.action
             )
@@ -1446,11 +1572,83 @@ public final class BrowserContentViewController: NSViewController {
     public func applyThumbnailSize() {
         guard let layout = collectionView.collectionViewLayout as? NSCollectionViewFlowLayout else { return }
         if mode == .grid {
+            // A selected photo on screen before the size change stays on
+            // screen after it. With no selection, or one scrolled out of
+            // view, the photo at the top of the visible area (the lowest
+            // index of the top row) is scrolled back to the top instead.
+            // The anchor is kept over consecutive size steps, so Larger
+            // then Smaller returns to the same photo.
+            let selectionWasShown = collectionView.selectionIndexPaths.min()
+                .flatMap { collectionView.layoutAttributesForItem(at: $0)?.frame }
+                .map { collectionView.visibleRect.intersects($0) } ?? false
+            let clip = gridScrollView.contentView
+            var anchorIndex: Int?
+            if selectionWasShown {
+                thumbnailAnchor = nil
+            } else if !visibleItems.isEmpty {
+                // Still ours only if the view is where we left it: any
+                // other scroll (wheel, scroller, keys) moved the origin.
+                if let kept = thumbnailAnchor, kept.index < visibleItems.count,
+                   abs(clip.bounds.origin.y - kept.originY) < 0.5 {
+                    anchorIndex = kept.index
+                } else {
+                    anchorIndex = topRowAnchorIndex()
+                }
+            }
             layout.itemSize = NSSize(width: thumbnailPixelSize, height: thumbnailPixelSize + (Prefs.largerChrome ? 48 : 40))
             layout.invalidateLayout()
+            if selectionWasShown {
+                collectionView.layoutSubtreeIfNeeded()
+                keepSelectionInView()
+            } else if let anchorIndex {
+                collectionView.layoutSubtreeIfNeeded()
+                scrollAnchorToTop(anchorIndex, layout: layout)
+            } else {
+                thumbnailAnchor = nil
+            }
         }
         applyWheelStep()
     }
+
+    /// The photo a size change keeps at the top: the lowest index of the
+    /// first row that shows at least a third of its height.
+    private func topRowAnchorIndex() -> Int? {
+        let visible = collectionView.visibleRect
+        guard visible.height > 0, !visibleItems.isEmpty else { return nil }
+        var best: (minY: CGFloat, index: Int)?
+        for index in 0..<visibleItems.count {
+            guard let frame = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame
+            else { continue }
+            if frame.minY > visible.maxY { break }   // later rows are further down
+            let shown = min(frame.maxY, visible.maxY) - max(frame.minY, visible.minY)
+            guard shown >= frame.height / 3 else { continue }
+            if let b = best {
+                if frame.minY > b.minY + 0.5 { break }   // the next row; items come row by row
+            }
+            if best == nil { best = (frame.minY, index) }
+        }
+        return best?.index
+    }
+
+    private func scrollAnchorToTop(_ index: Int, layout: NSCollectionViewFlowLayout) {
+        guard let frame = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame
+        else { thumbnailAnchor = nil; return }
+        let clip = gridScrollView.contentView
+        // The first row sits under the section's top padding; show it.
+        let firstRow = frame.minY <= layout.sectionInset.top + 0.5
+        let wanted = firstRow ? 0 : frame.minY
+        let maxY = max(0, layout.collectionViewContentSize.height - clip.bounds.height)
+        let y = min(max(0, wanted), maxY)
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: y))
+        gridScrollView.reflectScrolledClipView(clip)
+        thumbnailAnchor = (index, clip.bounds.origin.y)
+    }
+
+    /// The photo kept at the top over consecutive size steps, with the
+    /// scroll position we left the view at. The next step reuses it only
+    /// while the view is still there; a folder, sort or filter change
+    /// (`recomputeVisibleItems`) or a mode switch forgets it.
+    private var thumbnailAnchor: (index: Int, originY: CGFloat)?
 
     /// One wheel notch moves a third of a grid row (a third of a cell in
     /// the filmstrip). AppKit's default is 10 pt
@@ -1479,85 +1677,134 @@ public final class BrowserContentViewController: NSViewController {
 
     // MARK: - Context menu
 
+    /// The grid menu is built from the model (`GridContextMenuModel`), with every
+    /// row present once; `menuNeedsUpdate` hides Revert to Original when no kept original exists.
     private func makeCollectionContextMenu() -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(makeMenuItem("Open", #selector(menuOpen(_:))))
-        // Rows go up the responder chain to the window controller, which
-        // opens the whole selection.
-        let editors = ExternalEditorsSubmenu(target: nil)
-        editorsSubmenus.append(editors)
-        menu.addItem(editors.makeParentItem())
-        menu.addItem(makeMenuItem("Reveal in Finder", #selector(menuReveal(_:))))
-        // Share ▸ for the selection.
-        let share = ShareSubmenu(files: { [weak self] in
-            self?.selectedItems.flatMap { ShareSubmenu.files(of: $0.group) } ?? []
-        })
-        shareSubmenus.append(share)
-        menu.addItem(share.makeParentItem())
-        // Slideshow…, Batch… and Compare go up the responder chain like the menu
-        // bar; the viewer's menu has the same three in the same order (spec 27 P3-12).
-        let slideshow = NSMenuItem(title: ShrikeCommand.slideshow.title, action: ShrikeMainMenu.commandAction,
-                                   keyEquivalent: "")
-        slideshow.representedObject = ShrikeCommand.slideshow.rawValue
-        menu.addItem(slideshow)
-        let batch = NSMenuItem(title: ShrikeCommand.batch.title, action: ShrikeMainMenu.commandAction,
-                               keyEquivalent: "")
-        batch.representedObject = ShrikeCommand.batch.rawValue
-        menu.addItem(batch)
-        // Compare, up the responder chain too.
-        let compare = NSMenuItem(title: ShrikeCommand.compare.title, action: ShrikeMainMenu.commandAction,
-                                 keyEquivalent: "")
-        compare.representedObject = ShrikeCommand.compare.rawValue
-        menu.addItem(compare)
-        menu.addItem(.separator())
-        let rate = NSMenu(title: "Rating")
-        for i in 0...5 {
-            let title = i == 0 ? "No rating" : String(repeating: "★", count: i)
-            let item = NSMenuItem(title: title, action: #selector(menuRate(_:)), keyEquivalent: "")
-            item.representedObject = [ShrikeCommand.rate0, .rate1, .rate2, .rate3, .rate4, .rate5][i].rawValue
-            item.tag = i
-            item.target = self
-            rate.addItem(item)
+        let full = GridMenuState(selectedCount: 1, visibleCount: 2, hasKeptOriginal: true)
+        for row in GridContextMenuModel.rows(for: full) {
+            if row.isSeparator { menu.addItem(.separator()); continue }
+            let item = makeGridItem(row)
+            item.identifier = row.id == .rename ? Self.contextRenameIdentifier : Self.gridIdentifier(row.id)
+            menu.addItem(item)
         }
-        let rateItem = NSMenuItem(title: "Rating", action: nil, keyEquivalent: "")
-        rateItem.submenu = rate
-        menu.addItem(rateItem)
-
-        let flagItem = makeMenuItem(ShrikeCommand.toggleFlag.title, #selector(menuFlag(_:)))
-        flagItem.representedObject = ShrikeCommand.toggleFlag.rawValue
-        menu.addItem(flagItem)
-        menu.addItem(.separator())
-        // Copy to Folder ▸ · Move to Folder ▸ · Rename… (spec 25 §12.1). The
-        // rows go up the responder chain to the Browser controller, like the
-        // File menu's.
-        for command in [ShrikeCommand.copyToFolder, .moveToFolder] {
-            let title = command.title
-            let submenu = NSMenu(title: title)
-            submenu.delegate = self
-            let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            parent.representedObject = command.rawValue
-            parent.submenu = submenu
-            menu.addItem(parent)
-        }
-        let rename = NSMenuItem(title: ShrikeCommand.rename.title, action: ShrikeMainMenu.commandAction,
-                                keyEquivalent: "")
-        rename.representedObject = ShrikeCommand.rename.rawValue
-        // One photo only: with several, the menu leaves it to Batch… (F2 and
-        // the File menu still open the batch rename for a selection).
-        rename.identifier = Self.contextRenameIdentifier
-        MenuKeyHints.applyFunctionKey(to: rename, command: .rename)   // F2 as a real key, no ⌘
-        menu.addItem(rename)
         menu.delegate = self
-        menu.addItem(.separator())
-        menu.addItem(makeMenuItem("Move to Trash", #selector(menuTrash(_:))))
         return menu
     }
+
+    static func gridIdentifier(_ id: GridMenuRow.ID) -> NSUserInterfaceItemIdentifier {
+        NSUserInterfaceItemIdentifier(gridIdentifierPrefix + id.rawValue)
+    }
+
+    private static let gridIdentifierPrefix = "browser.contextMenu."
+
+    /// The model row an item of the grid menu stands for.
+    static func gridRowID(of item: NSMenuItem) -> GridMenuRow.ID? {
+        guard let raw = item.identifier?.rawValue, raw.hasPrefix(gridIdentifierPrefix) else { return nil }
+        return GridMenuRow.ID(rawValue: String(raw.dropFirst(gridIdentifierPrefix.count)))
+    }
+
+    private func makeGridItem(_ row: GridMenuRow) -> NSMenuItem {
+        switch row.id {
+        case .open:
+            return makeMenuItem(row.title, #selector(menuOpen(_:)))
+        case .openWith:
+            let submenu = NSMenu(title: row.title)
+            submenu.delegate = self
+            let parent = NSMenuItem(title: row.title, action: nil, keyEquivalent: "")
+            parent.submenu = submenu
+            return parent
+        case .externalEditor:
+            // Rows go up the responder chain to the window controller, which
+            // opens the whole selection.
+            let editors = ExternalEditorsSubmenu(target: nil)
+            editorsSubmenus.append(editors)
+            return editors.makeParentItem()
+        case .reveal:
+            return makeMenuItem(row.title, #selector(menuReveal(_:)))
+        case .share:
+            let share = ShareSubmenu(files: { [weak self] in
+                self?.selectedItems.flatMap { ShareSubmenu.files(of: $0.group) } ?? []
+            })
+            shareSubmenus.append(share)
+            return share.makeParentItem()
+        case .rating:
+            let rate = NSMenu(title: row.title)
+            for i in 0...5 {
+                let title = i == 0 ? "No rating" : String(repeating: "★", count: i)
+                let item = NSMenuItem(title: title, action: #selector(menuRate(_:)), keyEquivalent: "")
+                item.representedObject = [ShrikeCommand.rate0, .rate1, .rate2, .rate3, .rate4, .rate5][i].rawValue
+                item.tag = i
+                item.target = self
+                rate.addItem(item)
+            }
+            let parent = NSMenuItem(title: row.title, action: nil, keyEquivalent: "")
+            parent.submenu = rate
+            return parent
+        case .flag:
+            let item = makeMenuItem(row.title, #selector(menuFlag(_:)))
+            item.representedObject = ShrikeCommand.toggleFlag.rawValue
+            return item
+        case .trash:
+            return makeMenuItem(row.title, #selector(menuTrash(_:)))
+        case .copyToFolder, .moveToFolder:
+            let submenu = NSMenu(title: row.title)
+            submenu.delegate = self
+            let parent = NSMenuItem(title: row.title, action: nil, keyEquivalent: "")
+            parent.representedObject = row.command?.rawValue
+            parent.submenu = submenu
+            return parent
+        case .rename:
+            let item = NSMenuItem(title: row.title, action: ShrikeMainMenu.commandAction, keyEquivalent: "")
+            item.representedObject = row.command?.rawValue
+            MenuKeyHints.applyFunctionKey(to: item, command: .rename)   // F2 as a real key, no ⌘
+            return item
+        default:
+            // Command rows go up the responder chain like the menu bar's.
+            let item = NSMenuItem(title: row.title, action: ShrikeMainMenu.commandAction, keyEquivalent: "")
+            item.representedObject = row.command?.rawValue
+            return item
+        }
+    }
+
+    /// What the grid menu needs to know about the selection (memory only, no disk).
+    var gridMenuState: GridMenuState {
+        let items = selectedItems
+        let one = items.count == 1 ? items[0] : nil
+        return GridMenuState(
+            selectedCount: items.count, visibleCount: visibleItems.count,
+            rawOnly: one?.group.primaryIsRAW ?? false,
+            unreadable: one?.isListingUnreadable ?? false,
+            hasKeptOriginal: one != nil && (revertAvailableProvider?() ?? false))
+    }
+
+    /// Hides the rows the model leaves out (Revert to Original without a kept original).
+    private func syncGridMenu(_ menu: NSMenu) {
+        let rows = GridContextMenuModel.rows(for: gridMenuState)
+        let shown = Set(rows.map(\.id))
+        for item in menu.items {
+            guard let id = Self.gridRowID(of: item) else { continue }
+            item.isHidden = !shown.contains(id)
+            // Every submenu parent follows the model (before, Copy to Folder, Move to
+            // Folder, Share, Open in External Editor stayed enabled with nothing selected).
+            if item.submenu != nil, let row = rows.first(where: { $0.id == id }) {
+                item.isEnabled = row.enabled
+            }
+        }
+        ShrikeMainMenu.tidySeparators(in: menu, skipping: menu.items.compactMap(\.submenu))
+    }
+
+    /// Whether Shrike kept an original for the one selected photo (set by the window controller).
+    var revertAvailableProvider: (() -> Bool)?
 
     /// Marks the right-click menu's Rename… row (disabled for several photos).
     static let contextRenameIdentifier = NSUserInterfaceItemIdentifier("browser.contextMenu.rename")
 
     /// The Browser's destination slots, for the Copy / Move submenus.
     var destinationSlotsProvider: (() -> DestinationSlots?)?
+
+    /// The grid right-click menu (tests).
+    var collectionContextMenuForTesting: NSMenu { collectionView.menu ?? NSMenu() }
 
     /// The context menu's titles in order (tests).
     var contextMenuTitlesForTesting: [String] {
@@ -1583,6 +1830,10 @@ public final class BrowserContentViewController: NSViewController {
 
     @objc private func menuOpen(_ sender: Any?) {
         openSelection()
+    }
+
+    @objc private func menuOpenWith(_ sender: NSMenuItem) {
+        OpenWithMenu.open(selectedItems.map(\.url), with: sender)
     }
 
     @objc private func menuReveal(_ sender: Any?) {
@@ -1787,7 +2038,7 @@ public final class BrowserContentViewController: NSViewController {
         refreshPairCaptions()
     }
 
-    /// The grid cell of the pair shows the name of the file on screen (spec 27 N5).
+    /// The grid cell of the pair shows the name of the file on screen.
     private func refreshPairCaptions() {
         for case let cell as ThumbnailItem in collectionView.visibleItems() {
             guard let url = cell.currentItem?.url else { continue }
@@ -2005,7 +2256,7 @@ extension BrowserContentViewController: NSTableViewDataSource, NSTableViewDelega
                     }
                 } catch is CancellationError {
                 } catch {
-                    // Can't preview: the same glyph as the grid cell (spec 25 §2.2).
+                    // Can't preview: the same glyph as the grid cell.
                     await MainActor.run { [weak image] in
                         image?.contentTintColor = Badges.brokenFileTint
                         image?.image = Badges.brokenFileGlyph(pointSize: 16)
@@ -2026,6 +2277,10 @@ extension BrowserContentViewController: NSTableViewDataSource, NSTableViewDelega
             addCellLabel(cell, text: text)
         case "col.dim":
             text.stringValue = listDimensionsText(item)
+            addCellLabel(cell, text: text)
+        case ListSortIndicator.extraColumnID:
+            text.stringValue = sortValueText(item)
+            if sort.key == .dateCaptured { text.lineBreakMode = .byTruncatingTail }   // a date reads from the left
             addCellLabel(cell, text: text)
         case "col.size":
             text.stringValue = FileSizeText.string(item.fileSize)
@@ -2213,7 +2468,17 @@ final class FilmstripPreviewView: NSImageView {
 
 // MARK: - Context menu destinations
 
-extension BrowserContentViewController: NSMenuDelegate {
+extension BrowserContentViewController: NSMenuDelegate, NSMenuItemValidation {
+
+    /// Rows this controller handles itself follow the model.
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if let id = Self.gridRowID(of: menuItem) {
+            return GridContextMenuModel.isEnabled(id, for: gridMenuState)
+        }
+        // The Rating ▸ rows.
+        if menuItem.action == #selector(menuRate(_:)) { return !selectedItems.isEmpty }
+        return true
+    }
 
     public func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === tableView.headerView?.menu {
@@ -2226,6 +2491,11 @@ extension BrowserContentViewController: NSMenuDelegate {
             // This controller is the menu's delegate, so it refreshes Share ▸ (it was greyed:
             // the row was built once, with the empty selection of the build).
             for share in shareSubmenus { share.refreshParent() }
+            syncGridMenu(menu)
+            return
+        }
+        if menu.title == "Open With" {
+            OpenWithMenu.fill(menu, url: selectedItems.first?.url, target: self, action: #selector(menuOpenWith(_:)))
             return
         }
         guard let slots = destinationSlotsProvider?() else { return }
@@ -2238,7 +2508,6 @@ extension BrowserContentViewController: NSMenuDelegate {
 }
 
 /// The list's column header text: 12 pt semibold, `text.secondary` token
-/// (spec 27 P3-14; at least 4.5:1 on the header).
 final class ListHeaderCell: NSTableHeaderCell {
     static let font = ChromeTypography.font(12, weight: .semibold)
 

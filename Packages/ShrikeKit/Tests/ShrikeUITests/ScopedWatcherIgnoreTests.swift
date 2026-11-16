@@ -24,6 +24,7 @@ private final class Probe: Sendable {
     private struct Seen: Sendable {
         var modified: Set<String> = []
         var renamed: Set<String> = []
+        var added: Set<String> = []
     }
     let watcher: FolderWatcher
     private let seen = OSAllocatedUnfairLock<Seen>(initialState: Seen())
@@ -37,6 +38,7 @@ private final class Probe: Sendable {
             for await change in stream {
                 seen.withLock {
                     $0.modified.formUnion(change.modified.map(\.lastPathComponent))
+                    $0.added.formUnion(change.added.map(\.lastPathComponent))
                     $0.renamed.formUnion(change.renamed.map { "\($0.from.lastPathComponent)>\($0.to.lastPathComponent)" })
                 }
             }
@@ -48,6 +50,20 @@ private final class Probe: Sendable {
 
     var modified: Set<String> { seen.withLock { $0.modified } }
     var renamed: Set<String> { seen.withLock { $0.renamed } }
+
+    /// Writes a new file and waits until this watcher reports it. Everything
+    /// that happened in the folder before is delivered by then, so a second
+    /// watcher started afterwards cannot be handed the old events.
+    func flush(in dir: URL, timeout: TimeInterval = 15) async -> Bool {
+        let name = "flush-\(UUID().uuidString).tmp"
+        try? Data([1]).write(to: dir.appendingPathComponent(name))
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if seen.withLock({ $0.added.contains(name) }) { return true }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return false
+    }
 
     func waitForModified(_ name: String, timeout: TimeInterval = 8) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
@@ -139,16 +155,24 @@ final class ScopedWatcherIgnoreTests: XCTestCase {
         scope.setWatcher(mine); partnerScope.setWatcher(partner); scope.setPartner(partnerScope)
         XCTAssertEqual(scope.watchers.count, 2)
         var mineHeard = Set<String>(), partnerHeard = Set<String>()
-        let t1 = Task { for await c in mine.changes { mineHeard.formUnion(c.modified.map(\.lastPathComponent)) } }
-        let t2 = Task { for await c in partner.changes { partnerHeard.formUnion(c.modified.map(\.lastPathComponent)) } }
+        let t1 = Task { for await c in mine.changes { mineHeard.formUnion((c.modified + c.added).map(\.lastPathComponent)) } }
+        let t2 = Task { for await c in partner.changes { partnerHeard.formUnion((c.modified + c.added).map(\.lastPathComponent)) } }
         defer { t1.cancel(); t2.cancel() }
         scope.ignore(paths: [a], for: .seconds(2))
         try Data([1, 2, 3]).write(to: a, options: .atomic)
         let heard = await other.waitForModified("a.jpg")
         XCTAssertTrue(heard, "a watcher outside the scope still reports the write")
-        try await Task.sleep(for: .milliseconds(600))
-        XCTAssertTrue(mineHeard.isEmpty, "the window's own watcher ignores it")
-        XCTAssertTrue(partnerHeard.isEmpty, "the paired window's watcher ignores it")
+        // A write that is NOT ignored acts as a sentinel: once both scoped
+        // watchers have reported it, they have also delivered everything that
+        // came before it, so the ignored write would have shown up by now.
+        let sentinel = dir.appendingPathComponent("sentinel.jpg")
+        try Data([9]).write(to: sentinel, options: .atomic)
+        let bothHeard = await waitUntil(15) {
+            mineHeard.contains("sentinel.jpg") && partnerHeard.contains("sentinel.jpg")
+        }
+        XCTAssertTrue(bothHeard, "the scoped watchers still report other files")
+        XCTAssertFalse(mineHeard.contains("a.jpg"), "the window's own watcher ignores it")
+        XCTAssertFalse(partnerHeard.contains("a.jpg"), "the paired window's watcher ignores it")
     }
 
     func testPairingLinksTheScopes() async throws {
@@ -217,7 +241,8 @@ final class ScopedWatcherIgnoreTests: XCTestCase {
         XCTAssertTrue(reverted, "Revert is seen by another watcher")
         let afterRevert = await waitUntil { !viewer.isDisplayedEdited }
         XCTAssertTrue(afterRevert)
-        try await Task.sleep(for: .milliseconds(1500))
+        let flushed = await probe.flush(in: dir)
+        XCTAssertTrue(flushed, "the first watcher never reported the flush file")
         let probe2 = try Probe(folder: dir)
         defer { probe2.stop() }
         viewer.undoManagerForTesting.undo()
@@ -240,7 +265,8 @@ final class ScopedWatcherIgnoreTests: XCTestCase {
         await browser.waitForOrientationWrites()
         let seen = await probe.waitForModified("b.jpg")
         XCTAssertTrue(seen, "a second Browser must hear the rotate")
-        try await Task.sleep(for: .milliseconds(1500))
+        let flushed = await probe.flush(in: dir)
+        XCTAssertTrue(flushed, "the first watcher never reported the flush file")
         let probe2 = try Probe(folder: dir)
         defer { probe2.stop() }
         let undo = try XCTUnwrap(browser.window?.undoManager)
@@ -347,7 +373,7 @@ final class ScopedWatcherIgnoreTests: XCTestCase {
         let probe = try Probe(folder: dir)
         defer { own.stop(); probe.stop() }
         var ownHeard = Set<String>()
-        let t = Task { for await c in own.changes { ownHeard.formUnion(c.modified.map(\.lastPathComponent)) } }
+        let t = Task { for await c in own.changes { ownHeard.formUnion((c.modified + c.added).map(\.lastPathComponent)) } }
         defer { t.cancel() }
         let scope = WindowWatcherScope()
         scope.setWatcher(own)
@@ -357,8 +383,12 @@ final class ScopedWatcherIgnoreTests: XCTestCase {
         await fulfillment(of: [done], timeout: 5)
         let seen = await probe.waitForModified("t.jpg")
         XCTAssertTrue(seen, "another window sees the xattr change")
-        try await Task.sleep(for: .milliseconds(600))
-        XCTAssertTrue(ownHeard.isEmpty)
+        // Sentinel: an unsuppressed write the own watcher must hear; after that
+        // the suppressed xattr change would have been delivered too.
+        try Data([9]).write(to: dir.appendingPathComponent("sentinel.jpg"), options: .atomic)
+        let ownSawSentinel = await waitUntil(15) { ownHeard.contains("sentinel.jpg") }
+        XCTAssertTrue(ownSawSentinel)
+        XCTAssertFalse(ownHeard.contains("t.jpg"))
     }
 
     func testRatingWriteIgnoresOnlyTheGivenSuppressor() async throws {

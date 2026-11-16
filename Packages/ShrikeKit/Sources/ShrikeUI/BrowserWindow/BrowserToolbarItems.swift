@@ -108,7 +108,7 @@ public final class BrowserFilterPopover: NSViewController {
     let flagPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private(set) var kindBoxes: [BrowserFilterKind: NSButton] = [:]
     let clearButton = NSButton(title: "Clear Filters", target: nil, action: nil)
-    /// "Tags": a pull-down that closes on each pick (spec 21b §3). Items: the tags
+    /// "Tags": a pull-down that closes on each pick. Items: the tags
     /// found in the folder, colour tags first.
     let tagPopup = NSPopUpButton(frame: .zero, pullsDown: true)
     /// The tags of the folder and whether they are still being read. The window
@@ -201,7 +201,10 @@ public final class BrowserFilterPopover: NSViewController {
         flagPopup.widthAnchor.constraint(equalTo: ratingPopup.widthAnchor).isActive = true
         tagPopup.widthAnchor.constraint(equalTo: ratingPopup.widthAnchor).isActive = true
 
-        let root = NSView()
+        // Opaque in Light and Dark (the Tags popover's body): the thumbnails behind
+        // must not show through the small text controls.
+        let root = OpaquePopoverBackground()
+        root.wantsLayer = true
         root.addSubview(stack)
         NSLayoutConstraint.activate([
             root.widthAnchor.constraint(equalToConstant: Self.width),

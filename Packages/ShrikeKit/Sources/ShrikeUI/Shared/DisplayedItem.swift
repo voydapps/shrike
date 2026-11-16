@@ -20,7 +20,7 @@ public struct DisplayedItem: Equatable, Sendable {
     /// List generation at paint time (bumps on every list mutation).
     public let generation: UInt64
     /// The file on screen: the primary, or the group's RAW while the view
-    /// is switched to it (spec 24 §4). Rate / flag / trash / move act on the
+    /// is switched to it. Rate / flag / trash / move act on the
     /// group; Reveal, Copy Path and Open With act on this file.
     public let shownURL: URL
 

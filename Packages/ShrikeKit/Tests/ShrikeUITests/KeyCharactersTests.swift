@@ -142,6 +142,6 @@ final class KeyCharactersTests: XCTestCase {
         let perKey = Double(DispatchTime.now().uptimeNanoseconds - start) / Double(n) / 1000
         print("key translation: \(String(format: "%.2f", perKey)) µs per key (\(n) keys)")
         XCTAssertGreaterThan(total, 0)
-        XCTAssertLessThan(perKey, 50, "a key press must cost microseconds")
+        perfAssertLessThan(perKey, 50, "a key press must cost microseconds")
     }
 }

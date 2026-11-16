@@ -36,7 +36,7 @@ final class ViewerInspectorViewController: NSViewController {
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 400))
-        view.setAccessibilityLabel("Inspector")
+        view.setAccessibilityLabel("Info")
     }
 
     /// Builds the inspector content once.
@@ -143,11 +143,11 @@ final class ViewerSplitController: NSSplitViewController {
         onInspectorShownChanged?(shown)
     }
 
-    // MARK: Edit mode makes room for the tool panel (spec 26 §5)
+    // MARK: Edit mode makes room for the tool panel
 
     /// The canvas needs the tool panel column (280 + 16), the crop handle
     /// margins and a photo at least 320 pt wide: `EditLayout.minCanvasWidth`
-    /// (648 pt, spec 27 V7; it was 360 in spec 26 §5). Narrower than this, the
+    /// (648 pt; it was 360 before). Narrower than this, the
     /// inspector steps aside while editing.
     static let canvasWidthForEditPanel: CGFloat = EditLayout.minCanvasWidth
     /// True while this controller has collapsed the inspector for editing.
@@ -165,7 +165,7 @@ final class ViewerSplitController: NSSplitViewController {
     func editModeChanged(active: Bool) {
         isEditing = active
         if active {
-            // Spec 21b §9 (on-screen L16): the tool panel and the info panel together left
+            // The tool panel and the info panel together left
             // the photo about half the window. The info panel steps aside while editing
             // and comes back on exit unless the user opened it again meanwhile.
             guard isInspectorShown else { return }

@@ -24,7 +24,9 @@ enum ChromeTypography {
            let font = control.font, font.pointSize <= 17 {
             baselines.setObject(NSNumber(value: Double(font.pointSize - (Prefs.largerChrome ? 2 : 0))), forKey: root)
         }
-        root.subviews.forEach(register)
+        // A button's subviews are AppKit's own (a borderless button's NSButtonTextField
+        // keeps 13 pt whatever the button's font); the button's `font` is what scales.
+        if !(root is NSButton) { root.subviews.forEach(register) }
     }
     @MainActor static func update(_ root: NSView) {
         if let outline = root as? NSOutlineView { outline.rowHeight = targetHeight }
@@ -46,7 +48,7 @@ enum ChromeTypography {
                 }
             }
         }
-        for child in root.subviews { update(child) }
+        if !(root is NSButton) { for child in root.subviews { update(child) } }
         root.needsLayout = true
     }
     @MainActor static func scaled(_ constraint: NSLayoutConstraint, normal: CGFloat, large: CGFloat) -> NSLayoutConstraint {

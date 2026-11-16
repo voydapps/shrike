@@ -48,10 +48,12 @@ final class InspectorShared028Tests: XCTestCase {
     }
 
     func testBothInspectorsLabelRatingAndFlagTheSame() throws {
+        XCTAssertTrue(try source("Shared/InspectorRows.swift").contains("Toggle(\"Flagged\""))
         for file in ["BrowserWindow/InspectorPaneView.swift", "ViewerWindow/Panels/InspectorPanel.swift"] {
             let text = try source(file)
             XCTAssertTrue(text.contains("\"Rating & Flag\""), "\(file): heading is Rating & Flag")
-            XCTAssertTrue(text.contains("\"Flagged\""), "\(file): flag control is Flagged")
+            // Spec 28 §7: one shared flag control (its title is "Flagged").
+            XCTAssertTrue(text.contains("InspectorFlagToggle("), "\(file): flag control is the shared Flagged one")
             XCTAssertFalse(text.contains("\"Culling\""), "\(file): no Culling heading")
             XCTAssertFalse(text.contains("Toggle(\"Flag\""), "\(file): no bare Flag toggle")
         }
@@ -61,7 +63,7 @@ final class InspectorShared028Tests: XCTestCase {
         let text = try source("BrowserWindow/InspectorPaneView.swift")
         XCTAssertFalse(text.contains("size: 11"))
         XCTAssertFalse(text.contains(".caption"))
-        XCTAssertEqual(InspectorLayout.rowFontSize, 12)
+        XCTAssertEqual(InspectorStyle.smallFontSize, 12)
         XCTAssertEqual(InspectorLayout.headerFontSize, 13)
         XCTAssertEqual(InspectorLayout.rowGap, 4)
         XCTAssertEqual(InspectorLayout.sectionGap, 16)
@@ -73,9 +75,10 @@ final class InspectorShared028Tests: XCTestCase {
         XCTAssertTrue(InspectorRows.isCompact(width: 260))
         XCTAssertFalse(InspectorRows.isCompact(width: 300))
         XCTAssertEqual(InspectorRows.compactValue(label: "Dimensions", value: "5184 × 3456 (17.9 MP)"), "5184 × 3456")
-        XCTAssertEqual(InspectorRows.compactValue(label: "Date taken", value: "23 Aug 2021 at 10:04:39"),
-                       "23 Aug 2021, 10:04")
-        XCTAssertEqual(InspectorRows.compactValue(label: "Colour profile", value: "sRGB IEC61966-2.1"),
+        // Spec 28 §7: one date format at every width (no seconds anywhere).
+        XCTAssertEqual(InspectorRows.compactValue(label: "Date taken", value: "23 Aug 2021 at 10:04"),
+                       "23 Aug 2021 at 10:04")
+        XCTAssertEqual(InspectorRows.compactValue(label: "Color profile", value: "sRGB IEC61966-2.1"),
                        "sRGB IEC61966-2.1", "wraps instead")
         XCTAssertEqual(InspectorRows.compactValue(label: "Camera", value: "Canon EOS R5"), "Canon EOS R5")
     }

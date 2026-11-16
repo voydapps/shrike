@@ -2,7 +2,7 @@
 //  RotatePanel.swift
 //  ShrikeUI
 //
-//  Right-side Rotate tool panel. Spec
+//  Right-side Rotate tool panel.
 //  Quick ±90° / 180° buttons plus a ±45° free-rotate slider with auto-crop
 //  toggle.
 //
@@ -41,11 +41,11 @@ final class RotatePanel: NSView {
 
     private var idleCommitTask: Task<Void, Never>?
     /// Idle debounce interval for live-preview coalescing. 500 ms
-    /// matches the spec. Exposed for tests via the static accessor below.
+    /// is the default. Exposed for tests via the static accessor below.
     static let idleCommitDelay: TimeInterval = 0.500
 
     /// Current slider angle in degrees, clamped to ±45°
-    private(set) var angle: Double = 0
+    private(set) var angle: Double = 0 { didSet { updateTrackFill() } }
     var autoCropEnabled: Bool { autoCropCheckbox.state == .on }
 
     // MARK: - Subviews
@@ -92,6 +92,10 @@ final class RotatePanel: NSView {
         angleSlider.minValue = -45
         angleSlider.maxValue = 45
         angleSlider.doubleValue = 0
+        // A centred slider looks unset at 0: macOS 26 fills from 0; before,
+        // the filled part is hidden while the angle is 0.
+        if #available(macOS 26, *) { angleSlider.neutralValue = 0 }
+        updateTrackFill()
         angleSlider.isContinuous = true
         angleSlider.target = self
         angleSlider.action = #selector(handleAngleSlider(_:))
@@ -194,6 +198,11 @@ final class RotatePanel: NSView {
     func cancelPendingCommit() {
         idleCommitTask?.cancel()
         idleCommitTask = nil
+    }
+
+    private func updateTrackFill() {
+        if #available(macOS 26, *) { return }
+        angleSlider.trackFillColor = angle == 0 ? .clear : nil
     }
 
     // MARK: - Public setters

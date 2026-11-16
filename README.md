@@ -89,7 +89,7 @@ Not sure which macOS you have? Choose Apple menu ▸ About This Mac.
 - **"Shrike is damaged and can't be opened"?** The download is broken. Delete
   it, download it again, and compare its SHA-256 checksum (published with the
   release) with the output of
-  `shasum -a 256 ~/Downloads/Shrike-<version>.dmg`.
+  `shasum -a 256 ~/Downloads/Shrike.dmg`.
 - **Advanced:** `xattr -dr com.apple.quarantine /Applications/Shrike.app`
   skips the first-launch step.
 
@@ -100,9 +100,11 @@ no crash reporting and no automatic update check. Your photos are read from
 your disk and stay there.
 
 - To get a new version, download it from the Releases page.
-- Two actions you start yourself hand over to other apps: **Show in Maps**
-  opens Apple Maps at a photo's GPS position, and **Open in External Editor**
-  starts the editor you chose.
+- Four actions you start yourself hand over to other apps: **Show in Maps**
+  opens Apple Maps at a photo's GPS position, **Open in External Editor**
+  starts the editor you chose, and **Help ▸ Shrike Website** and
+  **Help ▸ Report a Problem…** open your web browser. Shrike itself sends
+  nothing.
 - Shrike keeps its thumbnails, ratings and edit backups in your Library
   folder, on your Mac only. When you rate or flag a photo, Shrike also writes
   that rating or flag as a small hidden note on the file (a macOS extended
@@ -139,6 +141,8 @@ swift test
 ```
 
 Some tests open windows, so run them on an unlocked screen.
+
+To stop a hung run by itself, use `Scripts/swift-test-guarded.py -- <swift test args>` instead of `swift test`. It refuses to start while the screen is locked.
 
 ### Signing
 

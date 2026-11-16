@@ -260,7 +260,7 @@ final class FullScreenChromeTests: XCTestCase {
 
     func testPinLabelsNameTheirPanels() {
         let content = makeContent()
-        XCTAssertEqual(content.inspectorForTesting.pinOverlayForTesting.accessibilityLabel(), "Pin Inspector")
+        XCTAssertEqual(content.inspectorForTesting.pinOverlayForTesting.accessibilityLabel(), "Pin Info")
         XCTAssertEqual(PinCornerOverlay.hitSize, 28)
     }
 
@@ -330,7 +330,7 @@ final class FullScreenChromeTests: XCTestCase {
         XCTAssertFalse(ViewerToolbar.symbolNamesForTesting.contains("waveform"))
         let toolbar = ViewerToolbar()
         let inspector = toolbar.buttonWithIdentifierForTesting("toolbar.toggleInspector")
-        XCTAssertEqual(inspector?.image?.accessibilityDescription, "Inspector")
+        XCTAssertEqual(inspector?.image?.accessibilityDescription, "Info")
         for name in ["pin", "pin.fill"] {
             XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil), name)
         }

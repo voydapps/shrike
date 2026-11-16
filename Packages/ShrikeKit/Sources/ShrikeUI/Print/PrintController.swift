@@ -7,11 +7,12 @@
 //  `NSPrintOperation` with the shared `NSPrintInfo`, the print panel with
 //  its preview, and a hosted SwiftUI accessory (Scaling, file name).
 //
-//  * The panel shows at once. Pixels come from the full-resolution,
-//    oriented, uncached output decode (`OutputDecoder`),
-//    in the file's colour space, never on the main thread. While a page
-//    is still decoding the preview shows its name; the preview redraws
-//    when the pixels land. The real print waits for them.
+//  * The photos load before the panel opens: pixels
+//    come from the full-resolution, oriented, uncached output decode
+//    (`OutputDecoder`), in the file's colour space, never on the main
+//    thread, and the main thread never waits for them. After 300 ms a
+//    "Getting photos ready" sheet shows progress and Cancel. A photo not
+//    loaded within 60 s of the previous one prints as an empty frame with its name.
 //  * The page orientation follows the (first) photo; the user can still
 //    change it in the panel.
 //
@@ -88,20 +89,15 @@ enum PrintLayout {
 // MARK: - Decoded pixels (shared with the decode threads)
 
 /// The decoded photos by page. The decode tasks fill it off the main
-/// thread; the print view reads it, and the real print waits on it.
+/// thread; the print view reads it; the main thread never waits on it.
 final class PrintImageStore: Sendable {
     private enum Slot: Sendable { case image(CGImage), failed }
     private let slots = OSAllocatedUnfairLock<[Int: Slot]>(initialState: [:])
-    private let signals: [DispatchSemaphore]
 
-    init(count: Int) {
-        signals = (0..<count).map { _ in DispatchSemaphore(value: 0) }
-    }
+    init(count: Int) {}
 
     func set(_ image: CGImage?, at index: Int) {
-        guard signals.indices.contains(index) else { return }
         slots.withLock { $0[index] = image.map(Slot.image) ?? .failed }
-        signals[index].signal()
     }
 
     /// nil = still decoding or failed.
@@ -110,16 +106,6 @@ final class PrintImageStore: Sendable {
     }
 
     func isDone(_ index: Int) -> Bool { slots.withLock { $0[index] != nil } }
-
-    /// Blocks until page `index` is decoded (or failed) or `timeout` ends.
-    func wait(for index: Int, timeout: TimeInterval) -> CGImage? {
-        guard signals.indices.contains(index) else { return nil }
-        if isDone(index) { return image(at: index) }
-        if signals[index].wait(timeout: .now() + timeout) == .success {
-            signals[index].signal()   // later waiters pass too
-        }
-        return image(at: index)
-    }
 }
 
 // MARK: - The print view
@@ -195,10 +181,10 @@ final class PrintPagesView: NSView {
 
     private func drawPage(_ index: Int, in page: CGRect) {
         let area = PrintLayout.imageArea(content: page, showFileName: showFileName)
-        var image = store.image(at: index)
-        if image == nil, !store.isDone(index), !isPreviewing() {
-            image = store.wait(for: index, timeout: 60)
-        }
+        // The main thread never waits here. The photos
+        // are loaded before the panel opens; one that did not load in time
+        // prints as an empty frame with its name.
+        let image = store.image(at: index)
         if let image, let rect = imageRect(forPage: index) {
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: area).addClip()
@@ -207,7 +193,13 @@ final class PrintPagesView: NSView {
                          respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
             NSGraphicsContext.restoreGraphicsState()
         } else {
-            // Still decoding (preview) or unreadable: the name, centred.
+            // Not loaded (still decoding, timed out or unreadable): an empty frame with the name.
+            if !isPreviewing() {
+                NSColor.gray.setStroke()
+                let frame = NSBezierPath(rect: area.insetBy(dx: 0.5, dy: 0.5))
+                frame.lineWidth = 1
+                frame.stroke()
+            }
             drawName(pages[index].name, centredIn: area, color: .secondaryLabelColor, size: 11)
         }
         if showFileName {
@@ -342,17 +334,77 @@ final class PrintController: NSObject {
     let accessory: PrintAccessoryController
     private let settingsStore: PrintSettingsStore
     private var decodes: [Task<Void, Never>] = []
+    /// The window the panel runs on (the "couldn't be loaded" toast goes there).
+    weak var hostWindow: NSWindow?
 
     /// Reads the headers off the main thread, then shows the panel.
     static func start(urls: [URL], window: NSWindow?, settingsStore: PrintSettingsStore = .standard) {
         guard !urls.isEmpty else { return }
-        Task { @MainActor in
+        let hadWindow = window != nil
+        Task { @MainActor [weak window] in
             let pages = await Task.detached(priority: .userInitiated) { urls.map(PrintPage.read) }.value
             let controller = PrintController(pages: pages, printInfo: NSPrintInfo.shared, settingsStore: settingsStore)
             lastForTesting = controller
             controller.decodeAll()
-            if presentsPanels { controller.run(on: window) }
+            guard presentsPanels else { return }
+            guard await controller.prepare(on: window) else { controller.finish(); return }
+            // The window was closed while the photos got ready: nothing runs.
+            guard canRun(hadWindow: hadWindow, window: window) else { controller.finish(); return }
+            controller.hostWindow = window
+            controller.run(on: window)
         }
+    }
+
+    /// Started without a window (free-standing panel), or its window is
+    /// still open (minimised or the app hidden counts as open).
+    static func canRun(hadWindow: Bool, window: NSWindow?) -> Bool {
+        guard hadWindow else { return true }
+        guard let window else { return false }
+        return window.isVisible || window.isMiniaturized || NSApp?.isHidden == true
+    }
+
+    // MARK: Getting photos ready
+
+    /// Photos decoded so far (loaded or failed).
+    var doneCount: Int { pages.indices.filter { store.isDone($0) }.count }
+    /// Photos that will print as an empty frame.
+    var notLoadedCount: Int { pages.indices.filter { store.image(at: $0) == nil }.count }
+
+    /// Waits on the main actor without blocking it until every photo is
+    /// decoded or `PrintWait.timeout` passes. After 300 ms a sheet shows
+    /// the progress with Cancel. False: the user cancelled (no print job).
+    func prepare(on window: NSWindow?) async -> Bool {
+        let start = ContinuousClock.now
+        var clock = PrintWait.Clock(start: start)
+        var sheet: PrintPrepSheet?
+        defer { sheet?.close() }
+        while true {
+            let now = ContinuousClock.now
+            let elapsed = now - start
+            let sinceProgress = clock.sinceProgress(done: doneCount, now: now)
+            switch PrintWait.decide(elapsed: elapsed, sinceProgress: sinceProgress, done: doneCount, total: pages.count,
+                                    sheetShown: sheet != nil, cancelled: sheet?.cancelled ?? false) {
+            case .ready, .timedOut: return true
+            case .cancel:
+                for task in decodes { task.cancel() }
+                return false
+            case .showSheet:
+                // On the window; app-modal when none. Both print entry
+                // points always have a window (viewer, browser), so with none
+                // Shrike just waits without a sheet.
+                if let window { sheet = PrintPrepSheet(on: window, total: pages.count) }
+            case .wait: break
+            }
+            sheet?.update(done: doneCount)
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+    }
+
+    /// One line after printing starts when some photos did not load.
+    func tellNotLoaded(on window: NSWindow?) {
+        guard let text = PrintWait.notLoadedLine(notLoadedCount), let window,
+              let host = RenameRecoveryPresenter.toastHost(in: window) else { return }
+        host.show(ToastContent(text, kind: .error))
     }
 
     /// File ▸ Page Setup… on the shared print info.
@@ -416,10 +468,16 @@ final class PrintController: NSObject {
         let store = self.store
         let items = Array(pages.enumerated())
         let lanes = 2
+        #if DEBUG
+        let debugDelay = DebugReviewOptions.current.printLoadDelay
+        #endif
         for lane in 0..<min(lanes, items.count) {
             let mine = items.filter { $0.offset % lanes == lane }
             decodes.append(Task.detached(priority: .userInitiated) { [weak self] in
                 for (index, page) in mine {
+                    #if DEBUG
+                    if debugDelay > 0 { try? await Task.sleep(for: .seconds(debugDelay)) }
+                    #endif
                     if Task.isCancelled { store.set(nil, at: index); continue }
                     let image = try? await OutputDecoder.decode(url: page.url)
                     store.set(image, at: index)
@@ -460,12 +518,121 @@ final class PrintController: NSObject {
 
     @objc nonisolated func printOperationDidRun(_ operation: NSPrintOperation, success: Bool,
                                                 contextInfo: UnsafeMutableRawPointer?) {
-        Task { @MainActor [weak self] in self?.finish() }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            // The line shows only once printing really started (not on Cancel).
+            if success { self.tellNotLoaded(on: self.hostWindow) }
+            self.finish()
+        }
     }
 
-    private func finish() {
+    func finish() {
         for task in decodes { task.cancel() }
         Self.running.removeAll { $0 === self }
+    }
+}
+
+// MARK: - Getting photos ready
+
+/// The wait before the print panel. Pure.
+enum PrintWait {
+    /// Under this nothing is shown.
+    static let sheetDelay: Duration = .milliseconds(300)
+    /// The limit is per photo: when no photo has finished loading for this
+    /// long, the ones still missing print as an empty frame with their name.
+    /// The clock restarts each time a photo finishes (loaded or failed).
+    static let timeout: Duration = .seconds(60)
+
+    /// Time since the last photo finished (or since the start). Pure.
+    struct Clock {
+        private var progressAt: ContinuousClock.Instant
+        private var lastDone = 0
+        init(start: ContinuousClock.Instant) { progressAt = start }
+        mutating func sinceProgress(done: Int, now: ContinuousClock.Instant) -> Duration {
+            if done != lastDone { lastDone = done; progressAt = now }
+            return now - progressAt
+        }
+    }
+
+    enum Step: Equatable { case wait, showSheet, ready, timedOut, cancel }
+
+    /// `elapsed`: since the wait began (the 300 ms sheet delay). `sinceProgress`:
+    /// since the last photo finished (the 60 s limit).
+    static func decide(elapsed: Duration, sinceProgress: Duration, done: Int, total: Int,
+                       sheetShown: Bool, cancelled: Bool) -> Step {
+        if cancelled { return .cancel }
+        if done >= total { return .ready }
+        if sinceProgress >= timeout { return .timedOut }
+        if !sheetShown, elapsed >= sheetDelay { return .showSheet }
+        return .wait
+    }
+
+    static let title = "Getting photos ready"
+    /// "3 of 12 photos".
+    static func progress(done: Int, total: Int) -> String {
+        "\(min(done, total)) of \(total) \(total == 1 ? "photo" : "photos")"
+    }
+    static func notLoadedLine(_ n: Int) -> String? {
+        guard n > 0 else { return nil }
+        return n == 1 ? "1 photo couldn't be loaded." : "\(n) photos couldn't be loaded."
+    }
+}
+
+/// The "Getting photos ready" sheet: a determinate bar, "3 of 12 photos", Cancel.
+@MainActor
+final class PrintPrepSheet {
+    private let alert: NSAlert
+    private let bar = NSProgressIndicator(frame: NSRect(x: 0, y: 22, width: 260, height: 16))
+    private let line = NSTextField(labelWithString: "")
+    private let total: Int
+    private weak var parent: NSWindow?
+    private(set) var cancelled = false
+
+    init(on window: NSWindow, total: Int) {
+        self.total = total
+        parent = window
+        alert = ShrikeAlert.make(message: PrintWait.title, style: .informational, buttons: [.cancel()])
+        // Nothing is written while photos load: the sheet must not hold ⌘Q back.
+        alert.window.preventsApplicationTerminationWhenModal = false
+        bar.isIndeterminate = false
+        bar.minValue = 0
+        bar.maxValue = Double(max(1, total))
+        line.frame = NSRect(x: 0, y: 0, width: 260, height: 16)
+        line.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        line.textColor = .secondaryLabelColor
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 40))
+        box.addSubview(bar)
+        box.addSubview(line)
+        alert.accessoryView = box
+        update(done: 0)
+        // The alert's own informative text is empty here: VoiceOver must not stop on it.
+        alert.layout()
+        if let content = alert.window.contentView { Self.hideEmptyTexts(in: content, keeping: line) }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            MainActor.assumeIsolated {
+                if response != .stop { self?.cancelled = true }
+            }
+        }
+    }
+
+    /// Hides empty, non-editable text fields under `view` (out of the accessibility tree).
+    static func hideEmptyTexts(in view: NSView, keeping kept: NSView) {
+        for sub in view.subviews {
+            if sub !== kept, let field = sub as? NSTextField, !field.isEditable, field.stringValue.isEmpty {
+                field.isHidden = true   // an empty field draws nothing; hidden, VoiceOver skips it
+            }
+            hideEmptyTexts(in: sub, keeping: kept)
+        }
+    }
+
+    func update(done: Int) {
+        bar.doubleValue = Double(min(done, total))
+        line.stringValue = PrintWait.progress(done: done, total: total)
+    }
+
+    func close() {
+        guard alert.window.isVisible, let parent else { return }
+        parent.endSheet(alert.window, returnCode: .stop)
     }
 }
 

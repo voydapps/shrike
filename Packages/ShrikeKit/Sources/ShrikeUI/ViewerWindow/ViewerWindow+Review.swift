@@ -100,11 +100,15 @@ extension ViewerWindow {
         _ = controller.view
         let popover = NSPopover(); popover.behavior = .transient; popover.contentViewController = controller
         popover.animates = !ReduceMotion.isOn
+        popover.appearance = appearance   // Dark like the viewer
         returnHintPopover = popover
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
         guard popover.isShown else { returnHintPopover = nil; return }
         Prefs.hasSeenBrowserReturnHint = true
     }
+
+    /// View menu title of the rating bar switch: names what the click does.
+    static func ratingBarMenuTitle(visible: Bool) -> String { visible ? "Hide Rating Bar" : "Show Rating Bar" }
 
     @objc func toggleReviewControls(_ sender: Any?) {
         Prefs.reviewControlsVisible.toggle()

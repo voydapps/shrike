@@ -86,9 +86,149 @@ final class BatchConfirmOriginalsTests: XCTestCase {
         XCTAssertTrue(answered)
         try? await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(asked.first?.0, "Change 2 original photos?")
+        XCTAssertEqual(model.confirmButtonTitle, "Change Originals")
         XCTAssertEqual(asked.first?.1, "Shrike keeps a backup of each original, and Undo or Revert can restore them.")
         XCTAssertEqual(model.phase, .form)
         XCTAssertEqual(try urls.map { try Data(contentsOf: $0) }, before)
+    }
+
+    /// A rename in place changes no pixels: the question says Undo Batch puts
+    /// the names back, not that a backup is kept.
+    func testRenameOnlyConfirmSaysUndoBatchNotBackup() async throws {
+        XCTAssertEqual(BatchModel.ConfirmCopy.information(1, renameOnly: true),
+                       "Only the name changes. Undo Batch can put the old name back.")
+        XCTAssertEqual(BatchModel.ConfirmCopy.information(3, renameOnly: true, otherFilesReplaced: 1),
+                       "Only the names change. Undo Batch can put the old names back. 1 other file will be replaced and moved to the Trash.")
+        let urls = try [jpeg("a.jpg"), jpeg("b.jpg")]
+        let model = makeModel()
+        model.add(urls.map { ImageGroup(primary: $0) })
+        model.form.convertOn = false; model.form.resizeOn = false; model.form.rotateOn = false
+        model.form.renameOn = true; model.form.template = "pic-{counter}"
+        let ready = await waitUntil { model.canRun }
+        XCTAssertTrue(ready)
+        var asked: [String] = []
+        model.confirmChangeOriginals = { _, info in asked.append(info); return false }
+        model.requestRun()
+        let answered = await waitUntil { !asked.isEmpty }
+        XCTAssertTrue(answered)
+        XCTAssertEqual(asked.first, "Only the names change. Undo Batch can put the old names back.")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: urls[0].path), "Cancel renames nothing")
+    }
+
+    /// R2: photos added and form changes made while the question is up are
+    /// refused, so the run changes exactly the photos the question named.
+    func testAddWhileConfirmingIsRefusedAndTheNamedCountRuns() async throws {
+        let urls = try [jpeg("a.jpg"), jpeg("b.jpg")]
+        let extra = try [jpeg("c.jpg"), jpeg("d.jpg"), jpeg("e.jpg")]
+        let extraBefore = try extra.map { try Data(contentsOf: $0) }
+        let model = rotateInPlaceModel(urls)
+        let ready = await waitUntil { model.canRun }
+        XCTAssertTrue(ready)
+        var title = ""
+        model.confirmChangeOriginals = { t, _ in
+            title = t
+            model.add(extra.map { ImageGroup(primary: $0) })
+            model.form.rotation = .left
+            try? await Task.sleep(for: .milliseconds(400))   // past the 150 ms preview
+            return true
+        }
+        model.requestRun()
+        let started = await waitUntil { model.phase != .form }
+        XCTAssertTrue(started)
+        await model.waitForRun()
+        XCTAssertEqual(title, "Change 2 original photos?")
+        XCTAssertEqual(model.queue.count, 2, "nothing joins the queue while the question is up")
+        XCTAssertEqual(model.lastPlan?.items.count, 2, "the run changes the photos the question named")
+        XCTAssertEqual(model.form.rotation, .right)
+        XCTAssertEqual(try extra.map { try Data(contentsOf: $0) }, extraBefore)
+    }
+
+    /// R2 defence in depth: a new plan between the question and the answer
+    /// (even one with the same photos) does not run; the form stays.
+    func testPlanChangeBetweenQuestionAndAnswerDoesNotRun() async throws {
+        let urls = try [jpeg("a.jpg"), jpeg("b.jpg")]
+        let before = try urls.map { try Data(contentsOf: $0) }
+        let model = rotateInPlaceModel(urls)
+        let ready = await waitUntil { model.canRun }
+        XCTAssertTrue(ready)
+        model.confirmChangeOriginals = { _, _ in
+            model.schedulePreview()
+            _ = await self.waitUntil { model.canRun }
+            return true
+        }
+        model.requestRun()
+        try? await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(model.phase, .form)
+        XCTAssertFalse(model.isConfirming)
+        XCTAssertEqual(try urls.map { try Data(contentsOf: $0) }, before)
+    }
+
+    /// R2: Photo ▸ Batch… from a browser while the question is up adds
+    /// nothing and keeps Undo on the window that asked.
+    func testOpenWhileConfirmingAddsNothingAndKeepsTheLauncher() async throws {
+        BatchWindowController.presentsWindows = false
+        defer { BatchWindowController.presentsWindows = true }
+        let a = try jpeg("a.jpg"), b = try jpeg("b.jpg")
+        let services = ShrikeServices.makeDefault()
+        let batch = BatchWindowController.open(groups: [ImageGroup(primary: a)], services: services, launcher: nil)
+        defer { batch.close() }
+        batch.model.form.convertOn = false
+        batch.model.form.resizeOn = false
+        batch.model.form.rotateOn = true
+        let ready = await waitUntil { batch.model.canRun }
+        XCTAssertTrue(ready)
+        var answer: CheckedContinuation<Bool, Never>?
+        batch.model.confirmChangeOriginals = { _, _ in await withCheckedContinuation { answer = $0 } }
+        batch.model.requestRun()
+        let asking = await waitUntil { answer != nil }
+        XCTAssertTrue(asking)
+        let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 50, height: 50), styleMask: [.titled],
+                             backing: .buffered, defer: true)
+        other.isReleasedWhenClosed = false
+        XCTAssertTrue(BatchWindowController.open(groups: [ImageGroup(primary: b)], services: services,
+                                                 launcher: other) === batch)
+        XCTAssertEqual(batch.model.queue.count, 1)
+        XCTAssertNil(batch.launcher)
+        answer?.resume(returning: false)
+        let closed = await waitUntil { !batch.model.isConfirming }
+        XCTAssertTrue(closed)
+    }
+
+    /// While the question is up, every other change to the queue or the
+    /// form is refused too: the run changes exactly what the question named.
+    /// Batch has no drop target of its own; photos dropped or opened onto a
+    /// finished Batch arrive through `replaceQueue`.
+    func testEveryQueueAndFormChangeIsRefusedWhileConfirming() async throws {
+        let urls = try [jpeg("a.jpg"), jpeg("b.jpg"), jpeg("c.jpg")]
+        let extra = try jpeg("d.jpg")
+        let model = rotateInPlaceModel(urls)
+        let ready = await waitUntil { model.canRun }
+        XCTAssertTrue(ready)
+        let preset = try XCTUnwrap(BatchPresetStore.builtIns.first { $0.renameTemplate != nil })
+        let attempts: [(String, () -> Void)] = [
+            ("move", { model.move(from: IndexSet(integer: 0), to: 3) }),
+            ("remove", { model.selection = [urls[1]]; model.removeSelected() }),
+            ("preset change", { model.apply(preset) }),
+            ("Run Another", { model.runAnother() }),
+            ("drop", { model.replaceQueue(with: [ImageGroup(primary: extra)]) }),
+        ]
+        var answer: CheckedContinuation<Bool, Never>?
+        model.confirmChangeOriginals = { _, _ in await withCheckedContinuation { answer = $0 } }
+        model.requestRun()
+        let asking = await waitUntil { answer != nil }
+        XCTAssertTrue(asking)
+        let form = model.form
+        for (name, attempt) in attempts {
+            attempt()
+            XCTAssertEqual(model.queue.map(\.group.primary), urls, "\(name) is refused")
+            XCTAssertEqual(model.form, form, "\(name) leaves the form")
+            XCTAssertEqual(model.phase, .form, "\(name)")
+            XCTAssertTrue(model.isConfirming, "\(name)")
+        }
+        answer?.resume(returning: false)
+        let closed = await waitUntil { !model.isConfirming }
+        XCTAssertTrue(closed)
+        XCTAssertEqual(model.queue.map(\.group.primary), urls)
     }
 
     func testSinglePhotoTitleNamesThePhoto() async throws {
@@ -101,6 +241,9 @@ final class BatchConfirmOriginalsTests: XCTestCase {
         let answered = await waitUntil { !title.isEmpty }
         XCTAssertTrue(answered)
         XCTAssertEqual(title, "Change the original photo “X.jpg”?")
+        XCTAssertEqual(model.confirmButtonTitle, "Change Original", "one photo: the button is singular too")
+        XCTAssertEqual(BatchModel.ConfirmCopy.confirm(1), "Change Original")
+        XCTAssertEqual(BatchModel.ConfirmCopy.confirm(2), "Change Originals")
     }
 
     func testConfirmingRunsAndKeepsBackups() async throws {
@@ -164,7 +307,7 @@ final class BatchConfirmOriginalsTests: XCTestCase {
     /// A spy target so a key press can be seen without running a modal.
     private final class Spy: NSObject {
         var fired: [String] = []
-        @objc func hit(_ sender: NSButton) { fired.append(sender.title) }
+        @objc func hit(_ sender: NSButton) { fired.append(sender.title.replacingOccurrences(of: "\u{2063}", with: "")) }
     }
 
     private func key(_ chars: String, code: UInt16, in window: NSWindow) -> NSEvent {

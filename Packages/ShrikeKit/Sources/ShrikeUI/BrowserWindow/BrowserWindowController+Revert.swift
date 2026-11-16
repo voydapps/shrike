@@ -29,7 +29,14 @@ extension BrowserWindowController {
         let url = item.url
         let name = item.group.displayName
         revertTask = Task { @MainActor [weak self] in
-            guard let original = await store.records(for: url).last, let self else { return }
+            // `availability` checks that the file is still the one Shrike
+            // wrote and that the original backup is readable.
+            let availability = await store.availability(for: url)
+            guard let self else { return }
+            guard availability.canRevert, let original = availability.originalRecord else {
+                self.toast(BackupNotice.revertNotPossible, kind: .error)
+                return
+            }
             let title = SaveCopy.revertTitle(name)
             let choice: Int?
             if let responder = self.alertResponderForTesting {
@@ -47,9 +54,7 @@ extension BrowserWindowController {
                 self.fileVersionsLanded(urls: [url])
                 self.registerFileVersionUndo([(url, FileVersionStep(record: preRevert))],
                                              actionName: "Revert to Original")
-                self.toast(SaveCopy.reverted(name), actionTitle: "Undo") { [weak self] in
-                    self?.window?.undoManager?.undo()
-                }
+                self.undoToast(ToastContent(SaveCopy.reverted(name), actionTitle: "Undo"))
             } catch {
                 self.toast("Couldn't revert “\(name)”.", kind: .error)
             }

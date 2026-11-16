@@ -121,7 +121,7 @@ final class MenuIcons028Tests: XCTestCase {
         sidebar.title = "Show Sidebar"
         XCTAssertNotNil(sidebar.image, "the icon stays when the title flips")
         let review = try XCTUnwrap(bar.allItems.first { $0.action == #selector(ViewerWindow.toggleReviewControls(_:)) })
-        review.title = "Hide Review Controls"
+        review.title = "Hide Rating Bar"
         bar.applyAllIconsForTesting()
         XCTAssertNotNil(review.image, "selector-only Review keeps its icon after a dynamic title update")
         let view = try XCTUnwrap(bar.menu.items.first { $0.submenu?.title == "View" }?.submenu)

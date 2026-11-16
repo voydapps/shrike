@@ -51,7 +51,7 @@ public struct ToastContent: Equatable, Sendable {
     public var actionAccessibilityLabel: String?
     public var actionTooltip: String?
 
-    /// "Moved … to the Trash." with Undo: 6 s, "Undo  ·  ⌘Z" tooltip (spec 25 §5.1).
+    /// "Moved … to the Trash." with Undo: 6 s, "Undo  ·  ⌘Z" tooltip.
     public static func trashed(_ message: String) -> ToastContent {
         var content = ToastContent(message, actionTitle: "Undo")
         content.customDuration = 6.0
@@ -71,6 +71,43 @@ public struct ToastContent: Equatable, Sendable {
         if let customDuration { return customDuration }
         if actionTitle != nil { return 4.0 }
         return kind == .glyph ? 1.2 : 2.5
+    }
+
+    /// Lines the message may use before the last one gets "…": an error may
+    /// need its consequence sentence (backups, recovery), so up to 4; others 2;
+    /// a progress card 1. The pill keeps its top edge and grows below it.
+    static let plainMaxLines = 2
+    static let errorMaxLines = 4
+    public var maxLines: Int {
+        if progress != nil { return 1 }
+        return kind == .error ? Self.errorMaxLines : Self.plainMaxLines
+    }
+
+    /// The duration once the message is measured: an `.error` toast longer
+    /// than two lines gets 6 s (it has more to read); `customDuration` wins.
+    /// Also any toast of three sentences or more gets 6 s (one rule; the
+    /// viewer's "no longer matches this edit" error is three sentences on
+    /// two lines). `customDuration` still wins.
+    public func duration(measuredLines: Int) -> TimeInterval {
+        guard customDuration == nil, progress == nil, kind != .glyph else { return duration }
+        if kind == .error, measuredLines > Self.plainMaxLines { return 6.0 }
+        if Self.sentenceCount(message) >= 3 { return max(duration, 6.0) }
+        return duration
+    }
+
+    /// Sentences: a ".", "!" or "?" followed by a space or the end ("a.jpg"
+    /// and "Save Copy…" do not end one).
+    static func sentenceCount(_ text: String) -> Int {
+        let chars = Array(text)
+        var count = 0
+        for (i, c) in chars.enumerated() where c == "." || c == "!" || c == "?" {
+            let atEnd = i + 1 == chars.count
+            let next: Character = atEnd ? " " : chars[i + 1]
+            guard next == " " || next == "\n" else { continue }
+            if c == ".", i > 0, chars[i - 1] == "." { continue }
+            count += 1
+        }
+        return count
     }
 
     public var announcementPriority: NSAccessibilityPriorityLevel {
@@ -96,7 +133,7 @@ public enum ToastPlacement: Sendable {
 
 /// The toast's action. Its hit area is the full pill height and at least
 /// `minWidth` wide, from the label's gap to the pill's trailing edge; the
-/// title is drawn right-aligned with a 12 pt trailing inset (spec 27 B2).
+/// title is drawn right-aligned with a 12 pt trailing inset.
 @MainActor
 final class ToastActionButton: NSButton {
     static let minWidth: CGFloat = 44
@@ -145,12 +182,12 @@ public final class ToastHostView: HUDSurfaceView {
     public static let minWidth: CGFloat = 160
     public static let maxWidth: CGFloat = 480
     /// Longest message: two lines, then "…". The full text stays in the tooltip.
-    static let maxLines = 2
+    static let maxLines = ToastContent.plainMaxLines
     /// Room for the text: the pill minus its 12 pt side padding.
     static let textWidth: CGFloat = maxWidth - 24
     static let fadeIn: TimeInterval = 0.12
     static let fadeOut: TimeInterval = 0.20
-    /// Spec 27 N6: black 0.82 fill, 0.5 pt white 0.16 hairline, a tight shadow.
+    /// Black 0.82 fill, 0.5 pt white 0.16 hairline, a tight shadow.
     static let pillStyle = SurfaceStyle(
         fill: NSColor.black.withAlphaComponent(0.82),
         hairline: NSColor.white.withAlphaComponent(0.16),
@@ -175,7 +212,7 @@ public final class ToastHostView: HUDSurfaceView {
 
     /// Test seam: VoiceOver announcements go through here.
     var announce: (String, NSAccessibilityPriorityLevel) -> Void = { text, priority in
-        let target: Any = NSApp.mainWindow ?? NSApp as Any
+        guard let target: Any = NSApp?.mainWindow ?? NSApp else { return }
         NSAccessibility.post(
             element: target,
             notification: .announcementRequested,
@@ -187,6 +224,8 @@ public final class ToastHostView: HUDSurfaceView {
     }
 
     private let label = NSTextField(labelWithString: "")
+    /// An error toast carries a warning icon before its text.
+    private let errorIcon = NSImageView()
     private let button = ToastActionButton(title: "", target: nil, action: nil)
     private var action: (@MainActor () -> Void)?
     private var topConstraint: NSLayoutConstraint?
@@ -222,13 +261,13 @@ public final class ToastHostView: HUDSurfaceView {
         super.init(frame: .zero)
         wantsLayer = true
         glassShape = .capsule   // full-screen viewer only
-        // Spec 27 N6: a flat pill, no wide soft halo.
+        // A flat pill, no wide soft halo.
         surfaceStyle = Self.pillStyle
         translatesAutoresizingMaskIntoConstraints = false
 
         label.font = ChromeTypography.font(13)
         label.textColor = .labelColor
-        // Spec 21b §5: up to 2 lines, word wrap, the tail is cut (never the middle).
+        // Up to 2 lines, word wrap, the tail is cut (never the middle).
         label.lineBreakMode = .byWordWrapping
         label.maximumNumberOfLines = Self.maxLines
         label.cell?.truncatesLastVisibleLine = true
@@ -236,6 +275,19 @@ public final class ToastHostView: HUDSurfaceView {
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
+
+        errorIcon.image = NSImage(systemSymbolName: ToastErrorIcon.symbolName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: ToastErrorIcon.pointSize, weight: .regular))
+        errorIcon.contentTintColor = .systemOrange
+        errorIcon.setAccessibilityElement(false)   // the message is read; the icon adds nothing
+        errorIcon.isHidden = true
+        errorIcon.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(errorIcon)
+        NSLayoutConstraint.activate([
+            errorIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            // Centred on the first text line (13 pt type, 16 pt line).
+            errorIcon.centerYAnchor.constraint(equalTo: label.topAnchor, constant: 8),
+        ])
 
         button.isBordered = false
         button.bezelStyle = .inline
@@ -347,11 +399,11 @@ public final class ToastHostView: HUDSurfaceView {
         applyAvoidance()
     }
 
-    /// The rule holds only while the other view is on screen (spec 27 B2):
+    /// The rule holds only while the other view is on screen:
     /// a hidden or faded zoom HUD must not move the toast between two shows.
     /// The other view's show / hide calls this. While a toast is on screen the
     /// change waits for the toast's end (or the next `show`): a toast that
-    /// slides under a resting pointer is the miss this spec fixes (B2 item 5),
+    /// slides under a resting pointer is the miss to avoid,
     /// and that outweighs a HUD pulse (about 1 s) touching the toast.
     func refreshAvoidance() {
         if isShowing { return }
@@ -384,7 +436,7 @@ public final class ToastHostView: HUDSurfaceView {
         return ProgressTicket(owner: self, generation: showGeneration)
     }
 
-    private func ownsProgress(_ ticket: ProgressTicket) -> Bool {
+    func ownsProgress(_ ticket: ProgressTicket) -> Bool {
         ticket.owner === self && ticket.generation == showGeneration && content?.progress != nil
     }
 
@@ -424,8 +476,9 @@ public final class ToastHostView: HUDSurfaceView {
             buttonCollapsed?.isActive = true
         }
         // Wrap width = the text room minus the action button, if any.
-        label.preferredMaxLayoutWidth = Self.textWidth
-            - (content.actionTitle == nil ? 0 : button.intrinsicContentSize.width + 8)
+        label.preferredMaxLayoutWidth = ToastTextFit.wrapWidth(
+            actionWidth: content.actionTitle == nil ? nil : button.intrinsicContentSize.width,
+            showsIcon: ToastErrorIcon.shows(for: content))
 
         configureProgressPresentation(content)
 
@@ -451,7 +504,11 @@ public final class ToastHostView: HUDSurfaceView {
             announce(content.message, content.announcementPriority)
         }
 
-        remaining = content.duration
+        // A long error toast stays 6 s (one rule, ToastContent.duration(measuredLines:)).
+        remaining = content.customDuration == nil && content.kind != .glyph && content.progress == nil
+            ? content.duration(measuredLines: content.kind == .error
+                ? ToastTextFit.lineCount(content.message, width: label.preferredMaxLayoutWidth) : 1)
+            : content.duration
         isPaused = false
         if content.progress == nil { startTimer() }
         // `mouseEntered` is not sent for a pointer that already rests inside
@@ -465,7 +522,7 @@ public final class ToastHostView: HUDSurfaceView {
         NSLayoutConstraint.deactivate(progressConstraints + progressEdgeConstraints + ordinaryWidthConstraints)
         if isProgress { NSLayoutConstraint.deactivate(ordinaryHeightConstraints) }
         else { NSLayoutConstraint.activate(ordinaryHeightConstraints) }
-        label.maximumNumberOfLines = isProgress ? 1 : Self.maxLines
+        label.maximumNumberOfLines = content.maxLines
         if isProgress {
             label.lineBreakMode = .byTruncatingMiddle
         } else {
@@ -476,7 +533,9 @@ public final class ToastHostView: HUDSurfaceView {
             label.cell?.isScrollable = false
         }
         labelCenterY?.isActive = !isProgress
-        labelLeading?.constant = isProgress ? 16 : 12
+        let showsIcon = ToastErrorIcon.shows(for: content)
+        errorIcon.isHidden = !showsIcon
+        labelLeading?.constant = isProgress ? 16 : 12 + (showsIcon ? ToastErrorIcon.textInset : 0)
         buttonCollapsed?.constant = isProgress ? -16 : -12
         label.font = ChromeTypography.font(13, weight: isProgress ? .semibold : .regular)
         label.textColor = isProgress ? .white : .labelColor
@@ -506,6 +565,14 @@ public final class ToastHostView: HUDSurfaceView {
         let inWindow = pointerInWindowForTesting ?? window.mouseLocationOutsideOfEventStream
         return bounds.contains(convert(inWindow, from: nil))
     }
+
+    /// Hides the toast only while it is still the one shown as `generation`.
+    func dismiss(ifShowing generation: Int) {
+        guard generation == showGeneration, content != nil else { return }
+        dismiss()
+    }
+    /// Counts every toast shown; pairs with `dismiss(ifShowing:)`.
+    var shownGeneration: Int { showGeneration }
 
     /// Convenience for plain text.
     public func show(_ message: String) {
@@ -556,6 +623,7 @@ public final class ToastHostView: HUDSurfaceView {
     /// Test seam: the action button.
     var actionButtonForTesting: NSButton { button }
     var labelForTesting: NSTextField { label }
+    var errorIconForTesting: NSImageView { errorIcon }
     var progressBarForTesting: ExactProgressBar { progressBar }
 
     /// Test seam: the button's title when visible.
@@ -607,7 +675,7 @@ public final class ToastHostView: HUDSurfaceView {
     }
 
     /// Switching to another app while the pointer rests on the toast sends no
-    /// `mouseExited`; the clock would stay stopped (audit L17). Losing focus resumes it.
+    /// `mouseExited`; the clock would stay stopped. Losing focus resumes it.
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self, name: NSApplication.didResignActiveNotification, object: nil)
@@ -637,4 +705,65 @@ public final class ToastHostView: HUDSurfaceView {
 struct TransferProgressTicket {
     weak var owner: AnyObject?
     let generation: Int
+}
+
+/// The warning icon of an error toast. Pure rule.
+enum ToastErrorIcon {
+    static let symbolName = "exclamationmark.triangle.fill"
+    static let pointSize: CGFloat = 12
+    /// Icon width plus the 6 pt gap before the text.
+    static let textInset: CGFloat = 18
+    /// Error toasts only; a progress card never shows it.
+    static func shows(for content: ToastContent) -> Bool {
+        content.kind == .error && content.progress == nil
+    }
+}
+
+/// How much toast text fits: measured with a label cell set
+/// up as the toast's (13 pt, word wrap) at the toast's wrap width, not
+/// estimated in characters.
+@MainActor
+enum ToastTextFit {
+    /// The wrap width the host uses: the text room minus the action button
+    /// (and its 8 pt gap) and the error icon.
+    static func wrapWidth(actionWidth: CGFloat?, showsIcon: Bool) -> CGFloat {
+        ToastHostView.textWidth - (actionWidth.map { $0 + 8 } ?? 0) - (showsIcon ? ToastErrorIcon.textInset : 0)
+    }
+
+    private static let cell: NSTextFieldCell = {
+        let field = NSTextField(wrappingLabelWithString: "")
+        field.font = ChromeTypography.font(13)
+        field.lineBreakMode = .byWordWrapping
+        field.maximumNumberOfLines = 0
+        return field.cell as? NSTextFieldCell ?? NSTextFieldCell()
+    }()
+
+    /// Lines `text` takes at `width`.
+    static func lineCount(_ text: String, width: CGFloat) -> Int {
+        guard !text.isEmpty, width > 0 else { return 0 }
+        cell.stringValue = "M"
+        let one = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 10_000)).height
+        cell.stringValue = text
+        let all = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 10_000)).height
+        guard one > 0 else { return 1 }
+        return max(1, Int((all / one).rounded()))
+    }
+
+    /// `text` fits in `lines` lines of a toast of `kind` with no action button.
+    static func fits(_ text: String, lines: Int, kind: ToastContent.Kind) -> Bool {
+        let width = wrapWidth(actionWidth: nil, showsIcon: kind == .error)
+        return lineCount(text, width: width) <= lines
+    }
+
+    /// Characters of plain prose that fit in `lines` lines of an error toast
+    /// (measured: not an estimate).
+    static func characterBudget(lines: Int) -> Int {
+        let words = String(repeating: "Shrike lost track of the backups of these photos, so Revert may be missing. ", count: 8)
+        var low = 0, high = words.count
+        while low < high {
+            let mid = (low + high + 1) / 2
+            if fits(String(words.prefix(mid)), lines: lines, kind: .error) { low = mid } else { high = mid - 1 }
+        }
+        return low
+    }
 }

@@ -2,7 +2,7 @@
 //  PillTextLabel.swift
 //  ShrikeUI
 //
-//  The position pill's text label (spec 25 §6.2). It asks for the width of
+//  The position pill's text label. It asks for the width of
 //  the whole text and takes what the layout gives it; `refit` then cuts the
 //  file name to that width with `FileNameFit`, so the frame number and the
 //  extension stay.

@@ -62,7 +62,7 @@ final class PreferencesEditingTests: XCTestCase {
     func testEditingTab_rendersWithoutBackupStore() {
         let store = PreferencesStore()
         _ = NSHostingView(rootView: EditingTab(backupStore: nil).environmentObject(store))
-        XCTAssertEqual(EditingTab.usageLine(bytes: nil), "Backups use —.")
+        XCTAssertEqual(EditingTab.usageLine(bytes: nil, limit: 0), "Backups use —.")
         XCTAssertEqual(EditingTab.retentionOptions, [7, 30, 90])
     }
 

@@ -45,7 +45,7 @@ final class GroupListScaleTests: XCTestCase {
             for url in scanned where list.index(of: url) != nil { found += 1 }
             XCTAssertEqual(found, 2000)
         }
-        XCTAssertLessThan(seconds, 0.05, "scan pass took \(seconds) s")
+        perfAssertLessThan(seconds, 0.05, "scan pass took \(seconds) s")
     }
 
     func testFiveThousandItemListScanPass() {
@@ -56,7 +56,7 @@ final class GroupListScaleTests: XCTestCase {
             for url in scanned where list.index(of: url) != nil { found += 1 }
             XCTAssertEqual(found, 5000)
         }
-        XCTAssertLessThan(seconds, 0.15, "scan pass took \(seconds) s")
+        perfAssertLessThan(seconds, 0.15, "scan pass took \(seconds) s")
     }
 
     func testLookupFollowsReplaceRemoveAndInsert() {

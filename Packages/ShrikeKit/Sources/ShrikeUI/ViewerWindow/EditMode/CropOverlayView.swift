@@ -2,7 +2,7 @@
 //  CropOverlayView.swift
 //  ShrikeUI
 //
-//  On-canvas crop overlay. Spec
+//  On-canvas crop overlay.
 //
 //  Responsibility:
 //    * Draw a crop rect over the viewer image with 8 handles (4 corners +
@@ -30,6 +30,11 @@ import ShrikeEdit
 @MainActor
 final class CropOverlayView: NSView {
     var acceptsGeometryInput = true
+
+    /// The frame has the keyboard: the system focus ring is drawn around it.
+    var hasKeyboardFocusIndication: Bool {
+        window?.firstResponder === self && !isHiddenOrHasHiddenAncestor
+    }
 
     // MARK: - Inputs
 
@@ -100,6 +105,8 @@ final class CropOverlayView: NSView {
     private(set) var cropRect: CGRect = .zero {
         didSet {
             needsDisplay = true
+            noteFocusRingMaskChanged()
+            layoutHandleViews()
             notifyChanged()
         }
     }
@@ -128,11 +135,28 @@ final class CropOverlayView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override var wantsUpdateLayer: Bool { false }
 
+    // The system focus ring (its colour and width) follows the frame line
+    // while the frame has the keyboard.
+    override var focusRingMaskBounds: NSRect { cropRect.integral.insetBy(dx: -1, dy: -1) }
+    override func drawFocusRingMask() {
+        let ring = NSBezierPath(rect: cropRect.integral)
+        ring.lineWidth = 2
+        ring.stroke()
+    }
+
+    /// A hidden frame never keeps the keyboard: it goes back to the photo.
+    override func viewDidHide() {
+        super.viewDidHide()
+        if window?.firstResponder === self { onEscape?() }
+    }
+
     init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
+        colorObserver = LiveColorObserver(view: self)
     }
+    private var colorObserver: LiveColorObserver?
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
@@ -144,7 +168,8 @@ final class CropOverlayView: NSView {
         let rect = cropRect.integral
 
         // 50% black dim outside the crop rect — fill bounds, knock out rect.
-        NSColor.black.withAlphaComponent(0.5).setFill()
+        let reduce = ReduceTransparency.isOn
+        NSColor.black.withAlphaComponent(ReduceTransparency.cropDimAlpha(reduce: reduce)).setFill()
         let fullPath = NSBezierPath(rect: bounds)
         let holePath = NSBezierPath(rect: rect)
         fullPath.append(holePath.reversed)
@@ -152,9 +177,18 @@ final class CropOverlayView: NSView {
         fullPath.fill()
 
         // Rect border.
-        NSColor.white.withAlphaComponent(0.9).setStroke()
+        let lines = ReduceTransparency.cropFrameLines(reduce: reduce)
+        if let outside = lines.blackOutsideWidth {
+            // A 2 pt white line with a 1 pt black line just outside it.
+            NSColor.black.setStroke()
+            let black = NSBezierPath(rect: rect.insetBy(dx: -(lines.whiteWidth / 2 + outside / 2),
+                                                        dy: -(lines.whiteWidth / 2 + outside / 2)))
+            black.lineWidth = outside
+            black.stroke()
+        }
+        NSColor.white.withAlphaComponent(lines.blackOutsideWidth == nil ? 0.9 : 1).setStroke()
         let border = NSBezierPath(rect: rect)
-        border.lineWidth = 1.0
+        border.lineWidth = lines.whiteWidth
         border.stroke()
 
         if showThirds { drawThirdsGrid(in: rect) }
@@ -307,7 +341,6 @@ final class CropOverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard acceptsGeometryInput else { return }
         dragAnchor = nil
         dragOriginRect = nil
         activeGrab = nil
@@ -316,32 +349,126 @@ final class CropOverlayView: NSView {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
-        guard acceptsGeometryInput else { return }
         // A hidden frame (another tool) never eats the arrows: they go
-        // on to the window, which navigates.
-        guard !isHiddenOrHasHiddenAncestor,
-              event.modifierFlags.intersection([.command, .option, .control]).isEmpty else {
+        // on to the window, which navigates. While a save or a question
+        // runs, the arrows do nothing; Esc still gives the keyboard back
+        // and every other key (Tab, Return) goes on.
+        guard !isHiddenOrHasHiddenAncestor else {
             super.keyDown(with: event)
             return
         }
-        let shift = event.modifierFlags.contains(.shift)
-        let delta: CGFloat = shift ? 10 : 1
-        guard let first = KeyCharacters.key(of: event).unicodeScalars.first else {
+        let flags = event.modifierFlags
+        guard let command = CropKeyCommand.command(
+            key: KeyCharacters.key(of: event), shift: flags.contains(.shift),
+            option: flags.contains(.option), control: flags.contains(.control),
+            command: flags.contains(.command)) else {
             super.keyDown(with: event)
             return
         }
-        var moved = cropRect
-        switch Int(first.value) {
-        case NSLeftArrowFunctionKey:  moved.origin.x -= delta
-        case NSRightArrowFunctionKey: moved.origin.x += delta
-        case NSUpArrowFunctionKey:    moved.origin.y -= delta
-        case NSDownArrowFunctionKey:  moved.origin.y += delta
-        default:
-            super.keyDown(with: event)
-            return
-        }
-        cropRect = clamp(moved, to: imageFrame)
+        if case .done = command, !acceptsGeometryInput { super.keyDown(with: event); return }
+        perform(command)
     }
+
+    /// Runs a key command on the frame (also the entry point of the tests).
+    func perform(_ command: CropKeyCommand) {
+        switch command {
+        case .done:
+            onDone?()
+        case .escape:
+            onEscape?()
+        case .move, .resize:
+            guard acceptsGeometryInput, let pixels = integralPixelRect, imagePixelSize.width > 0,
+                  let outcome = CropKeyGeometry.apply(command, to: pixels, in: imagePixelSize, aspect: aspectRatio) else { return }
+            if outcome.rect != pixels { setRectFromImageSpace(outcome.rect) }
+            announce(outcome.hitEdge ? CropKeyGeometry.edgeAnnouncement
+                                     : CropKeyGeometry.valueText(outcome.rect))
+        }
+    }
+
+    // MARK: - Accessibility
+
+    /// Return: Done, not Apply.
+    var onDone: (() -> Void)?
+    /// Esc: focus goes back to the photo.
+    var onEscape: (() -> Void)?
+    /// Announcements posted (tests read it; the real post goes to VoiceOver).
+    private(set) var announcementsForTesting: [String] = []
+    private var announcementThrottle = AnnouncementThrottle(interval: CropKeyGeometry.announcementInterval)
+    /// The clock of the throttle (tests move it).
+    var uptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+
+    private func announce(_ text: String) {
+        guard announcementThrottle.allow(at: uptime()) else { return }
+        announcementsForTesting.append(text)
+        NSAccessibility.post(element: self, notification: .announcementRequested,
+                             userInfo: [.announcement: text,
+                                        .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .group }
+    override func accessibilityLabel() -> String? { CropKeyGeometry.frameLabel }
+    override func accessibilityHelp() -> String? { CropKeyGeometry.frameHelp }
+    override func accessibilityValue() -> Any? {
+        integralPixelRect.map(CropKeyGeometry.valueText)
+    }
+    override func accessibilityChildren() -> [Any]? { handleViews }
+
+    /// The eight handle children, kept on the frame's handle points.
+    private lazy var handleViews: [CropHandleView] = CropKeyGeometry.Handle.allCases.map { handle in
+        let view = CropHandleView(handle: handle)
+        view.onAdjust = { [weak self] grow in self?.adjust(handle, grow: grow) ?? false }
+        view.valueProvider = { [weak self] in self?.integralPixelRect.map(CropKeyGeometry.valueText) }
+        addSubview(view)
+        return view
+    }
+
+    private func layoutHandleViews() {
+        for view in handleViews { view.frame = handleFrame(view.handle) }
+    }
+
+    /// A handle moved by VoiceOver: grow (+1) or shrink (-1) by one pixel.
+    func adjust(_ handle: CropKeyGeometry.Handle, grow: Int) -> Bool {
+        guard acceptsGeometryInput, let pixels = integralPixelRect, imagePixelSize.width > 0 else { return false }
+        let outcome = CropKeyGeometry.resize(pixels, in: imagePixelSize, edges: handle.edges(grow: grow),
+                                             steps: 1, aspect: aspectRatio)
+        if outcome.rect != pixels { setRectFromImageSpace(outcome.rect) }
+        announce(outcome.hitEdge ? CropKeyGeometry.edgeAnnouncement : CropKeyGeometry.valueText(outcome.rect))
+        return true
+    }
+
+    /// Where a handle sits, in this view's coordinates.
+    func handleFrame(_ handle: CropKeyGeometry.Handle) -> CGRect {
+        let rect = cropRect
+        let center: CGPoint
+        switch handle {
+        case .topLeft: center = CGPoint(x: rect.minX, y: rect.minY)
+        case .top: center = CGPoint(x: rect.midX, y: rect.minY)
+        case .topRight: center = CGPoint(x: rect.maxX, y: rect.minY)
+        case .right: center = CGPoint(x: rect.maxX, y: rect.midY)
+        case .bottomRight: center = CGPoint(x: rect.maxX, y: rect.maxY)
+        case .bottom: center = CGPoint(x: rect.midX, y: rect.maxY)
+        case .bottomLeft: center = CGPoint(x: rect.minX, y: rect.maxY)
+        case .left: center = CGPoint(x: rect.minX, y: rect.midY)
+        }
+        return CGRect(x: center.x - handleSize / 2, y: center.y - handleSize / 2,
+                      width: handleSize, height: handleSize)
+    }
+
+    /// The frame in whole image pixels (origin top-left), nil before a photo is set.
+    var integralPixelRect: CGRect? {
+        guard imageFrame.width > 0, imageFrame.height > 0,
+              imagePixelSize.width > 0, imagePixelSize.height > 0 else { return nil }
+        let sx = imagePixelSize.width / imageFrame.width
+        let sy = imagePixelSize.height / imageFrame.height
+        let x = ((cropRect.origin.x - imageFrame.origin.x) * sx).rounded()
+        let y = ((cropRect.origin.y - imageFrame.origin.y) * sy).rounded()
+        let right = ((cropRect.maxX - imageFrame.origin.x) * sx).rounded()
+        let bottom = ((cropRect.maxY - imageFrame.origin.y) * sy).rounded()
+        return CGRect(x: x, y: y, width: max(right - x, 1), height: max(bottom - y, 1))
+    }
+
+    var handleViewsForTesting: [CropHandleView] { handleViews }
 
     // MARK: - Geometry helpers
 
@@ -543,4 +670,31 @@ final class CropOverlayView: NSView {
 
     internal var _cropRect: CGRect { cropRect }
     internal var _imageFrame: CGRect { imageFrame }
+}
+
+/// One of the eight crop handles as VoiceOver sees it: a transparent child
+/// view (role handle, a label, adjustable by one image pixel). It draws
+/// nothing and never takes a click.
+final class CropHandleView: NSView {
+    let handle: CropKeyGeometry.Handle
+    /// Grow (+1) or shrink (-1) by one image pixel; false when refused.
+    var onAdjust: ((Int) -> Bool)?
+    /// The frame's value text, read when VoiceOver asks.
+    var valueProvider: (() -> String?)?
+
+    init(handle: CropKeyGeometry.Handle) {
+        self.handle = handle
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .handle }
+    override func accessibilityLabel() -> String? { handle.label }
+    override func accessibilityValue() -> Any? { valueProvider?() }
+    override func accessibilityPerformIncrement() -> Bool { onAdjust?(1) ?? false }
+    override func accessibilityPerformDecrement() -> Bool { onAdjust?(-1) ?? false }
 }

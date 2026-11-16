@@ -500,9 +500,33 @@ final class PreferencesResetTests: XCTestCase {
         let volumes = folders.enumerated().map {
             SidebarVolume(url: $1, name: "Owned \($0)", kind: .external, isEjectable: false)
         }
+        // E-3: the system volume list is read off the main thread after the
+        // tree is made. These tests own Locations: stop that read so it cannot
+        // replace the owned roots (or list "/" and Home) later.
+        tree.stopSidebarChecksForTesting(volumes: volumes)
         tree.dataSource.rebuildRoots(favorites: [], volumes: volumes)
         tree.reload()
         return tree.dataSource.locationsSection!.children.first { $0.kind == .volume }!
+    }
+
+    /// A real disk mounted or ejected during a run must not rebuild the
+    /// Locations a test owns.
+    @MainActor
+    func testOwnedRootsSurviveAMountOrUnmountNotification() async throws {
+        let folder = TestScratch.directory.appendingPathComponent("shrike-owned-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let browser = BrowserWindowController(services: .makeDefault(), initialFolder: folder)
+        defer { browser.close() }
+        let tree = browser.treeControllerForTesting
+        _ = ownFoldersAsRoots(tree, [folder])
+        for name in [NSWorkspace.didUnmountNotification, NSWorkspace.didMountNotification] {
+            NSWorkspace.shared.notificationCenter.post(name: name, object: NSWorkspace.shared)
+        }
+        for _ in 0..<5 { try await Task.sleep(for: .milliseconds(40)) }
+        await tree.sidebarChecksFinished()
+        let volumes = tree.dataSource.locationsSection?.children.filter { $0.kind == .volume } ?? []
+        XCTAssertEqual(volumes.map { $0.url?.standardizedFileURL }, [folder.standardizedFileURL], "the owned root stays")
     }
 
     /// A row opened by the user's own hand (collapse first: the reveal may

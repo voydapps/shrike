@@ -212,11 +212,19 @@ extension ViewerWindow {
         }
         Task { [weak self] in
             let availability = await store.availability(for: url)
-            let original = availability.canRevert ? availability.originalDate : nil
+            // Same source as Revert to Original… (`state == .edited`): after an
+            // Undo that put the original bytes back there is nothing to revert,
+            // so the row goes away with the menu item. `state` is only read
+            // when a backup exists (it may fingerprint the file).
+            let edited = availability.canRevert ? await store.state(for: url) == .edited : false
+            let original = edited ? availability.originalDate : nil
             guard let self, self.displayedItem?.group.primary == url else { return }
             // latestDate is set once any edit was saved; without it there
-            // is nothing to back up, so the panel stays quiet.
-            self.contentRoot.inspectorPanel.updateOriginalDate(original, backupExpected: availability.latestDate != nil)
+            // is nothing to back up, so the panel stays quiet. A file that is
+            // back to its original needs no "unavailable" warning either.
+            let reverted = availability.canRevert && !edited
+            self.contentRoot.inspectorPanel.updateOriginalDate(original,
+                backupExpected: availability.latestDate != nil && !reverted)
         }
     }
 
@@ -226,7 +234,7 @@ extension ViewerWindow {
         refreshInspectorFileState()
     }
 
-    /// Menu check marks: Image ▸ Rating ▸ and Flag.
+    /// Menu check marks: Photo ▸ Rating ▸ and Flag.
     func cullingMenuState(for command: ShrikeCommand) -> NSControl.StateValue {
         guard let primary = displayedItem?.group.primary else { return .off }
         let record = cullingRecords[primary] ?? FileRecord()

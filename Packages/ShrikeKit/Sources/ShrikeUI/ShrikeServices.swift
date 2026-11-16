@@ -111,12 +111,14 @@ public struct ShrikeServices: Sendable {
                                             diskCeilingBytes: Prefs.cacheDiskCeilingBytes)
         } catch {
             ShrikeSignposts.thumbnail.event("initFailed", "\(error.localizedDescription)")
-            // Force a second attempt at the tmp path — if that fails too,
-            // we genuinely can't run.
-            thumbCache = (try? ThumbnailCache(diskURL: storagePaths.thumbnailFallback))
-                ?? {
-                    fatalError("ThumbnailCache init failed everywhere: \(error)")
-                }()
+            // Second attempt at the temp path. If that folder can't be made either (full disk),
+            // the cache lives in memory only, like the metadata store does: no crash at launch.
+            // `isPersistent` is false then.
+            do {
+                thumbCache = try ThumbnailCache(diskURL: storagePaths.thumbnailFallback, allowMemoryOnly: true)
+            } catch {
+                preconditionFailure("unreachable: allowMemoryOnly never throws (\(error))")
+            }
         }
 
         // A non-persistent fallback is flagged on the store

@@ -2,7 +2,7 @@
 //  CropPanel.swift
 //  ShrikeUI
 //
-//  Right-side Crop tool panel. Spec
+//  Right-side Crop tool panel.
 //  Controls the aspect picker, W/H numeric fields, thirds / golden grid
 //  toggles, and Apply / Reset buttons. The on-canvas overlay (crop rect
 //  with 8 handles) lives in `CropOverlayView.swift`; this file emits the
@@ -74,7 +74,16 @@ final class CropPanel: NSView, NSTextFieldDelegate {
         editedDimension.map { (Int(widthField.stringValue), Int(heightField.stringValue), $0) }
     }
     func controlTextDidBeginEditing(_ notification: Notification) { trackDimensionDraft(notification) }
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        (control as? PanelTextField)?.cancelTyping(textView, commandSelector) ?? false
+    }
     func controlTextDidChange(_ notification: Notification) { trackDimensionDraft(notification) }
+    /// Before an edit undo / redo: typed text goes, so no draft is read from it.
+    func discardTyping() {
+        guard [widthField, heightField].contains(where: { $0.discardTyping() }) else { return }
+        editedDimension = nil
+        onDraftChanged?()
+    }
     func controlTextDidEndEditing(_ notification: Notification) {
         editedDimension = nil
         onDraftChanged?()
@@ -109,7 +118,7 @@ final class CropPanel: NSView, NSTextFieldDelegate {
     private let goldenCheckbox = NSButton(checkboxWithTitle: "Golden grid",
                                           target: nil,
                                           action: nil)
-    private let resetButton = NSButton(title: "Reset Crop",
+    private let resetButton = EditQuietLinkButton(title: "Reset Crop",
                                        target: nil,
                                        action: nil)
     private let applyButton = NSButton(title: "Apply Crop",
@@ -160,13 +169,15 @@ final class CropPanel: NSView, NSTextFieldDelegate {
         goldenCheckbox.action = #selector(handleGoldenToggle(_:))
 
         resetButton.translatesAutoresizingMaskIntoConstraints = false
-        resetButton.bezelStyle = .rounded
+        resetButton.styleAsQuietLink()
         resetButton.target = self
         resetButton.action = #selector(handleReset(_:))
 
         applyButton.translatesAutoresizingMaskIntoConstraints = false
         applyButton.bezelStyle = .rounded
-        // Plain bezel, no key equivalent: Done is the one accent and the one Return (spec 25 §3.1).
+        applyButton.isEnabled = false   // Only with a pending crop
+        applyButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        // Plain bezel, no key equivalent: Done is the one accent and the one Return.
         applyButton.target = self
         applyButton.action = #selector(handleApply(_:))
         widthField.setAccessibilityLabel("Crop width, pixels")
@@ -267,6 +278,9 @@ final class CropPanel: NSView, NSTextFieldDelegate {
     @objc private func handleReset(_ sender: NSButton) {
         onReset?()
     }
+
+    /// Apply Crop is enabled only while a crop is pending (set by the controller).
+    var hasPendingChange = false { didSet { applyButton.isEnabled = hasPendingChange } }
 
     @objc private func handleApply(_ sender: NSButton) {
         onApply?()

@@ -201,8 +201,11 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
     }
 
     static func abbreviatedPath(_ url: URL) -> String {
-        UserFacingPath.string(url.deletingLastPathComponent())
+        homeWord(UserFacingPath.string(url.deletingLastPathComponent()))
     }
+
+    /// A bare `~` reads "Home"; longer paths keep `~/Pictures`.
+    static func homeWord(_ path: String) -> String { path == "~" ? "Home" : path }
 
     static func rowTitle(for url: URL, available: Bool) -> NSAttributedString {
         let style = NSMutableParagraphStyle()
@@ -256,19 +259,17 @@ public final class WelcomeWindowController: NSWindowController, NSWindowDelegate
         dropZone.onDrop = { [weak self] urls in self?.onOpenURLs?(urls) }
         openButton.target = self
         openButton.action = #selector(openFilesClicked(_:))
-        // "Open…" is the plain bordered button; "Open Folder…" is the primary
-        // (spec 27 P3-11). ⌘O opens files from the menu.
-        openButton.controlSize = .large
+        // "Open…" is the plain bordered button; "Open Folder…" is the primary.
+        // ⌘O opens files from the menu.
         openFolderButton.target = self
         openFolderButton.action = #selector(openFolderClicked(_:))
-        openFolderButton.controlSize = .large
-        // Spec 27 P3-11: "Open Folder…" is the primary (accent default button,
-        // Return); "Open…" stays the plain bordered button.
-        openButton.bezelStyle = .push
+        // "Open Photo…" is the default
+        // (system accent, Return); "Open Folder…" is a plain rounded button.
+        // Regular size, no custom colour, no pill.
+        openButton.bezelStyle = .rounded
+        openButton.keyEquivalent = "\r"
         openFolderButton.bezelStyle = .rounded
         openFolderButton.isBordered = true
-        openFolderButton.keyEquivalent = "\r"
-        openFolderButton.bezelColor = ShrikeAccent.mark
         let buttons = NSStackView(views: [openFolderButton, openButton])
         buttons.orientation = .horizontal
         buttons.spacing = 12
@@ -420,15 +421,22 @@ final class WelcomeDropZone: NSView {
         return !request.images.isEmpty || !request.folders.isEmpty
     }
 
-    private static func urls(from info: any NSDraggingInfo) -> [URL] {
-        info.draggingPasteboard.readObjects(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        ) as? [URL] ?? []
+    private static var openableCache: (key: FolderTreeViewController.DropFoldersKey, ok: Bool)?
+
+    /// `openable` for one drag: the drop reuses the answer `draggingEntered`
+    /// found (same pasteboard change count and URLs), so one drag reads the
+    /// disk once on the main thread, not twice.
+    static func openable(_ pb: NSPasteboard) -> (urls: [URL], ok: Bool) {
+        let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        let key = FolderTreeViewController.DropFoldersKey(changeCount: pb.changeCount, urls: urls)
+        if let cached = openableCache, cached.key == key { return (urls, cached.ok) }
+        let ok = openable(urls)
+        openableCache = (key, ok)
+        return (urls, ok)
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        let ok = Self.openable(Self.urls(from: sender))
+        let ok = Self.openable(sender.draggingPasteboard).ok
         isHighlighted = ok
         return ok ? .copy : []
     }
@@ -439,8 +447,8 @@ final class WelcomeDropZone: NSView {
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         isHighlighted = false
-        let urls = Self.urls(from: sender)
-        guard Self.openable(urls) else { return false }
+        let (urls, ok) = Self.openable(sender.draggingPasteboard)
+        guard ok else { return false }
         onDrop?(urls)
         return true
     }

@@ -92,7 +92,7 @@ public final class FolderTreeViewController: NSViewController {
     /// Persisted expand/collapse state (UserDefaults-backed). Only rows the
     /// user opened by hand are saved (chevron, → or ⌥→), oldest first, at
     /// most `openedPathsLimit`. Rows opened by the reveal or by the click
-    /// auto-expand are not (spec 22-sidebar §4.10).
+    /// auto-expand are not.
     private let expansionKey = "shrike.browser.tree.expanded"
     static let openedPathsLimit = 200
     private(set) var openedPaths: [String] = []
@@ -100,7 +100,7 @@ public final class FolderTreeViewController: NSViewController {
     /// are not taken for the user's own opening.
     private var programmaticExpandDepth = 0
     /// The path a keyboard selection (↑ ↓ → ←) asked the Browser to open.
-    /// The reveal that follows does not auto-expand that folder (§4.4 rule 3).
+    /// The reveal that follows does not auto-expand that folder.
     private var keyboardPath: String?
     /// The row the user is opening right now (see `outlineViewItemWillExpand`).
     private var userExpandTarget: ObjectIdentifier?
@@ -139,8 +139,13 @@ public final class FolderTreeViewController: NSViewController {
         configureOutlineView()
 
         dataSource.showHiddenFiles = Prefs.showHiddenFiles
-        dataSource.rebuildRoots(favorites: self.favorites.rows(), volumes: volumes.list(),
-                                workspace: self.workspace.row())
+        // First paint from stored data only: folders show as present and
+        // the volumes as the source's placeholder; `scheduleSidebarChecks`
+        // does the disk work off the main thread and corrects what differs.
+        appliedVolumes = volumes.initial()
+        volumesKnown = !volumes.initialIsPlaceholder
+        dataSource.rebuildRoots(favorites: self.favorites.uncheckedRows(), volumes: appliedVolumes,
+                                workspace: self.workspace.uncheckedRow())
         // The section open/closed state is gone: headers do not collapse.
         ShrikeDefaults.store.removeObject(forKey: expansionKey + ".sections")
         openedPaths = (ShrikeDefaults.store.array(forKey: expansionKey) as? [String]) ?? []
@@ -156,6 +161,92 @@ public final class FolderTreeViewController: NSViewController {
         // Another window set or cleared the Workspace.
         NotificationCenter.default.addObserver(self, selector: #selector(workspaceDidChange(_:)),
                                                name: .shrikeWorkspaceDidChange, object: nil)
+        scheduleSidebarChecks(listVolumes: volumes.initialIsPlaceholder)
+    }
+
+    // MARK: - Off-main sidebar checks
+
+    /// The volumes the sidebar shows now.
+    private var appliedVolumes: [SidebarVolume] = []
+    /// False until the volume list has been read once (system source).
+    private var volumesKnown = true
+    /// A reveal of a folder under `/Volumes` that came before the first
+    /// volume list: it runs when the list arrives (the folder's disk is not
+    /// "ejected", only not listed yet).
+    private var deferredReveal: (() -> Void)?
+    /// Tests that own the Locations roots: drops the pending off-main check
+    /// and treats `volumes` as the known list.
+    func stopSidebarChecksForTesting(volumes: [SidebarVolume]) {
+        checkTask?.cancel()
+        checkTask = nil
+        checkGeneration &+= 1
+        appliedVolumes = volumes
+        volumesKnown = true
+        deferredReveal = nil
+        // A real disk mounted or ejected during the run must not rebuild
+        // the Locations the test owns.
+        let center = NSWorkspace.shared.notificationCenter
+        center.removeObserver(self, name: NSWorkspace.didMountNotification, object: nil)
+        center.removeObserver(self, name: NSWorkspace.didUnmountNotification, object: nil)
+    }
+    var hasDeferredRevealForTesting: Bool { deferredReveal != nil }
+    var volumesKnownForTesting: Bool { volumesKnown }
+    private var volumeListPending = false
+    private var checkTask: Task<Void, Never>?
+    private var checkGeneration = 0
+
+    /// Waits for the running sidebar check (tests).
+    func sidebarChecksFinished() async {
+        while let task = checkTask { await task.value; if checkTask == nil || checkTask == task { break } }
+    }
+
+    /// Checks Favorites and the Workspace (and lists the volumes when asked)
+    /// off the main thread; rows that differ from what is shown are applied
+    /// on the main actor. A newer check or a rebuild drops an older result.
+    func scheduleSidebarChecks(listVolumes: Bool) {
+        // A volume list that was asked for stays asked for until it lands: a
+        // plain rebuild that cancels the running check must not lose it.
+        if listVolumes { volumeListPending = true }
+        let listVolumes = volumeListPending
+        checkTask?.cancel()
+        checkGeneration &+= 1
+        let generation = checkGeneration
+        let favorites = self.favorites, workspace = self.workspace
+        let list = volumes.list
+        checkTask = Task { [weak self] in
+            // Up to three tries: a favorite added during a check must not be lost.
+            for _ in 0..<3 {
+                let favs = await favorites.checkedRows()
+                let work = await workspace.checkedRow()
+                let listed = listVolumes ? await Task.detached(priority: .userInitiated) { list() }.value : nil
+                guard !Task.isCancelled, let self, self.checkGeneration == generation else { return }
+                guard favorites.commit(favs), workspace.commit(work) else { continue }
+                let firstList = !self.volumesKnown
+                if listed != nil { self.volumeListPending = false }
+                self.applyChecked(favorites: favs.rows, workspace: work.row, volumes: listed)
+                // The first list is the window's own opening, not a mount or
+                // an eject: the Browser has nothing to re-check for it.
+                if listed != nil, !firstList { self.delegate?.folderTreeVolumesDidChange() }
+                break
+            }
+            if let self, self.checkGeneration == generation { self.checkTask = nil }
+        }
+    }
+
+    private func applyChecked(favorites favs: [SidebarFavoriteRow], workspace row: SidebarWorkspaceRow?,
+                              volumes listed: [SidebarVolume]?) {
+        let newVolumes = listed ?? appliedVolumes
+        let wasKnown = volumesKnown
+        if listed != nil { volumesKnown = true }
+        let shownFavs = dataSource.favoritesSection?.children.map {
+            SidebarFavoriteRow(url: $0.url ?? URL(fileURLWithPath: "/"), isMissing: $0.isMissing) } ?? []
+        let shownWorkspace = dataSource.workspaceRoot.flatMap { node in
+            node.url.map { SidebarWorkspaceRow(url: $0, isMissing: node.isMissing) } }
+        guard shownFavs != favs || shownWorkspace != row || newVolumes != appliedVolumes || !wasKnown else { return }
+        // The first list finishes what the first reveal started: the current
+        // folder opens as it would have with the list in hand.
+        rebuild(volumes: newVolumes, favoriteRows: favs, workspaceRow: row, schedulesCheck: false,
+                reselectAutoExpand: wasKnown ? false : nil)
     }
 
     @objc nonisolated private func workspaceDidChange(_ note: Notification) {
@@ -174,10 +265,38 @@ public final class FolderTreeViewController: NSViewController {
     /// formula gives 15 at Small and 17 at Medium.
     static func indentation(forIconSide side: CGFloat) -> CGFloat { 7 + side / 2 }
 
-    /// Follows the system's sidebar icon size; called when rows are made.
+    /// Follows the system's sidebar icon size and the depth of the open
+    /// tree: the shallow indent until the deepest visible
+    /// row would squeeze its name under `SidebarIndent.minLabel`, then less
+    /// (down to 6 pt). Called when rows are made (cheap: it reuses the depth
+    /// found at the last width change / expand / collapse).
     func updateIndentation() {
-        let wanted = Self.indentation(forIconSide: SidebarRowCell.iconSide(for: outlineView.effectiveRowSizeStyle))
+        let base = Self.indentation(forIconSide: SidebarRowCell.iconSide(for: outlineView.effectiveRowSizeStyle))
+        let width = scrollView.contentView.bounds.width
+        let wanted = width > 0
+            ? SidebarIndent.indent(width: width, depth: visibleDepth, shallow: base)
+            : base
         if outlineView.indentationPerLevel != wanted { outlineView.indentationPerLevel = wanted }
+    }
+
+    /// The deepest visible folder level below the section rows' children
+    /// (a volume or Favorite row = 0). Recounted on width change, expand,
+    /// collapse and reload — never per frame.
+    private(set) var visibleDepth = 0
+    private var indentWidth: CGFloat = -1
+
+    @objc private func sidebarClipFrameChanged(_ note: Notification) {
+        if abs(scrollView.contentView.bounds.width - indentWidth) > 0.5 { recountDepthAndIndent() }
+    }
+
+    func recountDepthAndIndent() {
+        var deepest = 0
+        for row in 0..<outlineView.numberOfRows {
+            deepest = max(deepest, outlineView.level(forRow: row) - 1)
+        }
+        visibleDepth = deepest
+        indentWidth = scrollView.contentView.bounds.width
+        updateIndentation()
     }
 
     /// The Browser closed: running reads and lookups stop.
@@ -192,26 +311,43 @@ public final class FolderTreeViewController: NSViewController {
     }
 
     /// Lists the volumes off the main thread (a slow network disk must not
-    /// stall the UI), then rebuilds the sidebar.
+    /// stall the UI), then rebuilds the sidebar. Favorites and the Workspace
+    /// are checked in the same pass.
     func refreshVolumes() {
-        let list = volumes.list
-        Task { [weak self] in
-            let volumes = await Task.detached(priority: .userInitiated) { list() }.value
-            self?.rebuild(volumes: volumes)
-            self?.delegate?.folderTreeVolumesDidChange()
-        }
+        scheduleSidebarChecks(listVolumes: true)
     }
 
     /// Rebuilds Favorites and Locations, keeping the current folder
-    /// selected. `volumes` nil lists them again synchronously.
+    /// selected. No disk access: the rows come from stored data, a folder
+    /// keeps the "missing" look it had, and a new check runs off the main
+    /// thread. `volumes` nil keeps the volumes shown now.
     func rebuild(volumes newVolumes: [SidebarVolume]? = nil) {
+        rebuild(volumes: newVolumes, favoriteRows: nil, workspaceRow: nil, schedulesCheck: true)
+    }
+
+    private func rebuild(volumes newVolumes: [SidebarVolume]?, favoriteRows: [SidebarFavoriteRow]?,
+                         workspaceRow: SidebarWorkspaceRow?, schedulesCheck: Bool,
+                         reselectAutoExpand: Bool? = false) {
         expansionIntents.removeAll()
         let workspaceBefore = dataSource.workspaceRoot?.url?.standardizedFileURL.path
-        dataSource.rebuildRoots(favorites: favorites.rows(), volumes: newVolumes ?? volumes.list(),
-                                workspace: workspace.row())
+        if let newVolumes { appliedVolumes = newVolumes }
+        let favs: [SidebarFavoriteRow]
+        let work: SidebarWorkspaceRow?
+        if schedulesCheck {
+            let missing = Set((dataSource.favoritesSection?.children ?? []).filter(\.isMissing)
+                .compactMap { $0.url?.standardizedFileURL.path })
+            favs = favorites.uncheckedRows(knownMissing: missing)
+            let wasMissing = dataSource.workspaceRoot?.isMissing ?? false
+            work = workspace.uncheckedRow(knownMissing: wasMissing)
+        } else {
+            favs = favoriteRows ?? []
+            work = workspaceRow
+        }
+        dataSource.rebuildRoots(favorites: favs, volumes: appliedVolumes, workspace: work)
+        if schedulesCheck { scheduleSidebarChecks(listVolumes: false) }
         guard isViewLoaded else { return }
         reload()
-        // A new Workspace opens one level (one read; spec 23-workspace §1)
+        // A new Workspace opens one level (one read)
         // and the sidebar shows its heading and root row: scrolled to the top,
         // and kept there when the reveal of the current folder finishes.
         let workspaceChanged = dataSource.workspaceRoot.map {
@@ -225,12 +361,15 @@ public final class FolderTreeViewController: NSViewController {
         }
         // A rebuild (⌘D, a disk mounted) shows the same place again; it does
         // not open a folder the user may have closed.
-        if let currentURL {
-            select(currentURL, scrollToSelection: true, autoExpand: false, scrollToTop: workspaceChanged)
+        if let deferred = deferredReveal, volumesKnown {
+            deferredReveal = nil
+            deferred()
+        } else if let currentURL {
+            select(currentURL, scrollToSelection: true, autoExpand: reselectAutoExpand, scrollToTop: workspaceChanged)
         }
     }
 
-    /// Spec 23-workspace §1: a new Workspace closes every open Locations row
+    /// A new Workspace closes every open Locations row
     /// whose folder is the Workspace root or holds it (Home, the disk, the
     /// rows between), so the same path does not show twice. Other open
     /// branches stay. Memory only: no disk read. The paths also leave the
@@ -465,7 +604,7 @@ public final class FolderTreeViewController: NSViewController {
         rebuild()
     }
 
-    // MARK: - Workspace editing (spec 23-workspace §1)
+    // MARK: - Workspace editing
 
     /// Makes `url` the Workspace: every sidebar rebuilds, the root opens one
     /// level, a toast says so. "/" is refused.
@@ -563,8 +702,8 @@ public final class FolderTreeViewController: NSViewController {
         outlineView.rowSizeStyle = .default
         outlineView.floatsGroupRows = false
         outlineView.style = .sourceList
-        // A child's chevron sits under its parent's icon centre (spec
-        // 22-sidebar §4.2, ±2 pt). The indent follows the icon box, so it
+        // A child's chevron sits under its parent's icon centre (±2 pt).
+        // The indent follows the icon box, so it
         // holds at Small, Medium and Large (`updateIndentation`; this line
         // must come after `.sourceList`, which sets its own indent).
         updateIndentation()
@@ -599,6 +738,7 @@ public final class FolderTreeViewController: NSViewController {
             let row = outlineView.selectedRow
             if row >= 0 { outlineView.scrollRowToVisible(row) }
         }
+        if abs(scrollView.contentView.bounds.width - indentWidth) > 0.5 { recountDepthAndIndent() }
         guard let column = outlineView.tableColumns.first else { return }
         let clip = scrollView.contentView.bounds.width
         guard clip > 0, abs(outlineView.frame.width - clip) > 0.5 || column.width < column.minWidth else { return }
@@ -607,6 +747,12 @@ public final class FolderTreeViewController: NSViewController {
 
     public override func viewDidLoad() {
         super.viewDidLoad()
+        // A split drag or window resize changes the clip's
+        // width without a layout pass of this controller's view.
+        scrollView.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(sidebarClipFrameChanged(_:)),
+                                               name: NSView.frameDidChangeNotification,
+                                               object: scrollView.contentView)
         reload()
     }
 
@@ -620,8 +766,8 @@ public final class FolderTreeViewController: NSViewController {
         isRestoringExpansionState = true
         defer { isRestoringExpansionState = wasRestoring }
         outlineView.reloadData()
+        recountDepthAndIndent()
         // Both sections are open on every reload; headers do not collapse
-        // (spec 22-sidebar §4.1).
         programmaticExpandDepth += 1
         for root in dataSource.roots { outlineView.expandItem(root) }
         programmaticExpandDepth -= 1
@@ -629,7 +775,7 @@ public final class FolderTreeViewController: NSViewController {
     }
 
     /// Reveals `url`: the tree opens the folder's parents and selects the
-    /// folder's row in Locations (spec 22-sidebar §4.3, §4.4). Lookup is by
+    /// folder's row in Locations. Lookup is by
     /// path (`FolderTreeDataSource.node(for:)`), listing only the target's
     /// ancestors, off the main thread. The row is selected when the chain
     /// has loaded; until then the old selection is cleared, so the tree
@@ -716,6 +862,17 @@ public final class FolderTreeViewController: NSViewController {
         let wasKeyboard = keyboardPath == path
         keyboardPath = nil
         let expand = autoExpand ?? !wasKeyboard
+        // The volume list is not read yet: a folder under /Volumes is not
+        // "ejected", it is not listed yet. Reveal it when the list arrives.
+        if !volumesKnown, path.hasPrefix("/Volumes/") {
+            selectTask = nil
+            deferredReveal = { [weak self] in
+                guard let self, self.currentURL == url else { return }
+                self.select(url, scrollToSelection: scrollToSelection, autoExpand: autoExpand, scrollToTop: scrollToTop)
+            }
+            return
+        }
+        deferredReveal = nil
         if isOnUnmountedVolume(url) {
             selectTask = nil
             isSelectingProgrammatically = true
@@ -746,7 +903,21 @@ public final class FolderTreeViewController: NSViewController {
 
     /// Whether the user could write into `folder`; a read-only disk or
     /// folder is no drop target. One access check, no listing (tests set it).
-    var isFolderWritable: (URL) -> Bool = { FileManager.default.isWritableFile(atPath: $0.path) }
+    var isFolderWritable: (URL) -> Bool = { FileManager.default.isWritableFile(atPath: $0.path) } {
+        didSet { writableAnswers = nil }
+    }
+    /// The answers of one drag (one pasteboard change): one check per folder,
+    /// not one per pointer move.
+    private var writableAnswers: (drag: String, folders: [URL: Bool])?
+
+    func isWritableDuringDrag(_ folder: URL, _ pb: NSPasteboard) -> Bool {
+        let drag = "\(pb.name.rawValue) \(pb.changeCount)"
+        if writableAnswers?.drag != drag { writableAnswers = (drag, [:]) }
+        if let known = writableAnswers?.folders[folder] { return known }
+        let answer = isFolderWritable(folder)
+        writableAnswers?.folders[folder] = answer
+        return answer
+    }
 
     /// How long a drag rests on a closed folder row before it opens.
     var springLoadDelay: Duration = .milliseconds(800)
@@ -761,8 +932,8 @@ public final class FolderTreeViewController: NSViewController {
     /// keyboard).
     var modifierFlagsProvider: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
 
-    /// Opens the current folder's row so its subfolders show right below it
-    /// (spec 22-sidebar §4.4 rule 3). Not saved as user-opened.
+    /// Opens the current folder's row so its subfolders show right below it.
+    /// Not saved as user-opened.
     private func openCurrentFolder(_ node: FolderTreeNode) {
         guard !outlineView.isItemExpanded(node), dataSource.isExpandable(node) else { return }
         expandProgrammatically(node)
@@ -941,7 +1112,7 @@ public final class FolderTreeViewController: NSViewController {
 
     // MARK: - Context menu
 
-    /// Order and words from spec 22-sidebar §4.8. No key equivalents: "New
+    /// Fixed order and words. No key equivalents: "New
     /// Folder…" used to show ⌘N, which is New Browser Window.
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
@@ -1318,7 +1489,7 @@ extension FolderTreeViewController: NSOutlineViewDataSource {
         -> (node: FolderTreeNode, groups: [ImageGroup], verb: FileVerb)? {
         guard childIndex == NSOutlineViewDropOnItemIndex,
               let node = item as? FolderTreeNode, !node.isSection, !node.isMissing,
-              let folder = node.url, isFolderWritable(folder) else { return nil }
+              let folder = node.url, isWritableDuringDrag(folder, pb) else { return nil }
         let groups = BrowserDropRules.droppedGroups(pb)
         guard let first = groups.first else { return nil }
         let sameVolume = BrowserDropRules.volumeRoot(first.primary) == BrowserDropRules.volumeRoot(folder)
@@ -1327,10 +1498,23 @@ extension FolderTreeViewController: NSOutlineViewDataSource {
         return (node, groups, verb)
     }
 
-    private static func droppedFolders(_ pb: NSPasteboard) -> [URL] {
+    /// The last answer, per pasteboard change and URL list: one folder
+    /// check per drag, not one per pointer move.
+    private static var droppedFoldersCache: (key: DropFoldersKey, folders: [URL])?
+
+    struct DropFoldersKey: Equatable {
+        let changeCount: Int
+        let urls: [URL]
+    }
+
+    static func droppedFolders(_ pb: NSPasteboard) -> [URL] {
         let urls = pb.readObjects(forClasses: [NSURL.self],
                                   options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        return urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        let key = DropFoldersKey(changeCount: pb.changeCount, urls: urls)
+        if let cached = droppedFoldersCache, cached.key == key { return cached.folders }
+        let folders = urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        droppedFoldersCache = (key, folders)
+        return folders
     }
 }
 
@@ -1411,7 +1595,7 @@ extension FolderTreeViewController: NSOutlineViewDelegate {
         (item as? FolderTreeNode)?.isSection ?? false
     }
 
-    /// Section headers do not collapse (spec 22-sidebar §4.1).
+    /// Section headers do not collapse.
     public func outlineView(_ outlineView: NSOutlineView, shouldShowOutlineCellForItem item: Any) -> Bool {
         (item as? FolderTreeNode)?.isSection != true
     }
@@ -1452,7 +1636,12 @@ extension FolderTreeViewController: NSOutlineViewDelegate {
         delegate?.folderTreeDidSelect(FolderSelection(url: url))
     }
 
+    public func outlineViewItemDidExpand(_ notification: Notification) {
+        recountDepthAndIndent()
+    }
+
     public func outlineViewItemDidCollapse(_ notification: Notification) {
+        recountDepthAndIndent()
         guard isUserToggle,
               let node = notification.userInfo?["NSObject"] as? FolderTreeNode,
               let path = node.url?.standardizedFileURL.path else { return }
@@ -1561,7 +1750,7 @@ final class SidebarRowCell: NSTableCellView {
     private var loadingGap: NSLayoutConstraint?
     private let iconView: NSImageView
 
-    var isRowSelected = false { didSet { updateEject() } }
+    var isRowSelected = false { didSet { updateEject(); updateToolTip() } }
     /// The row of the folder the Browser shows: VoiceOver says so.
     /// A table cell exposes no AXValue to assistive tools, so the words are
     /// in the label too ("screenshots, current folder").
@@ -1619,8 +1808,11 @@ final class SidebarRowCell: NSTableCellView {
         label.lineBreakMode = .byTruncatingTail
         label.usesSingleLineMode = true
         label.cell?.truncatesLastVisibleLine = true
-        label.allowsExpansionToolTips = true
+        // The tooltip is set on the cell (below); the label
+        // keeps at least 90 pt (the indent rule leaves it that room).
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let floor = label.widthAnchor.constraint(greaterThanOrEqualToConstant: SidebarIndent.minLabel)
+        floor.priority = .defaultHigh
         addSubview(icon)
         addSubview(label)
         imageView = icon
@@ -1632,6 +1824,7 @@ final class SidebarRowCell: NSTableCellView {
             icon.heightAnchor.constraint(equalToConstant: iconSide),
             label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            floor,
         ]
         spinner.style = .spinning
         spinner.controlSize = .small
@@ -1684,7 +1877,37 @@ final class SidebarRowCell: NSTableCellView {
         }
         spokenName = spoken
         setAccessibilityLabel(spoken)
+        if let url = node.url { setAccessibilityHelp(UserFacingPath.string(url)) }
+        fixedToolTip = toolTip
         updateEject()
+    }
+
+    /// A tooltip set for a state (not available, can't read) wins.
+    private var fixedToolTip: String?
+
+    /// The name when it is cut; the selected row: the name and,
+    /// on a new line, the folder's path.
+    static func toolTip(name: String, path: String?, isCut: Bool, isSelected: Bool) -> String? {
+        if isSelected, let path { return name + "\n" + path }
+        return isCut ? name : nil
+    }
+
+    /// The name does not fit its label.
+    var isNameCut: Bool {
+        guard let label = textField else { return false }
+        return label.cell.map { $0.cellSize.width > label.bounds.width + 0.5 } ?? false
+    }
+
+    private func updateToolTip() {
+        guard fixedToolTip == nil else { return }
+        let tip = Self.toolTip(name: node.title, path: node.url.map(UserFacingPath.string),
+                               isCut: isNameCut, isSelected: isRowSelected)
+        if toolTip != tip { toolTip = tip }
+    }
+
+    override func layout() {
+        super.layout()
+        updateToolTip()
     }
 
     @available(*, unavailable)
@@ -1726,5 +1949,30 @@ final class SidebarRowCell: NSTableCellView {
 
     @objc private func ejectTapped(_ sender: Any?) {
         if let volume = node.volume { onEject?(volume) }
+    }
+}
+
+
+// MARK: - Indent for deep trees
+
+/// The sidebar indent shrinks with depth so the deepest visible name keeps
+/// `minLabel` points. Pure; tested.
+enum SidebarIndent {
+    /// Width a row uses besides its indent and its name: the source list's
+    /// inset, the chevron gutter, the icon box, the gaps and the trailing
+    /// margin. Measured at Medium (20 pt icons) on 2026-11-13: 65 pt for
+    /// every level of a 10-level tree (the first guess was 52).
+    static let fixed: CGFloat = 65
+    /// A name is never squeezed below this.
+    static let minLabel: CGFloat = 90
+    /// Six was planned; measured, 6 leaves a deep path (a folder ~19
+    /// levels below the disk) with ~20 pt of name, so the floor is 2 pt and
+    /// the 90 pt name wins.
+    static let minimumIndent: CGFloat = 2
+
+    /// `clamp(floor((width - fixed - minLabel) / max(depth, 1)), minimumIndent ... shallow)`.
+    static func indent(width: CGFloat, depth: Int, shallow: CGFloat) -> CGFloat {
+        let room = (width - fixed - minLabel) / CGFloat(max(depth, 1))
+        return min(shallow, max(minimumIndent, room.rounded(.down)))
     }
 }

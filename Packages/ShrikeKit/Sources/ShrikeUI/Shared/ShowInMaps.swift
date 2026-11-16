@@ -2,7 +2,7 @@
 //  ShowInMaps.swift
 //  ShrikeUI
 //
-//  Image ▸ Show in Maps: ⌃⌘M (Mac) / ⌃⇧M (FastStone) and
+//  Photo ▸ Show in Maps: ⌃⌘M (Mac) / ⌃⇧M (FastStone) and
 //  the inspectors' "Show in Maps" link. Opens
 //  `https://maps.apple.com/?ll=<lat>,<lon>&q=<file name>`, coordinates
 //  signed (south / west negative). No GPS: the menu item is disabled and

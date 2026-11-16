@@ -18,7 +18,7 @@ extension ViewerWindow {
     /// (tests drive it directly).
     @discardableResult
     func showTagEditor(anchor inspectorRow: NSView? = nil) -> TagEditSession? {
-        guard let session = makeTagSession() else {
+        guard let session = makeTagSession(read: TagEditSession.readOffMain) else {
             NSSound.beep()
             return nil
         }
@@ -31,11 +31,13 @@ extension ViewerWindow {
             controller.present(relativeTo: inspectorRow.bounds, of: inspectorRow, edge: .minX)
             return session
         }
-        let pill = contentRoot.positionPillView
-        let anchor: NSView = pill.isHidden || pill.window == nil ? contentRoot : pill
-        let rect = anchor === pill ? pill.bounds
-            : NSRect(x: contentRoot.bounds.midX - 1, y: 24, width: 2, height: 2)
-        controller.present(relativeTo: rect, of: anchor, edge: .maxY)
+        // The viewer has no toolbar Tags item, so the popover opens below the
+        // photo's centre (a 2 pt point there).
+        let image = contentRoot.imageView
+        let photo = contentRoot.convert(image.drawnImageRect, from: image)
+        let centre = photo.isEmpty ? NSPoint(x: contentRoot.bounds.midX, y: contentRoot.bounds.midY)
+            : NSPoint(x: photo.midX, y: photo.midY)
+        controller.present(below: NSRect(x: centre.x - 1, y: centre.y - 1, width: 2, height: 2), of: contentRoot)
         return session
     }
 
@@ -51,7 +53,7 @@ extension ViewerWindow {
         return session
     }
 
-    private func makeTagSession() -> TagEditSession? {
+    private func makeTagSession(read: TagEditSession.Reader? = nil) -> TagEditSession? {
         guard let item = displayedItem, !contentRoot.isEditModeActive else { return nil }
         return TagEditSession(
             groups: [item.group], undoManager: windowUndoManager,
@@ -59,7 +61,7 @@ extension ViewerWindow {
             onError: { [weak self] line in
                 self?.contentRoot.toast(ToastContent(line, kind: .error))
             },
-            suppressing: watcherScope
+            suppressing: watcherScope, read: read
         )
     }
 

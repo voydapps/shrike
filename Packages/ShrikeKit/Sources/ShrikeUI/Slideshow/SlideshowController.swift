@@ -111,8 +111,8 @@ final class SlideshowController: NSObject, NSWindowDelegate {
         endActivity()
         if let window {
             window.delegate = nil
-            if NSApp.presentationOptions != savedPresentation, window.isKeyWindow {
-                NSApp.presentationOptions = savedPresentation
+            if NSApp?.presentationOptions != savedPresentation, window.isKeyWindow {
+                NSApp?.presentationOptions = savedPresentation
             }
             NSCursor.unhide()
             window.orderOut(nil)
@@ -276,8 +276,8 @@ final class SlideshowController: NSObject, NSWindowDelegate {
                 guard let self, generation == self.showGeneration, !self.ended else { return }
                 // The failed identity is explicit; no preceding photo remains.
                 self.front?.setImage(nil, sourceID: nil); self.back?.setImage(nil, sourceID: nil)
-                self.toast("Can’t open “\(url.lastPathComponent)”. Continuing after the interval.")
-                self.didShow(item: item, url: url)
+                self.toast(Self.brokenFileText(name: url.lastPathComponent))
+                self.didShow(item: item, url: url, broken: true)
                 return
             }
             guard let self, generation == self.showGeneration, !self.ended else { return }
@@ -287,13 +287,26 @@ final class SlideshowController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func didShow(item: Int, url: URL) {
+    /// A photo that cannot be opened shows this and moves on soon.
+    static func brokenFileText(name: String) -> String {
+        "Can’t open “\(name)”. Skipping to the next photo."
+    }
+
+    /// A broken photo stays up for at most 1.5 s (or the interval, if that is shorter),
+    /// instead of a full interval of black screen.
+    static let brokenFileMaxSeconds: TimeInterval = 1.5
+    static func advanceDelay(interval: TimeInterval, shownBroken: Bool) -> TimeInterval {
+        shownBroken ? min(interval, brokenFileMaxSeconds) : interval
+    }
+
+    private func didShow(item: Int, url: URL, broken: Bool = false) {
         shownIndex = item
         shownHistory.append(item)
+        shownBroken = broken
         if !isPaused { scheduleAdvance() }
     }
 
-    /// COR-6: a second `present` (→ pressed during the 480 ms dissolve) installs its own
+    /// A second `present` (→ pressed during the 480 ms dissolve) installs its own
     /// mask on the same layer. The first one's completion must not remove THAT mask.
     static func removeDissolveMask(_ mask: CALayer, from layer: CALayer) {
         if layer.mask === mask { layer.mask = nil }
@@ -386,9 +399,12 @@ final class SlideshowController: NSObject, NSWindowDelegate {
         view.contentMode = .zoom(Double(zoom))
     }
 
+    /// The photo on screen could not be opened (so a resume or an interval change keeps the short wait).
+    private var shownBroken = false
+
     private func scheduleAdvance() {
         advanceTask?.cancel()
-        let seconds = interval()
+        let seconds = Self.advanceDelay(interval: interval(), shownBroken: shownBroken)
         advanceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             guard let self, !Task.isCancelled, !self.ended, !self.isPaused else { return }
@@ -449,13 +465,16 @@ final class SlideshowController: NSObject, NSWindowDelegate {
         controlBar.translatesAutoresizingMaskIntoConstraints = false
         controlBar.alphaValue = 0
         root.addSubview(controlBar)
+        let barScale = SlideshowBarScale.scale(screenWidth: (window.screen ?? NSScreen.main)?.frame.width ?? 1440)
+        let controlBarHeight = controlBar.heightAnchor.constraint(equalToConstant: SlideshowBarScale.barHeight(scale: barScale))
         NSLayoutConstraint.activate([
             pauseIndicator.topAnchor.constraint(equalTo: root.topAnchor, constant: 24),
             pauseIndicator.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
             controlBar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             controlBar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -24),
-            controlBar.heightAnchor.constraint(equalToConstant: 44),
+            controlBarHeight,
         ])
+        controlBar.applyScale(barScale)
         toastHost.install(in: root)
         controlBar.sync(settings: settings, paused: isPaused)
         controlBar.onAction = { [weak self] action in self?.handleBar(action) }
@@ -469,7 +488,7 @@ final class SlideshowController: NSObject, NSWindowDelegate {
         }
         window.delegate = self
         self.window = window
-        savedPresentation = NSApp.presentationOptions
+        savedPresentation = NSApp?.presentationOptions ?? []
         window.makeKeyAndOrderFront(nil)
         schedulePointerHide()
     }
@@ -510,11 +529,11 @@ final class SlideshowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        NSApp.presentationOptions = [.hideDock, .hideMenuBar]
+        NSApp?.presentationOptions = [.hideDock, .hideMenuBar]
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        NSApp.presentationOptions = savedPresentation
+        NSApp?.presentationOptions = savedPresentation
     }
 }
 
@@ -620,6 +639,7 @@ final class SlideshowControlBar: HUDSurfaceView {
         for popup in [intervalPopup, transitionPopup] { popup.controlSize = .small }
         let stack = NSStackView(views: [prev, playButton, next, intervalPopup, transitionPopup,
                                         randomButton, loopButton, exit])
+        barStack = stack
         stack.spacing = 10
         stack.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -635,6 +655,26 @@ final class SlideshowControlBar: HUDSurfaceView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    private var barStack: NSStackView?
+    /// The scale in use.
+    private(set) var barScale: CGFloat = 1
+
+    /// Sizes the buttons and glyphs for the screen.
+    func applyScale(_ scale: CGFloat) {
+        barScale = scale
+        for case let button as NSButton in barStack?.arrangedSubviews ?? [] where button.image != nil {
+            button.constraints.first { $0.firstAttribute == .width }?.constant = SlideshowBarScale.buttonSize(scale: scale)
+            button.symbolConfiguration = NSImage.SymbolConfiguration(
+                pointSize: SlideshowBarScale.glyphSize(scale: scale), weight: .regular)
+        }
+    }
+
+    var buttonWidthsForTesting: [CGFloat] {
+        (barStack?.arrangedSubviews ?? []).compactMap { view in
+            (view as? NSButton)?.constraints.first { $0.firstAttribute == .width }?.constant
+        }
+    }
+
     private static func button(_ symbol: String, _ label: String) -> NSButton {
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)!
         let b = NSButton(image: image, target: nil, action: nil)
@@ -642,7 +682,7 @@ final class SlideshowControlBar: HUDSurfaceView {
         b.contentTintColor = .white
         b.toolTip = label
         b.setAccessibilityLabel(label)
-        b.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        b.widthAnchor.constraint(equalToConstant: SlideshowBarScale.buttonSize(scale: 1)).isActive = true
         return b
     }
 

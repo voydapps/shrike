@@ -16,7 +16,7 @@ import ShrikeIO
 /// User-facing copy for file actions.
 enum FileActionCopy {
 
-    /// T1: "Moved “DSC_0042.jpg” to the Trash." / "… and its RAW file …".
+    /// "Moved “DSC_0042.jpg” to the Trash." / "… and its RAW file …".
     static func movedToTrash(_ groups: [ImageGroup]) -> String {
         guard groups.count == 1, let group = groups.first else {
             return "Moved \(groups.count) items to the Trash."
@@ -27,7 +27,7 @@ enum FileActionCopy {
         return "Moved “\(FileNameFit.short(group.displayName))” to the Trash."
     }
 
-    /// T2: "Couldn't move “x.jpg” to the Trash — the volume is read-only."
+    /// "Couldn't move “x.jpg” to the Trash — the volume is read-only."
     static func trashFailed(_ group: ImageGroup, error: any Error) -> String {
         let base = "Couldn't move “\(FileNameFit.short(group.displayName))” to the Trash"
         if let ops = error as? FileOpsError, let reason = reason(for: ops) {
@@ -44,7 +44,7 @@ enum FileActionCopy {
         return "Put back as “\(FileNameFit.short(restored.displayName))”."
     }
 
-    /// The permanent-delete alert for a volume without a Trash (spec 21b §4): one builder
+    /// The permanent-delete alert for a volume without a Trash: one builder
     /// for the Browser, the viewer and Compare. Cancel is the default (Return and Esc).
     struct NoTrashDelete: Equatable {
         let message: String
@@ -112,14 +112,15 @@ extension ViewerWindow {
             refreshReviewRecord()
             // The toolbar follows the displayed photo at once. AppKit re-validates it
             // only on mouse events, so after keyboard navigation it showed the PREVIOUS
-            // photo's rating, Back and Edit state until the pointer moved (audit M2).
+            // photo's rating, Back and Edit state until the pointer moved.
             toolbar?.validateVisibleItems()
+            refreshEditAvailability()
         }
         guard let group = list[index] else { return }
         // A late paint from a list that has since changed must not label
         // the screen with the wrong file.
-        // The source that painted is the shown file: the primary, or (spec 24
-        // §4) the group's RAW after ⌥R.
+        // The source that painted is the shown file: the primary, or
+        // the group's RAW after ⌥R.
         var shown = group.primary
         if let file = intent.sourceAt(index) as? FileImageSource {
             let painted = GroupList.canonical(file.url)
@@ -138,6 +139,11 @@ extension ViewerWindow {
             contentRoot.imageView.resetOrientation()
             for url in viewOnlyTurnedURLs { headerPixelSizes[url] = nil }
             viewOnlyTurnedURLs.removeAll()
+            // Only a schedule here (next/prev < 50 ms); the work runs later.
+            if pairedBrowser != nil {
+                let url = group.primary
+                browserFollow.call { [weak self] in self?.followInBrowser(url) }
+            }
         }
         let previousShown = displayedItem?.shownURL
         displayedItem = item
@@ -147,11 +153,11 @@ extension ViewerWindow {
         if newFile || item.listIndex != previousListIndex {
             contentRoot.setPositionMarks(positionMarks(for: index))
         }
-        // Edit is off while the RAW is shown (spec 24 §4.5); the Edit
+        // Edit is off while the RAW is shown; the Edit
         // button's tooltip says why.
         contentRoot.editBlockedByRAW = item.isRAWShown
         if displayedItem != nil, item.shownURL != previousShown {
-            // The inspector reads the shown file (spec 24 §4.5): the RAW's
+            // The inspector reads the shown file: the RAW's
             // name, size, dimensions, type and EXIF while it is on screen.
             contentRoot.setCurrentURL(item.shownURL)
             refreshInspectorFileState()
@@ -173,6 +179,8 @@ extension ViewerWindow {
             return
         }
         let url = item.shownURL
+        contentRoot.installPhotoAccessibility { [weak self] in self?.dispatch($0) }
+        contentRoot.setPhotoAccessibilityName(url.lastPathComponent)
         // The side panel's "n of N" follows the title when the list grows or
         // shrinks (Save Copy, a file added or removed) without a new photo.
         contentRoot.updateInspectorPosition(index: item.listIndex, total: list.count)
@@ -182,6 +190,9 @@ extension ViewerWindow {
             subtitle = contentRoot.editModeController.chromeState.subtitle
             return
         }
+        // A read started before (say, before a turn was written) must not land after this.
+        headerReadGeneration &+= 1
+        let generation = headerReadGeneration
         if let known = headerPixelSizes[url] {
             contentRoot.imageView.sourcePixelSize = known
             subtitle = WindowTitles.viewerSubtitle(index: item.listIndex, total: list.count, pixelSize: known)
@@ -194,7 +205,7 @@ extension ViewerWindow {
             let size = await Task.detached(priority: .utility) {
                 sizeReader?(url) ?? WindowTitles.headerPixelSize(of: url)
             }.value
-            guard let self, self.displayedItem == expected,
+            guard let self, self.displayedItem == expected, self.headerReadGeneration == generation,
                   !self.contentRoot.isEditModeActive else { return }
             // "100 %" comes from the file's pixel size.
             var drawn = size
@@ -230,7 +241,7 @@ extension ViewerWindow {
 
     /// Pushes the current `list` into the decode queue and shows `index`.
     func reloadList(showing index: Int) {
-        // A new list shows every primary again (spec 24 §4.1: the RAW view resets).
+        // A new list shows every primary again.
         let sources: [any ImageSource] = list.groups.map { FileImageSource(url: $0.primary) }
         guard !sources.isEmpty else {
             displayedItem = nil
@@ -442,14 +453,17 @@ extension ViewerWindow {
         browser.window?.makeKeyAndOrderFront(nil)
     }
 
-    /// Image ▸ Batch… ⌥⌘B: the current list goes to the
-    /// Batch window (added to it when it is open). An in-place rename or
-    /// rotate registers its undo here.
+    /// Photo ▸ Batch… ⌥⌘B: the shown photo (its group, so a RAW+JPEG pair
+    /// stays one item) goes to the Batch window, added when it is open
+    /// (the user chose no other photo). An in-place rename
+    /// or rotate registers its undo here.
     func openBatch() {
-        guard !list.isEmpty else { return }
+        guard let group = displayedItem?.group else { return }
+        let folder = group.primary.deletingLastPathComponent().lastPathComponent
         BatchWindowController.open(
-            groups: list.groups, services: services, launcher: self,
-            toast: { [weak self] message in self?.contentRoot.toast(ToastContent(message, kind: .error)) })
+            groups: [group], services: services, launcher: self,
+            originScope: BatchScope.viewer(folderName: folder.isEmpty ? nil : folder),
+            toast: { [weak self] content in self?.contentRoot.toast(content) })
     }
 
     /// Go ▸ Go to Folder… ⇧⌘G: the sheet on this viewer;
@@ -500,6 +514,22 @@ extension ViewerWindow {
         WindowCoordinator.shared.openBrowser(at: $0.folder, selecting: $0.selecting, services: $1)
     }
 
+    /// The paired Browser showing the same folder selects
+    /// `url` (a multi-selection is replaced) and scrolls it into view
+    /// without animation. It is not brought forward.
+    func followInBrowser(_ url: URL) {
+        guard let browser = pairedBrowser, let folder = browser.currentFolder,
+              folder.standardizedFileURL.path == url.deletingLastPathComponent().standardizedFileURL.path
+        else { return }
+        let content = browser.contentController
+        let selected = content.selectedItems
+        // A selection that already holds the shown photo stays as it is (a
+        // viewer opened on 5 selected photos leaves the 5 selected).
+        let target = url.standardizedFileURL
+        if selected.contains(where: { $0.url.standardizedFileURL == target }) { return }
+        content.select(url: url)
+    }
+
     /// Pairs this viewer with `browser` (both sides, weakly).
     public func pair(with browser: BrowserWindowController) {
         pairedBrowser?.pairedViewer = nil
@@ -548,7 +578,7 @@ extension ViewerWindow {
     }
 
     /// A parked (hidden) viewer gives back its full-resolution texture at
-    /// any zoom; showing it again fetches the detail it needs (audit MP-04).
+    /// any zoom; showing it again fetches the detail it needs.
     /// Edit mode keeps its pixels.
     func dropFullResolutionWhileParked() {
         guard isParkedForBrowser, !isVisible, !didTearDown, !contentRoot.isEditModeActive else { return }
@@ -558,8 +588,8 @@ extension ViewerWindow {
         view.dropFullResolution()
     }
 
-    /// A parked viewer also gives back its window-sized drawables (audit
-    /// MP-04). `showFromBrowser` and every order-front path restore them, with
+    /// A parked viewer also gives back its window-sized drawables.
+    /// `showFromBrowser` and every order-front path restore them, with
     /// one frame drawn before the window appears (`MetalImageView.unparkCanvas`).
     func parkCanvasWhileHidden() {
         guard isParkedForBrowser, !isVisible, !didTearDown, !contentRoot.isEditModeActive else { return }

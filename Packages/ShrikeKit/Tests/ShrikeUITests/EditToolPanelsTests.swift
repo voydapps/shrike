@@ -213,7 +213,8 @@ final class EditToolPanelsTests: XCTestCase {
         let crop = CropPanel()
         XCTAssertEqual(crop._applyButton.title, "Apply Crop")
         let cropTitles = allButtons(in: crop).map(\.title).filter { $0.contains("Crop") }
-        XCTAssertEqual(cropTitles, ["Apply Crop", "Reset Crop"], "Apply Crop above Reset Crop")
+        XCTAssertEqual(cropTitles.first, "Apply Crop", "Apply Crop first; Reset Crop is a quiet link under it (spec 28 §11.2)")
+        XCTAssertEqual(crop._resetButton.title, "Reset Crop")
         XCTAssertEqual(ResizePanel()._applyButton.title, "Apply Resize")
         for button in [crop._applyButton, ResizePanel()._applyButton] {
             XCTAssertEqual(button.keyEquivalent, "", "Return belongs to Done only")

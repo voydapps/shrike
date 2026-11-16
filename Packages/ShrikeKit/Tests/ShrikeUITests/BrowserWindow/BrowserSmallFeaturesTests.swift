@@ -291,10 +291,13 @@ final class BrowserSmallFeaturesTests: XCTestCase {
         XCTAssertEqual(content.sort, BrowserSort(key: .rating, direction: .descending))
         XCTAssertNotNil(table.indicatorImage(in: try XCTUnwrap(column("rating"))))
 
-        // A key with no column: no arrow anywhere.
+        // A key with no column of its own: one temporary last column carries the arrow (spec 28 §13).
         content.sort = BrowserSort(key: .kind, direction: .ascending)
-        XCTAssertTrue(table.sortDescriptors.isEmpty)
-        XCTAssertTrue(table.tableColumns.allSatisfy { table.indicatorImage(in: $0) == nil })
+        XCTAssertEqual(table.sortDescriptors.first?.key, ListSortIndicator.extraKey)
+        let extra = try XCTUnwrap(column(ListSortIndicator.extraKey))
+        XCTAssertEqual(extra.title, "Kind")
+        XCTAssertNotNil(table.indicatorImage(in: extra))
+        XCTAssertTrue(table.tableColumns.filter { table.indicatorImage(in: $0) != nil }.count == 1)
         XCTAssertNil(column("flag"), "Flag is not a sort key")
     }
 

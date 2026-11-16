@@ -77,12 +77,19 @@ final class EditToolsTopBarTests: XCTestCase {
                                                     willBeInsertedIntoToolbar: true))
         let picker = try XCTUnwrap(item.view as? EditToolPicker)
         XCTAssertEqual(picker.segmentCount, EditChromeTools.order.count)
+        // Spec 28 §10 B (amends spec 26 §1.3): icon + name, 10 pt side padding.
+        var total: CGFloat = 0
         for (i, tool) in EditChromeTools.order.enumerated() {
-            XCTAssertEqual(picker.width(forSegment: i), 32)
+            let w = picker.width(forSegment: i)
+            XCTAssertEqual(w, EditToolPicker.segmentWidth(for: tool))
+            XCTAssertGreaterThan(w, 60, "room for the word")
+            XCTAssertLessThan(w, 90)
             XCTAssertNotNil(picker.image(forSegment: i))
             XCTAssertEqual(picker.image(forSegment: i)?.accessibilityDescription, EditChromeTools.name(tool))
-            XCTAssertTrue((picker.label(forSegment: i) ?? "").isEmpty, "icon-only")
+            XCTAssertEqual(picker.label(forSegment: i), EditChromeTools.name(tool), "segments show words")
+            total += w
         }
+        XCTAssertEqual(picker.intrinsicContentSize.width, total, "segments tile the picker")
         XCTAssertEqual(controller.toolbar.displayMode, .iconOnly)
     }
 
@@ -192,7 +199,7 @@ final class EditToolsTopBarTests: XCTestCase {
         content.showDecodeError()
         XCTAssertEqual(content.editEntryReason, ViewerContentView.decodeErrorEditReason)
         XCTAssertTrue(try XCTUnwrap(item.toolTip).hasSuffix("\n" + ViewerContentView.decodeErrorEditReason))
-        XCTAssertFalse(viewer.canPerform(.editImage), "Edit Image is off on a decode error")
+        XCTAssertFalse(viewer.canPerform(.editImage), "Edit Photo is off on a decode error")
         content.setImage(RotateDirectionTests.quadrants(), index: 0, total: 1)
         XCTAssertNil(content.editEntryReason)
         XCTAssertFalse(try XCTUnwrap(item.toolTip).contains("\n"))
@@ -217,7 +224,9 @@ final class EditToolsTopBarTests: XCTestCase {
     func testV6_PrioritiesAndMenuForms() throws {
         let priorities: [(NSToolbarItem.Identifier, NSToolbarItem.VisibilityPriority)] = [
             (EditToolbarController.ItemID.done, .high), (EditToolbarController.ItemID.cancel, .high),
-            (EditToolbarController.ItemID.tools, .standard), (EditToolbarController.ItemID.undoRedo, .low),
+            // Spec 28 §20.1 rule 4: Reset leaves first, then Save Copy…, then Undo/Redo.
+            (EditToolbarController.ItemID.tools, .standard),
+            (EditToolbarController.ItemID.undoRedo, NSToolbarItem.VisibilityPriority(rawValue: NSToolbarItem.VisibilityPriority.low.rawValue + 20)),
             (EditToolbarController.ItemID.reset, .low),
         ]
         let controller = EditToolbarController()
@@ -321,7 +330,7 @@ final class EditToolsTopBarTests: XCTestCase {
         content.windowMode = .windowed
     }
 
-    // MARK: 14. Every way in, and the tools through the Image menu
+    // MARK: 14. Every way in, and the tools through the Photo menu
 
     func testV14_ImageMenuToolEntriesLandOnTheirTool() async throws {
         let viewer = try await makeViewer()
@@ -353,7 +362,7 @@ final class EditToolsTopBarTests: XCTestCase {
         let edit = menu.items[rotateRight + 1]
         XCTAssertTrue(edit.title.hasPrefix("Edit Photo"), edit.title)
         XCTAssertTrue(viewer.validateMenuItem(edit), "enabled for a normal photo")
-        XCTAssertTrue(menu.items[rotateRight + 2].isSeparatorItem, "Edit Image closes the rotate group")
+        XCTAssertTrue(menu.items[rotateRight + 2].isSeparatorItem, "Edit Photo closes the rotate group")
     }
 
     // MARK: 9. Shift-Command-E is free

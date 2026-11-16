@@ -67,6 +67,8 @@ struct PreferencesRootView: View {
             }
         }
         .environmentObject(store)
-        .frame(minWidth: 520, idealWidth: 600, minHeight: 380, idealHeight: 460)
+        // Width fixed; the window controller sets the height per tab.
+        .frame(width: SettingsWindowSize.width)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 }

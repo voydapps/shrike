@@ -179,4 +179,15 @@ final class PrintTests: XCTestCase {
         XCTAssertTrue(viewer.canPerform(.pageSetup))
         XCTAssertEqual(ViewerKeyMap.action(for: .print, context: .viewer), .print)
     }
+
+    /// S2: a window closed while the photos got ready runs no print panel.
+    func testPrintRunsOnlyOnAWindowStillOpen() {
+        XCTAssertTrue(PrintController.canRun(hadWindow: false, window: nil), "free-standing panel")
+        XCTAssertFalse(PrintController.canRun(hadWindow: true, window: nil), "window gone")
+        let closed = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 10, height: 10), styleMask: [.titled],
+                              backing: .buffered, defer: true)
+        closed.isReleasedWhenClosed = false
+        closed.close()
+        XCTAssertFalse(PrintController.canRun(hadWindow: true, window: closed), "window closed")
+    }
 }

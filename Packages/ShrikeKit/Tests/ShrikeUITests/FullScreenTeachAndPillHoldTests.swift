@@ -135,11 +135,13 @@ final class FullScreenTeachAndPillHoldTests: XCTestCase {
 
         content.mouseMoved(with: try mouseMoved(in: content, at: NSPoint(x: 700, y: 450)))
         XCTAssertTrue(pillShown(content), "pointer movement shows the pill")
-        try await Task.sleep(for: .milliseconds(1200))
+        XCTAssertNotNil(pill.scheduledFadeIDForTesting, "movement schedules the fade")
+        let first = pill.scheduledFadeCountForTesting
+        XCTAssertEqual(pill.scheduledFadeDelayForTesting, 2.0)
         content.mouseMoved(with: try mouseMoved(in: content, at: NSPoint(x: 710, y: 455)))
-        try await Task.sleep(for: .milliseconds(1200))
-        XCTAssertTrue(pillShown(content), "each movement restarts the 2 s")
-        let faded = await waitUntil(3) { !self.pillShown(content) }
+        XCTAssertEqual(pill.scheduledFadeCountForTesting, first + 1, "each movement restarts the 2 s (a new fade replaces the old one)")
+        XCTAssertEqual(pill.scheduledFadeDelayForTesting, 2.0)
+        let faded = await waitUntil(8) { !self.pillShown(content) }
         XCTAssertTrue(faded, "fades after 2 s without movement")
     }
 
@@ -192,9 +194,9 @@ final class FullScreenTeachAndPillHoldTests: XCTestCase {
         XCTAssertTrue(pill.isHeldByCapsule)
         XCTAssertTrue(pillShown(content), "pill shows while the capsule shows")
 
-        // It stays past its own idle timeout while the capsule is up.
-        try? await Task.sleep(for: .milliseconds(1500))
-        XCTAssertTrue(pillShown(content), "no idle fade while held")
+        // No idle fade is scheduled while the capsule is up.
+        XCTAssertNil(pill.scheduledFadeIDForTesting, "no idle fade while held")
+        XCTAssertTrue(pillShown(content), "still shown while held")
 
         content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 500))   // away
         content.forceExitGraceFireForTesting(.toolbar)
@@ -209,7 +211,7 @@ final class FullScreenTeachAndPillHoldTests: XCTestCase {
         content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 40))
         let pill = content.navigationPositionOverlayForTesting
         pill.show(index: 4, total: 41, filename: "IMG_0002.jpg")
-        try? await Task.sleep(for: .milliseconds(1500))
+        XCTAssertNil(pill.scheduledFadeIDForTesting, "held: a photo change schedules no fade")
         XCTAssertTrue(pillShown(content))
     }
 
@@ -222,7 +224,7 @@ final class FullScreenTeachAndPillHoldTests: XCTestCase {
         content.evaluateZonesForTesting(at: NSPoint(x: 720, y: 500))
         content.forceExitGraceFireForTesting(.toolbar)
         XCTAssertFalse(pill.isHeldByCapsule)
-        try? await Task.sleep(for: .milliseconds(400))
+        XCTAssertNil(pill.scheduledFadeIDForTesting, "the pref keeps any fade from being scheduled")
         XCTAssertTrue(pillShown(content), "held open by the pref: the capsule never hides it")
     }
 
@@ -259,9 +261,9 @@ final class FullScreenTeachAndPillHoldTests: XCTestCase {
         pill.show(index: 4, total: 41, filename: "IMG_0002.jpg")
         XCTAssertTrue(pillShown(content), "the pill shows on the photo change")
         XCTAssertEqual(content.alphaForTesting(.toolbar), 0, "the capsule does not show")
-        try? await Task.sleep(for: .milliseconds(1500))
-        XCTAssertTrue(pillShown(content), "still up before 2.0 s (the old 1.2 s would be gone)")
-        let hidden = await waitUntil(4) { !self.pillShown(content) }
+        XCTAssertEqual(pill.scheduledFadeDelayForTesting, 2.0, "the fade is 2.0 s away (the old 1.2 s would be gone)")
+        XCTAssertTrue(pillShown(content), "still up right after the change")
+        let hidden = await waitUntil(8) { !self.pillShown(content) }
         XCTAssertTrue(hidden, "then it fades")
         XCTAssertEqual(content.alphaForTesting(.toolbar), 0)
     }

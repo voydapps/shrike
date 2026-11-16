@@ -56,7 +56,7 @@ public enum Culling {
 
     @MainActor
     public static func announce(_ text: String) {
-        guard let element = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        guard let element = NSApp?.keyWindow ?? NSApp?.mainWindow else { return }
         NSAccessibility.post(
             element: element, notification: .announcementRequested,
             userInfo: [.announcement: text,

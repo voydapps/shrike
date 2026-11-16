@@ -507,7 +507,7 @@ final class LevelsPanelTests: XCTestCase {
         var commits = 0
         panel.onEditEnded = { _ in commits += 1 }
         for command in [#selector(NSResponder.insertTab(_:)), #selector(NSResponder.insertBacktab(_:)),
-                        #selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.moveLeft(_:))] {
+                        #selector(NSResponder.moveLeft(_:))] { // Esc (cancelOperation) is handled: EditNativeFieldFlowTests.testEsc*
             XCTAssertFalse(panel.control(field, textView: editor, doCommandBy: command))
         }
         owner.editor.refusesResignation = true
@@ -612,8 +612,10 @@ final class LevelsPanelTests: XCTestCase {
         let (c, _) = controller(Self.tinted())
         let p = try panel(c)
         await c.settleLevelsHistogramForTesting()
-        try await Task.sleep(nanoseconds: 50_000_000)
-        await c.settleLevelsHistogramForTesting()
+        for _ in 0..<2500 where p._histogramView.state.data == nil {
+            await c.settleLevelsHistogramForTesting()
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
         XCTAssertNotNil(p._histogramView.state.data)
         p.setChannel(.blue)
         XCTAssertEqual(p._histogramView.soloChannel, .blue)

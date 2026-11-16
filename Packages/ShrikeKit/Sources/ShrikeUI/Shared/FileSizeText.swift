@@ -2,7 +2,7 @@
 //  FileSizeText.swift
 //  ShrikeUI
 //
-//  One formatter for file sizes (spec 25 §2.3): under 1 KB the number of
+//  One formatter for file sizes: under 1 KB the number of
 //  bytes shows ("100 bytes"), not "0 KB".
 //
 

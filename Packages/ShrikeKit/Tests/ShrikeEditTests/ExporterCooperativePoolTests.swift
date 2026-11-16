@@ -60,6 +60,6 @@ final class ExporterCooperativePoolTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(40))
         }
         try await exports.value
-        XCTAssertLessThan(worst, 0.25, "a trivial async job waited \(worst) s behind exports")
+        perfAssertLessThan(worst, 0.25, "a trivial async job waited \(worst) s behind exports")
     }
 }

@@ -3,7 +3,7 @@
 //  ShrikeUI
 //
 //  Toolbar and edit-bar tooltips that name the live preset's key:
-//  "Previous Image  ·  ←". They are rebuilt when
+//  "Previous Photo  ·  ←". They are rebuilt when
 //  the shortcut preset changes.
 //
 

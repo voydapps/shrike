@@ -358,7 +358,7 @@ public actor MetadataStore {
     }
 
     /// Most rows `header_cache` keeps (about 100 bytes each, so ~10 MB).
-    /// The oldest written go first (audit MP-12).
+    /// The oldest written go first.
     nonisolated(unsafe) static var maxHeaderRows = 100_000
     /// Most folders `recent_folders` keeps; the menus show far fewer.
     static let maxRecentFolderRows = 200

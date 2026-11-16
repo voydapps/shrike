@@ -3,12 +3,16 @@
 # install-local.sh — build Shrike (Release) and install it into /Applications.
 #
 # Usage:
-#     Scripts/install-local.sh [--no-build] [--keep-old] [--no-prune] [--launch]
+#     Scripts/install-local.sh [--no-build] [--keep-old] [--no-prune] [--launch] [--force]
 #
 #     --no-build   Re-use the last archive in the work dir (skip xcodebuild).
 #     --keep-old   Move the replaced Shrike.app to the Trash instead of deleting it.
 #     --no-prune   Do not unregister stale Shrike builds from Launch Services.
 #     --launch     Open the installed app when done.
+#     --force      CI only: if a running Shrike does not quit, kill it (SIGTERM,
+#                  then SIGKILL). Unsaved work is lost. Never use on a Mac in use.
+#                  Without it, a running Shrike is asked to quit and the script
+#                  stops if it stays open.
 #
 # Environment:
 #     SHRIKE_INSTALL_DIR     Destination folder (default: /Applications).
@@ -16,6 +20,9 @@
 #                           Default: the first "Apple Development" certificate
 #                           in the keychain, else ad-hoc.
 #     SHRIKE_WORK_DIR        Build folder (default: build/local, git-ignored).
+#     SHRIKE_QUIT_WAIT       Seconds to wait for Shrike to quit (default 45).
+#     SHRIKE_QUIT_CMD        Test hook only: replaces the Apple event (see
+#                           Scripts/lib/quit-shrike.sh).
 #     SHRIKE_QUIT_MATCH_EXE  Test hook only: treat processes running this
 #                           executable as "the running Shrike". Lets the quit
 #                           step be tested with a plain program outside any
@@ -23,21 +30,23 @@
 #
 # Steps: build a universal Release archive from the working tree (uncommitted
 # changes included) -> sign (hardened runtime + timestamp) -> verify ->
-# quit a running copy of the installed app -> swap the new app in (staged
+# ask a running copy of the installed app to quit -> swap the new app in (staged
 # next to the old one, then renamed) -> register it with Launch Services and
 # unregister stale DerivedData / scratch builds -> print version and build.
 # Needs no sudo: /Applications is writable by admin users.
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+source "$SHRIKE_LIB_DIR/quit-shrike.sh"
 
-DO_BUILD=1 KEEP_OLD=0 PRUNE=1 LAUNCH=0
+DO_BUILD=1 KEEP_OLD=0 PRUNE=1 LAUNCH=0 FORCE_QUIT=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-build) DO_BUILD=0 ;;
         --keep-old) KEEP_OLD=1 ;;
         --no-prune) PRUNE=0 ;;
         --launch)   LAUNCH=1 ;;
+        --force)    FORCE_QUIT=1 ;;
         -h|--help)  sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
@@ -92,26 +101,21 @@ BUILT="$(app_build "$STAGE")"
 
 # 3. Quit the installed copy if it is running ----------------------------------
 # Only processes whose executable is exactly $DEST_EXE; DerivedData or other
-# test copies keep running. SIGTERM is the same "sudden termination" macOS
-# itself uses (Info.plist: NSSupportsSuddenTermination), and it needs no
-# Automation permission (osascript "quit" would pop a privacy prompt).
+# test copies keep running. Shrike is asked to quit the normal way (the Apple
+# event "quit"), so it can show its own question about unsaved work. The
+# script waits a bounded time; if Shrike is still open it stops and changes
+# nothing. It never kills Shrike, unless --force is given (CI only).
 MATCH_EXE="${SHRIKE_QUIT_MATCH_EXE:-$DEST_EXE}"
-running_pids() {
+shrike_pids() {
     local pid comm
     ps -axo pid=,comm= | while read -r pid comm; do
         [[ "$comm" == "$MATCH_EXE" ]] && printf '%s\n' "$pid"
     done
     return 0
 }
-PIDS="$(running_pids)"
-if [[ -n "$PIDS" ]]; then
-    step "quitting the running Shrike (pid $(echo $PIDS))"
-    kill -TERM $PIDS 2>/dev/null || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        [[ -z "$(running_pids)" ]] && break
-        sleep 0.5
-    done
-    [[ -z "$(running_pids)" ]] || die "Shrike is still running from $DEST; quit it and run again"
+if [[ -n "$(shrike_pids)" ]]; then
+    step "asking the running Shrike to quit (pid $(shrike_pids | tr '\n' ' '))"
+    shrike_quit_running "$DEST" "$FORCE_QUIT" || die "nothing was installed; $DEST is unchanged"
     ok "quit"
 fi
 

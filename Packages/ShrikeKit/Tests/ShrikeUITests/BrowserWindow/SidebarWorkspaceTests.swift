@@ -350,11 +350,13 @@ final class SidebarWorkspaceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(outline.row(forItem: try XCTUnwrap(locationNode(tree, "Other/Inner"))), 0)
     }
 
-    func testMissingWorkspaceRootLooksAndActsUnavailable() throws {
+    func testMissingWorkspaceRootLooksAndActsUnavailable() async throws {
         let store = WorkspaceStore.inMemory(SidebarFavorite(path: url("Gone").path))
         let (tree, window, delegate) = makeTree(workspace: store); defer { window.close() }
         _ = tree.view
         let outline = tree.outlineViewForTesting
+        XCTAssertFalse(try XCTUnwrap(tree.dataSource.workspaceRoot).isMissing, "E-3: first paint shows it present")
+        await tree.sidebarChecksFinished()
         let node = try XCTUnwrap(tree.dataSource.workspaceRoot)
         XCTAssertTrue(node.isMissing)
         XCTAssertFalse(tree.dataSource.isExpandable(node), "no chevron")

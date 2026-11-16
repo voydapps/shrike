@@ -75,6 +75,12 @@ extension ViewerWindow {
     /// mode). Turns the view now; schedules the file write.
     func orientFile(_ op: OrientationOp) {
         guard !contentRoot.isEditModeActive, contentRoot.imageView.image != nil else { return }
+        // Never turn the previous photo's pixels behind an error card,
+        // nor a RAW; the key says why.
+        if contentRoot.isShowingDecodeError || rawBlocksEditing(displayedItem) {
+            if let reason = greyReason(for: .rotateLeft) { contentRoot.toast(reason.toastText) }
+            return
+        }
         applyToView(op)
         Culling.announce(RotateCopy.announcement(op))
         guard let url = displayedItem?.group.primary, url.isFileURL else { return }
@@ -124,10 +130,15 @@ extension ViewerWindow {
         contentRoot.layoutLiveBadge()
     }
 
-    /// An odd view turn swaps width and height of the drawn size at once
-    /// (spec 25 §1.1); the zoom maths does not change.
+    /// An odd view turn swaps width and height of the drawn size at once;
+    /// the zoom maths does not change.
     private func swapDrawnSize() {
-        guard let url = displayedItem?.shownURL, let size = headerPixelSizes[url] else { return }
+        guard let url = displayedItem?.shownURL else { return }
+        guard let size = headerPixelSizes[url] else {
+            // Keyed like the write (`group.primary`); the size cache is keyed by the shown file.
+            if let written = displayedItem?.group.primary { turnedWhileSizeUnknown[written] = url }
+            return
+        }
         let swapped = CGSize(width: size.height, height: size.width)
         headerPixelSizes[url] = swapped
         contentRoot.imageView.sourcePixelSize = swapped
@@ -139,6 +150,7 @@ extension ViewerWindow {
     func forgetDrawnSizes() {
         headerPixelSizes.removeAll()
         viewOnlyTurnedURLs.removeAll()
+        turnedWhileSizeUnknown.removeAll()
     }
 
     private static func inverse(_ op: OrientationOp) -> OrientationOp {
@@ -157,7 +169,9 @@ extension ViewerWindow {
         let rotator = LosslessRotator(backupStore: store)
         let url = pending.url
         let previous = orientationWriteChain
+        orientationWritesInFlight += 1
         orientationWriteChain = Task { @MainActor [weak self] in
+            defer { self?.orientationWritesInFlight -= 1 }
             await previous?.value
             self?.watcherScope.ignore(paths: [url], for: .seconds(2))
             var results: [LosslessRotateResult] = []
@@ -165,7 +179,7 @@ extension ViewerWindow {
                 for op in writes { results.append(try await rotator.apply(op, to: url)) }
                 self?.orientationWriteLanded(url: url, first: results[0], ops: pending.ops)
             } catch {
-                if let first = results.first { try? await rotator.undo(first) }
+                if let first = results.first { _ = try? await rotator.undo(first) }
                 self?.orientationWriteFailed(url: url, ops: pending.ops)
             }
         }
@@ -181,13 +195,18 @@ extension ViewerWindow {
         // The view already shows the turn: evict so the next visit
         // decodes the new orientation; no redraw now.
         let cache = services.thumbnailCache
-        // The strip cell asks again once the old thumbnail is gone (spec 27 B4).
+        // The strip cell asks again once the old thumbnail is gone.
         Task { [weak self] in
             await cache.evict(url: url)
             guard let self else { return }
             await MainActor.run { _ = self.contentRoot.reloadFilmstripThumbnail(for: url, services: self.services) }
         }
         evictFromDecodeCache(url)
+        // A size read that started before the write may have cached the unturned size.
+        if let shown = turnedWhileSizeUnknown.removeValue(forKey: url) {
+            headerPixelSizes[shown] = nil
+            if displayedItem?.shownURL == shown { updateTitle() }
+        }
         let key = list.index(of: url).flatMap { list[$0]?.primary } ?? url
         refreshBackupState(key)
         if displayedItem?.group.primary == url { contentRoot.reloadInspectorFile() }

@@ -2,7 +2,7 @@
 //  StripHoverLook.swift
 //  ShrikeUI
 //
-//  Spec 24 §2: the hover look of a filmstrip thumbnail, shared by the
+//  The hover look of a filmstrip thumbnail, shared by the
 //  viewer's strip and the Browser's filmstrip view.
 //
 //  A pointer over a NON-selected thumbnail shows a 1.5 pt `labelColor`

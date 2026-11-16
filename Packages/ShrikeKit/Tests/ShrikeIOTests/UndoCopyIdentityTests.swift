@@ -46,7 +46,7 @@ final class UndoCopyIdentityTests: XCTestCase {
     func testUnchangedCopyIsRemovedOnAVolumeWithoutTrash() async throws {
         let (ops, receipt, copy) = try await copyOne()
         XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path))
-        try await ops.undo(receipt)
+        _ = try await ops.undo(receipt)
         XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path))
     }
 
@@ -56,7 +56,7 @@ final class UndoCopyIdentityTests: XCTestCase {
         try FileManager.default.removeItem(at: copy)
         try Data("somebody else's photo".utf8).write(to: copy)
         do {
-            try await ops.undo(receipt)
+            _ = try await ops.undo(receipt)
             XCTFail("Undo must report that it left the file")
         } catch let error as FileOpsError {
             XCTAssertEqual(error.url, copy)
@@ -71,7 +71,7 @@ final class UndoCopyIdentityTests: XCTestCase {
         try handle.seekToEnd()
         try handle.write(contentsOf: Data(" edited".utf8))
         try handle.close()
-        do { try await ops.undo(receipt); XCTFail("expected a report") } catch is FileOpsError {}
+        do { _ = try await ops.undo(receipt); XCTFail("expected a report") } catch is FileOpsError {}
         XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path))
     }
 }

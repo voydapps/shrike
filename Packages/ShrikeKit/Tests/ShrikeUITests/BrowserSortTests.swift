@@ -209,7 +209,7 @@ final class BrowserSortTests: XCTestCase {
             worst = max(worst, times.sorted()[times.count / 2])
         }
         // Debug builds run the sort several times slower than Release.
-        XCTAssertLessThan(worst * 1000, 50, "worst key: \(Int(worst * 1000)) ms (debug build)")
+        perfAssertLessThan(worst * 1000, 50, "worst key: \(Int(worst * 1000)) ms (debug build)")
         print("sort 5000 worst key (debug): \(Int(worst * 1000)) ms")
     }
 }

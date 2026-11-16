@@ -133,7 +133,7 @@ public enum ViewerAction: Sendable, Hashable {
     case saveEditedFile
     /// `⌘⇧S` — Save As… panel.
     case saveEditedFileAs
-    /// Image ▸ Auto Contrast / Auto Color: lands on the
+    /// Photo ▸ Auto Contrast / Auto Color: lands on the
     /// Levels tool (entering edit mode first when needed), then applies.
     case autoLevels(LevelsAutoKind)
     /// Lossless JPEG rotate. Non-edit-mode action. Quarters: +1 CW, -1 CCW,
@@ -350,6 +350,9 @@ public final class NavTaskCoalescer {
     /// or it was cancelled). Tests wait on this to know that, for example,
     /// a window's opening decode has landed.
     public private(set) var isIdle = true
+    /// Called when the task started last finishes (the viewer
+    /// re-checks Edit then).
+    public var onIdle: (@MainActor () -> Void)?
 
     public init() {}
 
@@ -368,7 +371,11 @@ public final class NavTaskCoalescer {
         isIdle = false
         let task = Task { @MainActor in
             await body()
-            if generation == runGeneration { isIdle = true }
+            if generation == runGeneration {
+                isIdle = true
+                onIdle?()
+                resumeIdleWaiters()
+            }
         }
         currentTask = task
         return task
@@ -380,6 +387,34 @@ public final class NavTaskCoalescer {
         currentTask = nil
         runGeneration += 1
         isIdle = true
+        resumeIdleWaiters()
+    }
+
+    private var idleWaiters: [Int: CheckedContinuation<Bool, Never>] = [:]
+    private var nextWaiter = 0
+
+    /// Resumes with true when the coalescer is idle (at once if it is now), or
+    /// with false when `timeout` passes first. The wait is on the idle event.
+    public func waitUntilIdle(timeout: Duration) async -> Bool {
+        if isIdle { return true }
+        nextWaiter += 1
+        let id = nextWaiter
+        return await withCheckedContinuation { continuation in
+            idleWaiters[id] = continuation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: timeout)
+                self?.idleWaiters.removeValue(forKey: id)?.resume(returning: false)
+            }
+        }
+    }
+
+    /// Waiters not answered yet (tests).
+    var idleWaiterCountForTesting: Int { idleWaiters.count }
+
+    private func resumeIdleWaiters() {
+        let waiters = idleWaiters.values
+        idleWaiters = [:]
+        for waiter in waiters { waiter.resume(returning: true) }
     }
 
     /// Test-only accessor — `true` if the currently-held task was cancelled

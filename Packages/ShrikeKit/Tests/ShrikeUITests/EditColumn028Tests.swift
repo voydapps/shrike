@@ -66,6 +66,8 @@ final class EditColumn028Tests: XCTestCase {
     // Vector 2: no tool = the whole band; a tool = its content.
     func testNoToolCardSpansTheBandAndAPickedToolShrinksToContent() {
         ReduceMotion.overrideForTesting = true
+        // Spec 28 §11.4: the card spans the band only while the Histogram toggle is off.
+        Prefs.viewerHistogramVisible = false
         for mode in [ViewerContentView.WindowMode.windowed, .fullscreen] {
             let content = makeContent(mode)
             enter(content, tool: nil)
@@ -79,7 +81,7 @@ final class EditColumn028Tests: XCTestCase {
                 // Title and body sit in the middle of the card.
                 let title = card.convert(card.titleLabel.bounds, from: card.titleLabel)
                 let body = card.convert(card.bodyLabel.bounds, from: card.bodyLabel)
-                let stack = title.union(body)
+                let stack = title.union(body).union(card.convert(card.ruleLabel.bounds, from: card.ruleLabel))   // spec 28 §11.1: three lines
                 XCTAssertEqual(stack.midY, card.bounds.midY, accuracy: 2, "\(mode): vertically centred")
                 XCTAssertEqual(stack.midX, card.bounds.midX, accuracy: 2, "\(mode): horizontally centred")
                 // The text column (the label's alignment rect: its frame has 2 pt of cell padding a side).
@@ -133,14 +135,38 @@ final class EditColumn028Tests: XCTestCase {
         }
     }
 
-    // Hidden with no tool, with Levels, and when the column has no room.
-    func testHistogramIsHiddenWhenTheColumnHasNoRoom() {
+    // Spec 28 §11.4: shown with no tool (the card shrinks to its text), hidden with Levels
+    // and when the column has no room.
+    func testHistogramShowsWithNoToolAndIsHiddenWithLevelsOrNoRoom() throws {
         ReduceMotion.overrideForTesting = true
+        for mode in [ViewerContentView.WindowMode.windowed, .fullscreen] {
+            let content = makeContent(mode, size: NSSize(width: 1200, height: 800))
+            enter(content, tool: nil)
+            let hud = content.histogramOverlayFrameForTesting()
+            content.layoutSubtreeIfNeeded()
+            let panel = content.editModeController.parameterPanel
+            XCTAssertFalse(panel.fillsBand, "\(mode)")
+            XCTAssertTrue(content.editHistogramRoom, "\(mode)")
+            XCTAssertTrue(content.histogramOverlayVisibleForTesting, "\(mode): the HUD shows with no tool")
+            let card = try XCTUnwrap(panel._installed as? ChooseToolPanel)
+            for label in [card.titleLabel, card.bodyLabel, card.ruleLabel] {
+                let rect = content.convert(label.bounds, from: label)
+                XCTAssertFalse(content.histogramOverlayFrameForTesting().intersects(rect), "\(mode): the HUD never covers the card's text")
+            }
+            XCTAssertFalse(hud.intersects(photoRect(content)), "\(mode): not on the photo")
+            content.editModeController.finalizeExit()
+        }
         let content = makeContent(.windowed)
         enter(content, tool: nil)
         _ = content.histogramOverlayFrameForTesting()
-        XCTAssertFalse(content.editHistogramRoom, "the full-height card leaves no room")
-        XCTAssertFalse(content.histogramOverlayVisibleForTesting)
+        XCTAssertTrue(content.histogramOverlayVisibleForTesting)
+        content.toggleHistogramOverlay()   // the toolbar toggle: off
+        content.layoutSubtreeIfNeeded()
+        XCTAssertTrue(content.editModeController.parameterPanel.fillsBand, "toggle off: the card spans the band again")
+        content.toggleHistogramOverlay()   // on again
+        content.layoutSubtreeIfNeeded()
+        XCTAssertFalse(content.editModeController.parameterPanel.fillsBand)
+        XCTAssertTrue(content.histogramOverlayVisibleForTesting)
         content.editModeController.perform(.selectTool(.levels))
         content.layoutSubtreeIfNeeded()
         XCTAssertFalse(content.editHistogramRoom, "Levels shows its own")

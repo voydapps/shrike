@@ -87,6 +87,11 @@ final class BrowserEmptyFolderTests: XCTestCase {
         let inSidebar = await browser.sidebarShowsSubfolders(of: folder)
         XCTAssertFalse(inSidebar)
         XCTAssertEqual(browser.treeController.dataSource.currentFolder, folder.standardizedFileURL)
+        // The path lookup needs the "/" Locations root, which the sidebar adds
+        // when its first (off-main) volume list arrives. The scratch folder
+        // is outside Home, so before that no root contains it (audit E-3).
+        await browser.treeController.sidebarChecksFinished()
+        XCTAssertTrue(browser.treeController.volumesKnownForTesting, "the first volume list has landed")
         let current = await browser.treeController.dataSource.node(for: folder)
         XCTAssertEqual(current?.url?.standardizedFileURL, folder.standardizedFileURL)
         XCTAssertEqual(current?.kind, .folder)

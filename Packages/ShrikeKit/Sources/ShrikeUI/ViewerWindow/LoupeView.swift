@@ -14,7 +14,7 @@ import CoreGraphics
 final class LoupeView: NSView {
 
     private static let diameter: CGFloat = 220
-    /// Spec 27 N10: a two-line ring that reads on light and dark photos:
+    /// A two-line ring that reads on light and dark photos:
     /// white 0.85 outside, black 0.35 inside, 1 pt each.
     private static let borderWidth: CGFloat = 1.0
     static let outerRingAlpha: CGFloat = 0.85

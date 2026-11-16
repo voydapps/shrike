@@ -138,7 +138,7 @@ final class PinCornerOverlay: NSView {
 
     private func updateTint() {
         // Dynamic system colours: resolved at draw time.
-        // Spec 24 §1.4: a pin must read as a pin: accent when pinned.
+        // A pin must read as a pin: accent when pinned.
         imageView.contentTintColor = isPinned ? ShrikeAccent.mark : .secondaryLabelColor
     }
 

@@ -265,6 +265,6 @@ final class ImageGroupingTests: XCTestCase {
         let budget = 20.0
         #endif
         print("[ImageGrouping] 20,000 URLs grouped in \(String(format: "%.2f", ms)) ms (best of 5)")
-        XCTAssertLessThan(ms, budget)
+        perfAssertLessThan(ms, budget)
     }
 }

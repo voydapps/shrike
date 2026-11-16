@@ -8,7 +8,7 @@
 //  the files that share the target's name. Before this, every lookup
 //  resolved the symlinks of every URL in the list (about 17 µs each), so
 //  a watcher batch that added files to a big folder took minutes on the
-//  main thread (audit MP-01 / MP-02).
+//  main thread.
 //
 
 import Foundation

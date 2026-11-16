@@ -25,6 +25,13 @@ public final class DecodeLane: Sendable {
     private let queue: DispatchQueue
     private let slots: DispatchSemaphore
 
+    #if DEBUG
+    /// Test seam: how many submissions have reached the slot wait so far
+    /// (running or queued). Lets a test wait until a task is really queued
+    /// instead of sleeping. Not compiled into Release builds.
+    public let submissionsForTesting = OSAllocatedUnfairLock(initialState: 0)
+    #endif
+
     public init(width: Int, label: String = "app.shrike.decode") {
         self.queue = DispatchQueue(label: label, qos: .userInitiated, attributes: .concurrent)
         self.slots = DispatchSemaphore(value: max(1, width))
@@ -37,6 +44,9 @@ public final class DecodeLane: Sendable {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, any Error>) in
                 queue.async { [slots] in
+                    #if DEBUG
+                    self.submissionsForTesting.withLock { $0 += 1 }
+                    #endif
                     slots.wait()
                     defer { slots.signal() }
                     if cancelled.withLock({ $0 }) {
@@ -85,6 +95,9 @@ public final class DecodeLane: Sendable {
                     return
                 }
                 queue.async { [slots] in
+                    #if DEBUG
+                    self.submissionsForTesting.withLock { $0 += 1 }
+                    #endif
                     slots.wait()
                     defer { slots.signal() }
                     if isCancelled() {

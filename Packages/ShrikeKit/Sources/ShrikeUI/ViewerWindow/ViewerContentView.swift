@@ -548,7 +548,7 @@ public final class ViewerContentView: NSView {
         editSavePolicyLabel.stringValue = editModeController.chromeState.savePolicy
         onEditModeActiveChanged?(true)
         // The photo always starts fitted to the edit canvas, whatever zoom, pan or
-        // half-finished zoom animation the viewer had (0.2.10 audit item 2): the crop
+        // half-finished zoom animation the viewer had: the crop
         // frame needs the whole photo, clear of the tool column. It stays in fit mode
         // from here, so window and full-screen size changes refit it.
         imageView.zoomToFit()
@@ -559,7 +559,7 @@ public final class ViewerContentView: NSView {
         imageBeforeEdit = imageView.image.map { ($0, imageView.sourceID, imageView.imageResourceLease, imageView.imageIsLazy) }
         // A shown photo can be a lazy CGImage that reads its pixels from the file on first
         // use. If another app changes the file while we edit, that read hits pages that are
-        // gone (a crash, 0.2.28 gate D1). Leaving edit checks this stamp first.
+        // gone (a crash). Leaving edit checks this stamp first.
         imageBeforeEditURL = url
         imageBeforeEditStamp = url.flatMap { FileContentStamp.read($0) }
 
@@ -570,9 +570,10 @@ public final class ViewerContentView: NSView {
         addSubview(ePanel)
         // The panel ends above the docked filmstrip (the image
         // area's bottom in a window), 32 pt above the bottom otherwise.
-        // Spec 25 §3.2: the panel is as tall as its content, top-aligned at the
+        // The panel is as tall as its content, top-aligned at the
         // panel band's top, 16 pt from the right edge; the limits below keep it
         // inside the band (taller content scrolls).
+        syncEditHistogramReservation()
         ePanel.bandHeightProvider = { [weak self] in
             guard let self else { return 0 }
             // From 8 pt under the safe area down to the panel's bottom limits (8 pt above the
@@ -610,6 +611,11 @@ public final class ViewerContentView: NSView {
         // them in full screen on macOS 26), above the canvas and its dim.
         let eOverlay = editModeController.cropOverlay
         eOverlay.translatesAutoresizingMaskIntoConstraints = false
+        // Esc in the crop frame hands the keyboard back to the photo.
+        eOverlay.onEscape = { [weak self] in
+            guard let self else { return }
+            self.window?.makeFirstResponder(self.imageView)
+        }
         let firstChrome: NSView = glassContainerStorage ?? filmstrip
         (firstChrome.superview ?? self)
             .addSubview(eOverlay, positioned: .below, relativeTo: firstChrome)
@@ -755,7 +761,7 @@ public final class ViewerContentView: NSView {
     /// Fires with the edit subtitle while editing, nil on exit.
     var onEditSubtitleChanged: ((EditChromeState?) -> Void)?
     /// Edit mode started (true) or ended (false). The window uses it to make
-    /// room for the tool panel beside a narrow canvas (spec 26 §5).
+    /// room for the tool panel beside a narrow canvas.
     var onEditModeActiveChanged: ((Bool) -> Void)?
     /// Called on every layout in edit mode with the canvas width.
     var onEditCanvasWidth: ((CGFloat) -> Void)?
@@ -777,6 +783,8 @@ public final class ViewerContentView: NSView {
                 // this writes nothing to the user's setting.
                 editToolbarController.toolbar.isVisible = true
                 editToolbarInstalled = true
+                // Also when edit began in full screen and full screen ended.
+                (window as? ViewerWindow)?.syncEditPickerForm(fresh: true)
             }
         } else if editToolbarInstalled {
             restoreViewerToolbarAfterEdit()
@@ -809,6 +817,8 @@ public final class ViewerContentView: NSView {
                 editCapsule.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
             ]
             NSLayoutConstraint.activate(editCapsuleConstraints)
+            // The capsule shows words unless it cannot fit the screen.
+            editCapsule.chooseForm(screenWidth: window?.screen?.frame.width ?? bounds.width)
             applySurfaceLook(editCapsule)
             setPanelVisibleImmediate(.toolbar, visible: false)
         } else {
@@ -932,8 +942,7 @@ public final class ViewerContentView: NSView {
                 e.bottom += max(0, editCapsule.frame.maxY - iv.minY)
             }
             // The save-policy note sits on the canvas's bottom-left corner: the
-            // photo fits above it, so a turned (tall) photo is never under it
-            // (audit on-screen L9).
+            // photo fits above it, so a turned (tall) photo is never under it.
             if let note = editSavePolicySurface, note.superview === self, !note.isHidden {
                 e.bottom = max(e.bottom, note.frame.maxY - iv.minY + 6)
             }
@@ -999,7 +1008,7 @@ public final class ViewerContentView: NSView {
         // photo frame equals the one before entry.
         applyWindowedFilmstripDock()
         if windowMode == .fullscreen { updatePanelVisibility() }
-        positionHistogram(animated: false)   // back to its old place (spec 27 V3)
+        positionHistogram(animated: false)   // back to its old place
         updateHistogramVisibility(animated: true)
     }
 
@@ -1008,7 +1017,7 @@ public final class ViewerContentView: NSView {
     /// otherwise to the window's bottom.
     private func applyWindowedFilmstripDock() {
         guard windowMode == .windowed else { return }
-        // Spec 25 §3.3: the docked strip stays in a window's edit mode.
+        // The docked strip stays in a window's edit mode.
         let docked = Prefs.filmstripVisibleInWindowed
         imageViewWindowedBottomConstraint?.isActive = false
         imageViewFullscreenBottomConstraint?.isActive = false
@@ -1118,7 +1127,7 @@ public final class ViewerContentView: NSView {
         addSubview(zoomBadge)
         NSLayoutConstraint.activate([
             zoomBadge.centerXAnchor.constraint(equalTo: centerXAnchor),
-            // Spec 24 §1.5: top centre, 12 pt below the content top (the
+            // Top centre, 12 pt below the content top (the
             // same reference the panel band uses), in a window and in full
             // screen. It never meets the capsule, strip, pill or inspector.
             zoomBadge.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor,
@@ -1134,7 +1143,7 @@ public final class ViewerContentView: NSView {
 
         // Toast.
         toastHost.install(in: self)
-        // Spec 24 §1.5: the zoom HUD owns the top centre; a toast never
+        // The zoom HUD owns the top centre; a toast never
         // lands on it, whatever the safe area is.
         toastHost.keepBelow(zoomBadge, gap: 12)
 
@@ -1286,7 +1295,7 @@ public final class ViewerContentView: NSView {
         filmstripFullscreenConstraints = [
             filmstrip.bottomAnchor.constraint(equalTo: bottomAnchor),
             filmstrip.trailingAnchor.constraint(equalTo: trailingAnchor),
-            // Distinct constant; 88 pt per spec. Kept as its own constraint
+            // Distinct constant; 88 pt. Kept as its own constraint
             // so we can reuse `filmstripHeightConstraint` for the windowed
             // mode alone.
             filmstrip.heightAnchor.constraint(equalToConstant: Self.fullscreenFilmstripHeight),
@@ -1358,7 +1367,7 @@ public final class ViewerContentView: NSView {
             // Position overlay: bottom-left, moves with the bottom stack
             navOverlayBottomToPanel?.isActive = true
 
-            // Spec 24 §1.1: the first full screen of the run shows the
+            // The first full screen of the run shows the
             // capsule (and with it the pill) for 2 s.
             beginTeachOnceIfNeeded()
 
@@ -1502,6 +1511,8 @@ public final class ViewerContentView: NSView {
     /// Every zoom change (the window asks for the full-resolution
     /// texture past the display texture).
     var onZoomChanged: (() -> Void)?
+    /// What VoiceOver reads on the photo.
+    let photoAccessibility = PhotoAccessibilityState()
 
     public func setImage(
         _ image: CGImage, index: Int, total: Int,
@@ -1516,7 +1527,7 @@ public final class ViewerContentView: NSView {
         filmstrip.updateSelection(index)
         // No zoom HUD on a photo change: only a zoom the user makes shows
         // it.
-        previewBadge.hide()
+        hidePreviewBadge()
     }
 
     /// Surface the filmstrip selection immediately on `beginNavigation()`,
@@ -1675,10 +1686,12 @@ public final class ViewerContentView: NSView {
 
     public func showPreviewBadge() {
         previewBadge.show()
+        setPhotoAccessibilityPreview(true)
     }
 
     public func hidePreviewBadge() {
         previewBadge.hide()
+        setPhotoAccessibilityPreview(false)
     }
 
     /// The shown file changed on disk: the inspector reads it again.
@@ -1787,7 +1800,7 @@ public final class ViewerContentView: NSView {
 
     /// The canvas is invisible (alpha 0) behind the error card, so AppKit no
     /// longer hands it the wheel: pass it on, or the wheel cannot leave a broken
-    /// photo (0.2.10 on-screen check, item 5).
+    /// photo.
     public override func scrollWheel(with event: NSEvent) {
         if isShowingDecodeError {
             imageView.scrollWheel(with: event)
@@ -1804,7 +1817,7 @@ public final class ViewerContentView: NSView {
         errorOverlay.setNextEnabled(nextEnabled)
         if errorOverlay.isHidden { errorOverlay.announce() }
         errorOverlay.isHidden = false
-        // 0.2.10 audit item 5: the photo before the broken one must not show
+        // The photo before the broken one must not show
         // behind the card. The canvas goes empty (the texture stays, so the
         // wheel and the next good photo work as before).
         imageView.alphaValue = 0
@@ -1945,7 +1958,7 @@ public final class ViewerContentView: NSView {
         return imageView.frame
     }
 
-    /// The file behind a strip cell changed on disk (spec 27 B4).
+    /// The file behind a strip cell changed on disk.
     @discardableResult
     func reloadFilmstripThumbnail(for url: URL, services: ShrikeServices) -> Int {
         filmstrip.reloadThumbnail(for: url, services: services)
@@ -2046,12 +2059,12 @@ public final class ViewerContentView: NSView {
         toast(Self.pinToast(panel, pinned: pinnedPanels.contains(panel)))
     }
 
-    /// Spec 24 §1.4: every pin and unpin says so, and how to undo it.
+    /// Every pin and unpin says so, and how to undo it.
     static func pinToast(_ panel: PanelKind, pinned: Bool) -> String {
         let (name, command): (String, ShrikeCommand) = {
             switch panel {
             case .filmstrip: return ("Filmstrip", .toggleFilmstrip)
-            case .inspector: return ("Inspector", .toggleInspector)
+            case .inspector: return ("Info", .toggleInspector)
             case .toolbar: return ("Toolbar", .toggleFullScreen)
             }
         }()
@@ -2073,7 +2086,7 @@ public final class ViewerContentView: NSView {
         toast("All panels unpinned.")
     }
 
-    // MARK: - Why Edit is off (spec 26 §2)
+    // MARK: - Why Edit is off
 
     /// The RAW file of a pair is on screen: Edit is off.
     var editBlockedByRAW = false {
@@ -2083,22 +2096,38 @@ public final class ViewerContentView: NSView {
         }
     }
 
-    /// The Edit button's second tooltip line on a decode error (spec 24 §4.5).
-    static let decodeErrorEditReason = "This photo can\u{2019}t be opened, so there is nothing to edit."
+    /// The Edit button's second tooltip line on a decode error.
+    static let decodeErrorEditReason = ViewerGreyReason.brokenLine
+
+    /// The shown photo is not ready to edit yet (still loading, or the window
+    /// is changing photo). Set by the window.
+    var editBlockedWhileLoading = false {
+        didSet {
+            guard editBlockedWhileLoading != oldValue else { return }
+            refreshEditEntryReason()
+        }
+    }
 
     /// Why Edit is off right now, or nil.
     var editEntryReason: String? {
-        if editBlockedByRAW { return ViewerWindow.rawEditBlockedCopy }
-        if isShowingDecodeError { return Self.decodeErrorEditReason }
-        return nil
+        ViewerGreyReason.of(rawShown: editBlockedByRAW, broken: isShowingDecodeError,
+                            hasPhoto: true, ready: !editBlockedWhileLoading)?.tooltipLine
     }
 
-    /// Tells the window's Edit toolbar item (the capsule's button is set here).
+    /// Why Rotate and Flip are off, or nil. They do not wait for the full
+    /// photo (they turn the file), so "still loading" never applies to them.
+    var rotateEntryReason: String? {
+        ViewerGreyReason.of(rawShown: editBlockedByRAW, broken: isShowingDecodeError,
+                            hasPhoto: true, ready: true)?.tooltipLine
+    }
+
+    /// Tells the window's toolbar items (the capsule's buttons are set here).
     var onEditEntryReasonChanged: ((String?) -> Void)?
 
-    private func refreshEditEntryReason() {
+    func refreshEditEntryReason() {
         let reason = editEntryReason
         capsuleStorage?.setEditExtraLine(reason)
+        capsuleStorage?.setRotateExtraLine(rotateEntryReason)
         onEditEntryReasonChanged?(reason)
     }
 
@@ -2152,6 +2181,7 @@ public final class ViewerContentView: NSView {
     /// ⇧⌘J / ⌃H / View ▸ Show Histogram. Persisted.
     public func toggleHistogramOverlay() {
         Prefs.viewerHistogramVisible.toggle()
+        syncEditHistogramReservation()
         updateHistogramVisibility(animated: true)
         histogram.wantedDidChange()
     }
@@ -2290,11 +2320,11 @@ public final class ViewerContentView: NSView {
         return view
     }
 
-    /// Spec 27 V3 / P3-4: in edit mode the floating histogram sits inside the right
+    /// In edit mode the floating histogram sits inside the right
     /// column (the panel's 280 pt, 16 pt from the edge, bottom of the band), never
     /// over the photo. It is hidden when the column has no room (see `editHistogramRoom`).
     static let editHistogramWidth: CGFloat = EditParameterPanel.panelWidth
-    /// The least free column height the docked histogram needs (spec 27 V3).
+    /// The least free column height the docked histogram needs.
     static let editHistogramMinFreeHeight: CGFloat = 160
 
     private func histogramDockedInEditColumn(_ view: HistogramOverlayView) -> NSLayoutConstraint {
@@ -2310,15 +2340,28 @@ public final class ViewerContentView: NSView {
         return panel.frame.minY - columnBottom - 8
     }
 
-    /// Edit mode: whether the column has room for the histogram. Not with no tool (the
-    /// card fills the column), not with Levels (its panel shows its own), and not when
-    /// less than 160 pt is free under the tool panel.
+    /// Edit mode: whether the column has room for the histogram. Not with Levels (its panel
+    /// shows its own) and not when less than 160 pt is free under the tool panel. With no
+    /// tool the card gives the column up while the toggle is on (`reservesHistogramRoom`).
     var editHistogramRoom: Bool {
         guard isEditModeActive else { return true }
-        guard let tool = editModeController.currentTool, tool != .levels else { return false }
-        return editColumnFreeHeight >= Self.editHistogramMinFreeHeight
+        return Self.editHistogramShows(tool: editModeController.currentTool, freeHeight: editColumnFreeHeight)
+    }
+
+    /// In every edit state (no tool, Crop, Rotate, Resize, Color) but Levels,
+    /// whose panel draws its own; and only with 160 pt free under the panel. Pure.
+    nonisolated static func editHistogramShows(tool: EditTool?, freeHeight: CGFloat) -> Bool {
+        tool != .levels && freeHeight >= 160
     }
     private var lastEditHistogramRoom = true
+
+    /// The no-tool card shrinks to its text while the Histogram toggle is on,
+    /// so the docked histogram has room. Set where the state changes (edit entry, the
+    /// toggle), never from inside a layout pass; `layout()` then sees the room change.
+    private func syncEditHistogramReservation() {
+        editModeController.parameterPanel.reservesHistogramRoom = Prefs.viewerHistogramVisible
+        needsLayout = true
+    }
 
     /// Shown when toggled on; in full screen it also fades with the
     /// chrome (hidden after the idle delay, back on pointer movement).
@@ -2330,15 +2373,17 @@ public final class ViewerContentView: NSView {
         // inspector.
         let fits = canvasFitsHistogram
         lastCanvasFitsHistogram = fits
-        // Spec 24 §1.3: the setting alone decides. In a window the docked
+        // The setting alone decides. In a window the docked
         // inspector's own section follows the same setting; in full screen
         // the overlay steps aside while the HUD inspector shows.
-        // Spec 27 P3-13: one histogram at a time. A window's open inspector shows its
-        // own section, so the floating copy steps aside. Spec 27 P3-3: a photo that
+        // One histogram at a time. A window's open inspector shows its
+        // own section, so the floating copy steps aside. A photo that
         // cannot be read has no histogram at all (not a "No data" box).
         let room = editHistogramRoom
         lastEditHistogramRoom = room
-        let show = Prefs.viewerHistogramVisible && fits && !isCropToolActive && room
+        // In edit mode the histogram is docked in the tool column, never over the
+        // crop frame, so Crop no longer hides it (only Levels and the 160 pt rule do).
+        let show = Prefs.viewerHistogramVisible && fits && room
             && !isShowingDecodeError
             && !(windowMode == .windowed && windowedInspectorShown)
             && !(windowMode == .fullscreen && fullscreenTarget(.inspector))
@@ -2425,7 +2470,7 @@ public final class ViewerContentView: NSView {
         let pillBottom: CGFloat = -rowBottom
         let leading: CGFloat = panelEdge
         let inspectorShown = fullscreenTarget(.inspector)
-        // Edit mode: docked in the tool column, 16 pt from the edge (spec 27 V3).
+        // Edit mode: docked in the tool column, 16 pt from the edge.
         let trailing: CGFloat = isEditModeActive ? -16
             : inspectorShown ? -(panelEdge + 280 + HUDGlass.gap) : -panelEdge
         // The pill never reaches under the capsule; the name
@@ -2470,7 +2515,7 @@ public final class ViewerContentView: NSView {
             return false
         case .toolbar:
             if isEditModeActive { return false }
-            // Spec 24 §1.2: a pinned strip no longer carries the capsule.
+            // A pinned strip no longer carries the capsule.
             return hoveredPanels.contains(.toolbar) || (capsuleStorage?.holdsOpen ?? false) || teachOnceHold
         default:
             return hoveredPanels.contains(panel) || pinnedPanels.contains(panel)
@@ -2582,7 +2627,7 @@ public final class ViewerContentView: NSView {
         zoomBadgeVisibilityChanged()
     }
 
-    /// The zoom HUD was shown or hidden (spec 27 B2): the toast's "stay below the
+    /// The zoom HUD was shown or hidden: the toast's "stay below the
     /// HUD" rule follows it. A toast already on screen is not moved; the change
     /// lands when that toast ends or on the next `show`. Do not override the
     /// badge's `alphaValue` for this: `animator()` calls the Swift setter on a proxy.
@@ -2631,7 +2676,7 @@ public final class ViewerContentView: NSView {
 
         let localPoint = convert(event.locationInWindow, from: nil)
         evaluateZones(at: localPoint)
-        // In a window the pill shows on pointer movement too (spec 24 §5.1).
+        // In a window the pill shows on pointer movement too.
         if windowMode == .windowed { navPositionOverlay.pointerMoved() }
         kickIdleTimer()
         livePhotoPointerMoved(to: localPoint)
@@ -2662,7 +2707,7 @@ public final class ViewerContentView: NSView {
     /// the view, on panel callbacks (so clicking a filmstrip cell keeps
     /// the strip visible), and by `ViewerWindow` on every nav keypress
     /// (so holding an arrow doesn't let the panel strobe out mid-nav).
-    /// Spec 24 §1.2: a still pointer hides the capsule and strip after 2 s,
+    /// A still pointer hides the capsule and strip after 2 s,
     /// even inside the bottom zone (but never while it is over them).
     static let idleHideDelay: TimeInterval = 2.0
 
@@ -2688,7 +2733,7 @@ public final class ViewerContentView: NSView {
         let dismissible = hoveredPanels.subtracting(pinnedPanels)
         guard !dismissible.isEmpty else { return }
         // A panel under the pointer stays (it hides only
-        // once the pointer leaves the panel). Spec 24 §1.2: the bottom stack
+        // once the pointer leaves the panel). The bottom stack
         // (capsule + strip) also fades after 2 s without movement when the
         // pointer rests in the reveal zone, so it counts only as "over the
         // capsule or strip" itself: no 24 pt margin and no zone. A move in
@@ -2893,8 +2938,8 @@ public final class ViewerContentView: NSView {
 
     /// Reveal zones: the bottom 96 pt reveals the filmstrip
     /// and the capsule together; the right 56 pt reveal
-    /// the inspector. The bottom corners belong to the bottom zone
-    ///: a pointer resting at the bottom edge near a
+    /// the inspector. The bottom corners belong to the bottom zone:
+    /// a pointer resting at the bottom edge near a
     /// corner never slides the inspector in as well.
     static func zonePanels(at p: NSPoint, in b: NSRect) -> Set<PanelKind> {
         var hits: Set<PanelKind> = []
@@ -2938,7 +2983,7 @@ public final class ViewerContentView: NSView {
         panelExitGraceWorkItems[panel] != nil
     }
 
-    // MARK: Teach once (spec 24 §1.1)
+    // MARK: Teach once
 
     /// True once any viewer entered full screen in this run. Tests start
     /// "taught" so the many full-screen tests see a clean start; the
@@ -2998,7 +3043,7 @@ public final class ViewerContentView: NSView {
     internal var teachOnceActiveForTesting: Bool { teachOnceHold }
     internal func fireTeachOnceExpiryForTesting() { endTeachOnce(update: true) }
 
-    /// Spec 24 §1.2: the position pill shows while the capsule shows and
+    /// The position pill shows while the capsule shows and
     /// hides with it.
     private func syncPillHold() {
         navPositionOverlay.setHeldByCapsule(windowMode == .fullscreen && fullscreenTarget(.toolbar))
@@ -3166,6 +3211,7 @@ private final class PrefsObservationBox: @unchecked Sendable {
 extension ViewerContentView: MetalImageViewDelegate {
     public func metalImageViewDidChangeZoom(_ view: MetalImageView, zoom: Double) {
         onZoomChanged?()
+        schedulePhotoAccessibilityValue()
         if isEditModeActive { syncCropOverlayFrame() }
         // Live Photos play only at fit.
         livePhotoBadge.isDimmed = !view.isAtFit
@@ -3214,5 +3260,47 @@ extension ViewerContentView: MetalImageViewDelegate {
 
     public func metalImageViewDidPresentFirstDrawable(_ view: MetalImageView) {
         ShrikeSignposts.launch.event("viewerFirstDrawable")
+    }
+}
+
+/// Why a viewer command is grey. One list for the toolbar
+/// tooltips (second line), VoiceOver help and the toast when the key of a grey
+/// command is pressed. Pure.
+enum ViewerGreyReason: Equatable, Sendable {
+    case raw, broken, loading, noPhoto
+
+    static let rawLine = "RAW files are not changed. Switch to the JPEG to edit."
+    static let brokenLine = "This photo can\u{2019}t be opened, so there is nothing to edit."
+    static let loadingLine = "The photo is still loading."
+    static let loadingToast = "Wait for the photo to finish loading, then try again."
+    static let noPhotoText = "No photo to edit"
+
+    /// Order when several are true: RAW, broken, no photo, loading. nil = not grey for these reasons.
+    static func of(rawShown: Bool, broken: Bool, hasPhoto: Bool, ready: Bool) -> ViewerGreyReason? {
+        if rawShown { return .raw }
+        if broken { return .broken }
+        if !hasPhoto { return .noPhoto }
+        if !ready { return .loading }
+        return nil
+    }
+
+    /// The tooltip's second line and the accessibility help; no photo has none.
+    var tooltipLine: String? {
+        switch self {
+        case .raw: return Self.rawLine
+        case .broken: return Self.brokenLine
+        case .loading: return Self.loadingLine
+        case .noPhoto: return nil
+        }
+    }
+
+    /// The toast when the key of a grey command is pressed.
+    var toastText: String {
+        switch self {
+        case .raw: return Self.rawLine
+        case .broken: return Self.brokenLine
+        case .loading: return Self.loadingToast
+        case .noPhoto: return Self.noPhotoText
+        }
     }
 }

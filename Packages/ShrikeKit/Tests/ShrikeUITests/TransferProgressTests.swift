@@ -254,14 +254,14 @@ final class TransferProgressTests: XCTestCase {
         notice.showProgress("Copying 3 of 320…", fraction: 0.1)
         browser.window?.contentView?.layoutSubtreeIfNeeded()
         let progressHeight = notice.frame.height
-        let progressLabel = try XCTUnwrap(notice.arrangedSubviews.first as? NSTextField)
+        let progressLabel = try XCTUnwrap(notice.arrangedSubviews.first { $0 is NSTextField } as? NSTextField)
         XCTAssertLessThanOrEqual(progressLabel.frame.height, ceil(progressLabel.intrinsicContentSize.height),
                                  "the label is not stretched, so its text is not clipped")
         notice.show("Copied 3 items.", buttons: [("Undo", {})])
         browser.window?.contentView?.layoutSubtreeIfNeeded()
         XCTAssertEqual(notice.frame.height, progressHeight, "photos below do not jump when the result replaces progress")
         XCTAssertEqual(notice.frame.height, InlineNotice.fixedBandHeight)
-        let label = try XCTUnwrap(notice.arrangedSubviews.first as? NSTextField)
+        let label = try XCTUnwrap(notice.arrangedSubviews.first { $0 is NSTextField } as? NSTextField)
         let button = try XCTUnwrap(notice.arrangedSubviews.compactMap { $0 as? NSButton }.first)
         XCTAssertEqual(label.frame.midY, button.frame.midY, accuracy: 0.51, "text is centred on the Undo button")
     }
@@ -428,7 +428,7 @@ final class TransferProgressTests: XCTestCase {
         gate.answer()
         guard await finish(window.trashChain, gate: gate) else { return }
         XCTAssertEqual(window.contentRoot.toastHost.content?.message,
-                       "Copied 0 of 1 items. The rest were cancelled.")
+                       "Copied 0 of 1 items. The rest were canceled.")
         XCTAssertNil(window.contentRoot.toastHost.content?.progress)
         XCTAssertFalse(window.transfers.isShowingProgress)
         XCTAssertFalse(window.undoManagerForTesting.canUndo)

@@ -353,7 +353,7 @@ public enum Prefs {
 
     /// When true, the bottom-left position overlay ("N / M — filename") fades
     /// out after `NavigationFeedbackState.overlayIdleTimeout` (2.0 s) of nav
-    /// inactivity, in a window and in full screen (spec 24 §1.2). This is the
+    /// inactivity, in a window and in full screen. This is the
     /// default: nothing is registered or stored, so a user who never touched
     /// the switch gets it. When false, the overlay is held open for the life
     /// of the viewer window so the user can glance down and see their folder
@@ -407,7 +407,7 @@ public enum Prefs {
         set { defaults.set(newValue, forKey: Key.exifPanelPinnedFullscreen) }
     }
 
-    /// The three settings of the removed left tool strip (spec 26). Raw
+    /// The three settings of the removed left tool strip. Raw
     /// strings, kept only so a launch can delete them from the plist.
     private static let retiredEditRailKeys = [
         "shrike.viewer.editRail.pinnedFullscreen",
@@ -608,7 +608,7 @@ public enum Prefs {
     // MARK: - Browser workspace
 
     /// One JSON object `{ "path": String, "bookmark": Data }`, or nil when
-    /// no Workspace is set (spec 23-workspace §6).
+    /// no Workspace is set.
     public static var browserWorkspaceData: Data? {
         get { defaults.data(forKey: Key.browserWorkspace) }
         set {

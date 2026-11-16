@@ -58,6 +58,9 @@ extension ViewerWindow {
                   !self.contentRoot.isEditModeActive, !view.isAtFit else { return }
             view.swapInFullResolution(entry.image, prepared: entry.prepared as? DisplayTexture, resourceLease: entry.resourceLease, imageIsLazy: entry.imageIsLazy,
                                       sourceID: sourceID)
+            // Re-check the Edit state. Edit does not wait for the full photo:
+            // the swap keeps the same source ID, so this only refreshes it.
+            self.refreshEditAvailability()
         }
     }
 

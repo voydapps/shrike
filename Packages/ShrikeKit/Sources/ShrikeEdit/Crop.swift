@@ -54,15 +54,19 @@ public struct CropTool: Sendable {
         // Round to integer pixel bounds after clamping into the image.
         // `CGImage.cropping(to:)` tolerates floating rects but integer
         // snapping matches what the UI overlay displays.
+        // Round the two edges, then subtract: rounding the start and the size on their own can put
+        // the right / bottom edge 1 pixel away from where the frame was drawn.
         var x = Int((crop.originX * w).rounded())
         var y = Int((crop.originY * h).rounded())
-        var cw = Int((crop.width  * w).rounded())
-        var ch = Int((crop.height * h).rounded())
+        var right = Int(((crop.originX + crop.width) * w).rounded())
+        var bottom = Int(((crop.originY + crop.height) * h).rounded())
 
         x = max(0, min(x, width - 1))
         y = max(0, min(y, height - 1))
-        cw = max(1, min(cw, width - x))
-        ch = max(1, min(ch, height - y))
+        right = max(x + 1, min(right, width))
+        bottom = max(y + 1, min(bottom, height))
+        let cw = right - x
+        let ch = bottom - y
 
         return CGRect(x: x, y: y, width: cw, height: ch)
     }

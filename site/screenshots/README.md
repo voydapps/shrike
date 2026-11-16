@@ -1,6 +1,6 @@
 # Shrike interface screenshots
 
-These are actual Shrike captures taken from a 0.2.12 development build, made on 17 October 2026 using local arm64 builds on macOS 26.5.2 in Dark appearance. Later releases, including 0.2.30, may differ in small details. Five captures use source dc95509; Browser, Compare and Contact Sheet use source a65854d. Earlier captures are not relabelled as the later build.
+These are actual Shrike captures taken from local arm64 Release builds on macOS 26.5.2 in Dark appearance. Six pictures come from a 0.2.33 development build (source 97ce00ee), captured in one session on 14 November 2026. The `browser` and `info-histogram` pictures were retaken on 16 November 2026 with a 0.2.34 development build (source c8589c15) so that they show neutral number and date formats (see below). Later releases may differ in small details.
 
 Sample imagery: NASA/JSC. No NASA affiliation or endorsement is implied. Three distinct Earth observations are used:
 
@@ -8,102 +8,90 @@ Sample imagery: NASA/JSC. No NASA affiliation or endorsement is implied. Three d
 - https://images.nasa.gov/details/iss040e030547
 - https://images.nasa.gov/details/iss042e013697
 
-The files in `full/` are the largest versions kept, and the ones the recorded hashes below describe. They contain JPEG data although their names end in `.png` (checked with `file`); browsers detect the real format, so the site's Enlarge links work, and the names are kept so the recorded hashes and links stay valid. Display PNGs are proportionately resized (hero maximum width 2400 pixels, others 1400; never enlarged), ICC-converted to sRGB, with non-color metadata removed after conversion. WebP versions use the same dimensions at quality 85. No cropping, stretching or UI compositing was applied. One retouch: in `contact-sheet.png` and its WebP twin, a stray mouse pointer and its faint halo were painted over with the flat dialog background colour (the full-size capture is untouched).
+The three photos were renamed `Earth 01.jpg` (iss043e000030), `Earth 02.jpg` (iss040e030547) and `Earth 03.jpg` (iss042e013697). For a fuller grid, the `browser` picture also shows 25 crops of these three photos (`Earth 04.jpg` to `Earth 28.jpg`, made with ImageMagick); no other imagery is used.
+
+## Files
+
+Only WebP files are tracked in git. `<name>.webp` is the picture on the page (hero maximum width 2400 pixels, others 1400; never enlarged). `full/<name>.webp` is the Enlarge version (up to 5120 pixels wide). Both are ICC-converted to sRGB, have their metadata removed, and use WebP quality 85. Each picture is a capture of one Shrike window without its shadow. No stretching, retouching or UI compositing was applied, and seven of the eight are not cropped. The exception is `contact-sheet`: the dialog cannot be captured on its own, so it is cut out of the capture of its Browser window at the dialog's own window bounds (the corners show the dimmed window behind it).
+
+The earlier PNG versions (the `full/` files were JPEG data with a `.png` name) are no longer tracked; they stay in the git history.
+
+## Adding or replacing a picture
+
+1. Save the new capture as `site/screenshots/src/<name>.png` (or `.jpg`). `<name>` is one of `viewer`, `browser`, `fullscreen`, `edit`, `info-histogram`, `compare`, `batch`, `contact-sheet`. The `src/` folder is git-ignored: sources are never committed.
+2. Run `Scripts/make-screenshots.sh` (needs ImageMagick with WebP support). It writes `<name>.webp` and `full/<name>.webp` and prints their sizes.
+3. Check the `width` / `height` attributes in `site/index.html`, update this file (version, source commit, date, hashes), then run `bash Scripts/check-site.sh`.
 
 ## Capture and asset identity
 
+The six pictures taken on 14 November 2026 (all except `browser` and `info-histogram`):
+
+- Version: 0.2.33 development build, Release configuration
+- Product source: `97ce00ee14862c7c746e8c8dc0922bd200f25ed2`
+- App executable SHA256: `09a10a7c1ccdfd174e7663897eac15ddd0e8425666a49342f77efda6efe1b0fd`
+- macOS 26.5.2 (25F84), Dark appearance, display at 2× scale
+
+The `browser` and `info-histogram` pictures (retaken on 16 November 2026):
+
+- Version: 0.2.34 development build, Release configuration
+- Product source: `c8589c156aec05cbd574c79cb8bbed54c8280c86`
+- App executable SHA256: `61a902639c1a4b77c8d8e0053e4711b997efdaa7607df6103b799d8692c04393`
+- macOS 26.5.2 (25F84), Dark appearance, display at 2× scale
+- The app ran with the time zone set to UTC and the US English locale (`TZ=UTC`, `-AppleLocale en_US -AppleLanguages (en)`, for that process only), so sizes use a decimal point ("2.4 MB") and dates use the US format. The photos had fixed file dates on 16 November 2026, so the Modified row is the same for everyone and shows no local time zone.
+- The `info-histogram` window is 1718 × 1209 points instead of 1761 × 1239: the screen used was not tall enough. It has the same shape, so the page picture keeps its 1400 × 985 size.
+
 ### batch
 
-- Version: 0.2.12 development build
-- Product source: `dc95509c2363b866c471b119edc40bba60ee5948`
-- App executable SHA256: `bf147b13f78e9f8df89b93f59e8c5e243323a136a39cf7b9e4210e94d52e608f`
-- Capture saved UTC: 2026-10-17T14:04:27.157660+00:00
-- Timestamp meaning: filesystem saved-at after awaited native screenshot; exact screenshot acquisition time not separately recorded
+- Captured: 14 November 2026
 - Raw pixels: 1760 × 1264; display pixels: 1400 × 1005
-- `screenshots/full/batch.png`: 212111 bytes; SHA256 `0cc63bb5be3c35fcd7ed9d5a0fbeae914465b66c2c35b8e290b665408e7ac016`
-- `screenshots/batch.png`: 385879 bytes; SHA256 `9a071011daa042f8f99343215e2d127017d3d8a4ccf050270a97b21e5f4c22be`
-- `screenshots/batch.webp`: 60162 bytes; SHA256 `59d12357dd273d12753af0f8ab713ca22917a8373755459eecf968198bba70d9`
+- `screenshots/full/batch.webp`: 75716 bytes; SHA256 `d78c983e5a2b509528ea6234ba611339b872cc0745fa9f97dba4933101ad30e6`
+- `screenshots/batch.webp`: 54550 bytes; SHA256 `8c54e4b6a3c39ac42ae36d60bef464a255fbcbd044f659f5672dd63bd5b5736d`
 
 ### browser
 
-- Version: 0.2.12 development build
-- Product source: `a65854d419185e1b1cbd07a5daa4b84543a1db7b`
-- App executable SHA256: `9a409a2f7301b2701e3680158638f580031ae3cf386403b575281b073a33289a`
-- Capture saved UTC: 2026-10-17T14:16:39.604Z
-- Timestamp meaning: explicit UTC before awaited native screenshot and UTC after saving original returned pixels
+- Captured: 16 November 2026
 - Raw pixels: 2402 × 1602; display pixels: 1400 × 934
-- `screenshots/full/browser.png`: 509339 bytes; SHA256 `27820ea8661ace9f8eb7ca456caade898541fc39c0fb8b86d18301520009194f`
-- `screenshots/browser.png`: 1021876 bytes; SHA256 `64aab4b76ff46471395d81763e8d0297806d6b8bc235f88df116a930f065522e`
-- `screenshots/browser.webp`: 98444 bytes; SHA256 `434a8984ca167bb4c6d7e3404580b2276d50cd2cff6c3681d732926ad6ab6f56`
+- `screenshots/full/browser.webp`: 285340 bytes; SHA256 `fa82d16405702797309113b1433ed84bab4df2e391bccc5ccba49c3e6b1cdda4`
+- `screenshots/browser.webp`: 107468 bytes; SHA256 `cb976a3255535f23bf77f75a1fc86a0d8b15d91ba73e39614dc8bd9224adf3d2`
 
 ### compare
 
-- Version: 0.2.12 development build
-- Product source: `a65854d419185e1b1cbd07a5daa4b84543a1db7b`
-- App executable SHA256: `9a409a2f7301b2701e3680158638f580031ae3cf386403b575281b073a33289a`
-- Capture saved UTC: 2026-10-17T14:16:17.459Z
-- Timestamp meaning: explicit UTC before awaited native screenshot and UTC after saving original returned pixels
+- Captured: 14 November 2026
 - Raw pixels: 3500 × 1000; display pixels: 1400 × 400
-- `screenshots/full/compare.png`: 865765 bytes; SHA256 `34ee12ff592ad0ddf0f2f3acc300c51a22f3b5c610f98d7eccda3e8f2a81911d`
-- `screenshots/compare.png`: 713876 bytes; SHA256 `8cca92ae18703a0178ec0637562a97bbd476fd3dd8ac7cc77a334f7c6cf96a01`
-- `screenshots/compare.webp`: 92530 bytes; SHA256 `ed0e64e30f00fde01900b7863794c142294d2c5029ed3cb61ea657da16cafbf8`
+- `screenshots/full/compare.webp`: 453812 bytes; SHA256 `d994bdfcab21a19605ac7fe4c519f72f133f7a22a0be104cb95cc66e0dff9ed4`
+- `screenshots/compare.webp`: 78776 bytes; SHA256 `3235ae4a7c6d39d45ab352b74c38638bd6e0a6b44bc840bc26fa29e2c591488c`
 
 ### contact-sheet
 
-- Version: 0.2.12 development build
-- Product source: `a65854d419185e1b1cbd07a5daa4b84543a1db7b`
-- App executable SHA256: `9a409a2f7301b2701e3680158638f580031ae3cf386403b575281b073a33289a`
-- Capture saved UTC: 2026-10-17T14:15:23.570Z
-- Timestamp meaning: explicit UTC before awaited native screenshot and UTC after saving original returned pixels
-- Raw pixels: 1320 × 724; display pixels: 1320 × 724
-- `screenshots/full/contact-sheet.png`: 84040 bytes; SHA256 `21c8235fb3ca2b6b36956e8e4f59fc9a05ca670aac79b00b248d6d945c4cc012`
-- `screenshots/contact-sheet.png`: 174341 bytes; SHA256 `d806768b85ab2d2b6b88af9fc4f54657db84c919f883023f61256e0f81c1fbad`
-- `screenshots/contact-sheet.webp`: 28288 bytes; SHA256 `5c0eb5a5edb45123d1c968b74ec75642abad505d7cb51c7df1fa236ee28c6c8b`
+- Captured: 14 November 2026 (Browser window capture, cut to the dialog's bounds)
+- Raw pixels: 1320 × 724 after the cut (window capture 3408 × 2450); display pixels: 1320 × 724
+- `screenshots/full/contact-sheet.webp`: 25378 bytes; SHA256 `7a5e7a4b9934f1176c82747d7473fb2ec193af3a60cbb35552a309fda81ad526`
+- `screenshots/contact-sheet.webp`: 25378 bytes; SHA256 `7a5e7a4b9934f1176c82747d7473fb2ec193af3a60cbb35552a309fda81ad526` (the same file: the picture is smaller than both size limits)
 
 ### edit
 
-- Version: 0.2.12 development build
-- Product source: `dc95509c2363b866c471b119edc40bba60ee5948`
-- App executable SHA256: `bf147b13f78e9f8df89b93f59e8c5e243323a136a39cf7b9e4210e94d52e608f`
-- Capture saved UTC: 2026-10-17T14:03:41.618005+00:00
-- Timestamp meaning: filesystem saved-at after awaited native screenshot; exact screenshot acquisition time not separately recorded
+- Captured: 14 November 2026
 - Raw pixels: 3522 × 2478; display pixels: 1400 × 985
-- `screenshots/full/edit.png`: 1718581 bytes; SHA256 `ce6934ed85dc66bc23781a1113ebcb9f7d3097e19596ddfb4106b65c618add69`
-- `screenshots/edit.png`: 1691749 bytes; SHA256 `3248f9ced5c4e6152c8ce480f04f725274c0153c4390547f514e6d31a17d023f`
-- `screenshots/edit.webp`: 216890 bytes; SHA256 `6e233355492db8ab2b15d7babf64f2a595bd60cf628546fc969b9bc7a7c91edb`
+- `screenshots/full/edit.webp`: 751200 bytes; SHA256 `8fc5b5593736da0d182b5f5778f92167691774c64d7a7d12cc6304ea62022e6a`
+- `screenshots/edit.webp`: 168972 bytes; SHA256 `2a8d2f93fb19e73cf0fbf5b7a033cadba657bdfeb2616ecf6f7aba0e2e681b18`
 
 ### fullscreen
 
-- Version: 0.2.12 development build
-- Product source: `dc95509c2363b866c471b119edc40bba60ee5948`
-- App executable SHA256: `bf147b13f78e9f8df89b93f59e8c5e243323a136a39cf7b9e4210e94d52e608f`
-- Capture saved UTC: 2026-10-17T14:03:32.756375+00:00
-- Timestamp meaning: filesystem saved-at after awaited native screenshot; exact screenshot acquisition time not separately recorded
+- Captured: 14 November 2026
 - Raw pixels: 5120 × 3414; display pixels: 1400 × 934
-- `screenshots/full/fullscreen.png`: 3372905 bytes; SHA256 `dc2d38d01faab7eac4220cf2f4a38e8c0a10187ba74a3dec41c10c8572af7fb9`
-- `screenshots/fullscreen.png`: 2303495 bytes; SHA256 `39319a9e14782cbd26c5ee9307e31bc2787f612edac46d05bb9053caf9895921`
-- `screenshots/fullscreen.webp`: 300552 bytes; SHA256 `6ad8b8982976248674109840782710a5e26fac7f2ad5772a935f7117601efcd2`
+- `screenshots/full/fullscreen.webp`: 1680348 bytes; SHA256 `81742cd0fa144f579e9045656958609fb16667c71a78b287d68dd2a9cad67cf8`
+- `screenshots/fullscreen.webp`: 265512 bytes; SHA256 `8897878f079bc46cb5ba9520416cb3ecb5b862453357be2352e38ecbb8ec1fff`
 
 ### info-histogram
 
-- Version: 0.2.12 development build
-- Product source: `dc95509c2363b866c471b119edc40bba60ee5948`
-- App executable SHA256: `bf147b13f78e9f8df89b93f59e8c5e243323a136a39cf7b9e4210e94d52e608f`
-- Capture saved UTC: 2026-10-17T14:03:29.749480+00:00
-- Timestamp meaning: filesystem saved-at after awaited native screenshot; exact screenshot acquisition time not separately recorded
-- Raw pixels: 3522 × 2478; display pixels: 1400 × 985
-- `screenshots/full/info-histogram.png`: 1814900 bytes; SHA256 `3d709e957b33f1ba35fa929f6e3719ad130730b256bf8b0f1b5227fd1401e56a`
-- `screenshots/info-histogram.png`: 1858377 bytes; SHA256 `8126a5eb5e2a17e4f68a5ee8fcfebd576a4fbb1fef6045b50231071e7788aece`
-- `screenshots/info-histogram.webp`: 242754 bytes; SHA256 `119f9a889a1cb5b7d31ea112b30dc0fff1d7b83cb1a0f98e3c82caed77206334`
+- Captured: 16 November 2026
+- Raw pixels: 3436 × 2418; display pixels: 1400 × 985
+- `screenshots/full/info-histogram.webp`: 868376 bytes; SHA256 `65c1b70eca5ec8bbe7cca626937a4483c56da5e2db3f4c06474e0896d2559afc`
+- `screenshots/info-histogram.webp`: 209980 bytes; SHA256 `ba30b7efa3ebc3e2f6d8e75e7fda5d5958f4f3ee2a565d487161985560494643`
 
 ### viewer
 
-- Version: 0.2.12 development build
-- Product source: `dc95509c2363b866c471b119edc40bba60ee5948`
-- App executable SHA256: `bf147b13f78e9f8df89b93f59e8c5e243323a136a39cf7b9e4210e94d52e608f`
-- Capture saved UTC: 2026-10-17T14:03:23.286709+00:00
-- Timestamp meaning: filesystem saved-at after awaited native screenshot; exact screenshot acquisition time not separately recorded
+- Captured: 14 November 2026
 - Raw pixels: 3522 × 2478; display pixels: 2400 × 1689
-- `screenshots/full/viewer.png`: 2070769 bytes; SHA256 `ed77a15c598f82d12cc74b66a68caa4ba38204d78a4970f21b983cf4cdd82333`
-- `screenshots/viewer.png`: 6022479 bytes; SHA256 `fb992853095e7f42148eb3a68632d977e1848a58361f5b45c4438a069cf29717`
-- `screenshots/viewer.webp`: 638716 bytes; SHA256 `20d5cd58073dae37d59ca5931d1b6fe973f9235989c45f89d6237c510b7c8519`
+- `screenshots/full/viewer.webp`: 1034006 bytes; SHA256 `f1d3059e4539c3041b59f5eaa36152413cc92a5fbfb2ef9603c3f500f8203e75`
+- `screenshots/viewer.webp`: 584950 bytes; SHA256 `41397d8eba069a9decc3d988dcce07bce43731743ea367c19354da2886447343`

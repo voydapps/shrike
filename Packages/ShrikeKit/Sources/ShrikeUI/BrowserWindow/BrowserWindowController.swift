@@ -96,6 +96,11 @@ public final class BrowserWindowController: NSWindowController {
     private var persistenceBanner: PersistenceBanner?
     private weak var noticeStack: NSStackView?
     private var filterPopover: NSPopover?
+    /// `eventNumber` of the mouse-down that closed the Filter popover while
+    /// it landed on the Filter button. A transient popover closes on that
+    /// mouse-down, before the button's action (mouse-up of the same click)
+    /// runs; the action must then not open it again.
+    private var filterClosedByClickNumber: Int?
     var currentFolder: URL?
     var currentFilter: BrowserFilter = .none
     private var searchDebounce: Task<Void, Never>?
@@ -181,7 +186,20 @@ public final class BrowserWindowController: NSWindowController {
     /// Trashes run one after another.
     var trashChain: Task<Void, Never>?
     /// Rotate / flip presses waiting 500 ms for their write.
-    var pendingOrientation: BrowserPendingOrientation?
+    var pendingOrientation: BrowserPendingOrientation? {
+        didSet { syncRotateWriteHold() }
+    }
+    /// From the first press until the last write lands, the delayed
+    /// rotate write is open work (`ActiveWork` `.rotateWrite`).
+    let rotateWriteHold = ActiveWorkHold(kind: .rotateWrite)
+    /// Which undo the Undo buttons of notices may still undo.
+    let undoTopMark = UndoTopMark()
+    var orientationWritesInFlight = 0 {
+        didSet { syncRotateWriteHold() }
+    }
+    func syncRotateWriteHold() {
+        rotateWriteHold.set(pendingOrientation != nil || orientationWritesInFlight > 0)
+    }
     var orientationTimer: Task<Void, Never>?
     var orientationWriteChain: Task<Void, Never>?
     /// Copy / Move to folder: slots, panel, conflicts, HUD.
@@ -214,7 +232,7 @@ public final class BrowserWindowController: NSWindowController {
     /// Test seam: the saved contact sheet (nil when it failed).
     var contactSheetSavedForTesting: ((URL?) -> Void)?
 
-    public static let windowAutosaveName: NSWindow.FrameAutosaveName = "shrike.browser"
+    public static let windowAutosaveName: NSWindow.FrameAutosaveName = FrameAutosave.name("shrike.browser")
 
     // MARK: - Init
 
@@ -548,6 +566,7 @@ public final class BrowserWindowController: NSWindowController {
         treeController.delegate = self
         contentController.delegate = self
         contentController.destinationSlotsProvider = { [weak self] in self?.transfers.slots }
+        contentController.revertAvailableProvider = { [weak self] in self?.revertableSelection != nil }
         contentController.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
         contentController.onTab = { [weak self] backward in self?.moveFocus(from: self?.window?.firstResponder, backward: backward) ?? false }
         inspectorController.onTab = { [weak self] backward in self?.moveFocus(from: self?.window?.firstResponder, backward: backward) ?? false }
@@ -722,7 +741,26 @@ public final class BrowserWindowController: NSWindowController {
 
     // MARK: - Toolbar actions
 
+    /// True when `pressEvent` is the mouse-up of the click whose mouse-down
+    /// (`closingEvent`) just closed the Filter popover. Both carry the
+    /// same `eventNumber`.
+    static func filterPressClosedPopover(closingNumber: Int?, pressEvent: NSEvent?) -> Bool {
+        guard let closingNumber, let pressEvent, pressEvent.type == .leftMouseUp else { return false }
+        return pressEvent.eventNumber == closingNumber
+    }
+
     @objc func showFilterPopover(_ sender: Any?) {
+        let closingNumber = filterClosedByClickNumber
+        filterClosedByClickNumber = nil
+        // The button toggles: a press while the popover is shown closes it.
+        if let open = filterPopover, open.isShown {
+            filterPopover = nil
+            open.performClose(nil)
+            return
+        }
+        if Self.filterPressClosedPopover(closingNumber: closingNumber, pressEvent: NSApp?.currentEvent) {
+            return
+        }
         let popoverController = BrowserFilterPopover(filter: currentFilter)
         popoverController.onChange = { [weak self] newFilter in
             self?.applyFilter(newFilter)
@@ -732,6 +770,7 @@ public final class BrowserWindowController: NSWindowController {
         let popover = NSPopover()
         popover.contentViewController = popoverController
         popover.behavior = .transient
+        popover.delegate = self
         filterPopover = popover
         // Anchor on the Filter item; when it sits in the overflow menu (or
         // was removed) anchor on the top of the grid instead.
@@ -747,7 +786,7 @@ public final class BrowserWindowController: NSWindowController {
         }
     }
 
-    /// Gives the open Filter popover the folder's tags (spec 21b §3). Tags are read
+    /// Gives the open Filter popover the folder's tags. Tags are read
     /// with the saved marks; until that ends the control says "Reading Tags…".
     func feedFilterPopoverTags(to target: BrowserFilterPopover? = nil) {
         // The open popover is not stored yet while `showFilterPopover` builds it, so
@@ -827,6 +866,19 @@ public final class BrowserWindowController: NSWindowController {
         contentController.filter = currentFilter
         updateFilterButtonBadge()
     }
+    /// Remembers the click that closed the popover, if it hit the Filter button.
+    func noteFilterPopoverWillClose(by event: NSEvent?) {
+        guard let event, event.type == .leftMouseDown,
+              let buttonWindow = filterButton.window, event.window === buttonWindow else {
+            filterClosedByClickNumber = nil
+            return
+        }
+        let frame = filterButton.convert(filterButton.bounds, to: nil)
+        filterClosedByClickNumber = frame.contains(event.locationInWindow) ? event.eventNumber : nil
+    }
+
+    var filterPopoverIsShownForTesting: Bool? { filterPopover?.isShown }
+
     /// Test seam: the open popover's controller.
     var filterPopoverForTesting: BrowserFilterPopover? {
         filterPopover?.contentViewController as? BrowserFilterPopover
@@ -1138,7 +1190,7 @@ public final class BrowserWindowController: NSWindowController {
 
     private func showListingIssues(_ issues: [FolderScanIssue], count: Int, folder: URL) {
         guard !issues.isEmpty else { listingNotice.show(nil); return }
-        listingNotice.show("\(count) photos shown · \(issues.count) files could not be read", buttons: [
+        listingNotice.show("\(count) photos shown · \(issues.count) files could not be read", kind: .error, buttons: [
             ("Details…", { [weak self] in
                 guard let window = self?.window else { return }
                 let alert = NSAlert(); alert.messageText = "Some files could not be read"
@@ -1251,6 +1303,18 @@ public final class BrowserWindowController: NSWindowController {
         )
     }
 
+    /// Edit Photo: opens the one selected photo in a viewer and starts edit mode
+    /// with no tool, the way the viewer's own E does. The viewer waits until the photo is shown.
+    func editSelectedPhoto() {
+        let items = contentController.visibleItems
+        guard contentController.gridMenuState.canEditPhoto,
+              let first = contentController.selectedItems.first,
+              let index = items.firstIndex(of: first) else { return }
+        let viewer = WindowCoordinator.shared.openPairedViewer(
+            from: self, groups: items.map(\.group), startIndex: index)
+        viewer?.enterEditModeWhenShown(first.group.primary)
+    }
+
     private func openSelectionInViewer() {
         let items = contentController.visibleItems
         guard let first = contentController.selectedItems.first,
@@ -1301,7 +1365,7 @@ public final class BrowserWindowController: NSWindowController {
     }
 
     /// No Trash on the volume → the permanent-delete alert (Delete removes for good).
-    /// Other errors → toast T2.
+    /// Other errors → an error toast.
     private func handleTrashFailures(_ failures: [(group: ImageGroup, error: FileOpsError)], next: URL?) async {
         let noTrash = failures.filter { if case .noTrash = $0.error { return true } else { return false } }
         if let first = noTrash.first {
@@ -1367,9 +1431,8 @@ public final class BrowserWindowController: NSWindowController {
             MainActor.assumeIsolated { target.undoTrash(receipt) }
         }
         undo.setActionName("Move to Trash")
-        toast(.trashed(FileActionCopy.movedToTrash(receipt.trashedGroups))) { [weak self] in
-            self?.window?.undoManager?.undo()
-        }
+        undoToast(BackupNotice.toast(.trashed(FileActionCopy.movedToTrash(receipt.trashedGroups)),
+                                     notSaved: receipt.backupsNotSaved, of: receipt.trashedGroups.count))
     }
 
     private func undoTrash(_ receipt: TrashReceipt) {
@@ -1387,7 +1450,8 @@ public final class BrowserWindowController: NSWindowController {
                     self.pendingSelection = first.primary
                     self.navigate(to: folder, updateHistory: false)
                 }
-                self.toast(FileActionCopy.putBack(original: original, restored: first))
+                self.toast(BackupNotice.toast(ToastContent(FileActionCopy.putBack(original: original, restored: first)),
+                                              notSaved: result.backupsNotSaved, of: result.groups.count))
             } catch {
                 self.toast(FileActionCopy.noLongerInTrash(name), kind: .error)
             }
@@ -1518,6 +1582,7 @@ public final class BrowserWindowController: NSWindowController {
         filled.capture = InspectorRows.capture(info)
         filled.location = InspectorRows.location(info)
         filled.coordinate = info.gps
+        filled.colorProfile = info.colorProfileName
         if filled.commonWidth == nil || filled.commonHeight == nil, let size = info.headerSize {
             filled.commonWidth = size.width
             filled.commonHeight = size.height
@@ -1558,8 +1623,10 @@ public final class BrowserWindowController: NSWindowController {
             }))
         }
         transferNotice.show(text, buttons: buttons)
-        NSAccessibility.post(element: window ?? NSApp as Any, notification: .announcementRequested,
-                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+        if let element: Any = window ?? NSApp {
+            NSAccessibility.post(element: element, notification: .announcementRequested,
+                                 userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+        }
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.hideTransferNotice() }
         }
@@ -1587,7 +1654,7 @@ public final class BrowserWindowController: NSWindowController {
         transferNotice.show(nil)
     }
 
-    private func ownsTransferProgress(_ ticket: TransferProgressTicket) -> Bool {
+    func ownsTransferProgress(_ ticket: TransferProgressTicket) -> Bool {
         ticket.owner === self && ticket.generation == transferProgressGeneration && transferNotice.isShowingProgress
     }
 
@@ -1601,6 +1668,12 @@ public final class BrowserWindowController: NSWindowController {
     public func toast(_ content: ToastContent, action: (@MainActor () -> Void)? = nil) {
         if toastHost.superview == nil { toastHost.install(in: contentController.view) }
         toastHost.show(content, action: action)
+    }
+
+    /// The Undo toast of the action just registered (it undoes only that action).
+    func undoToast(_ content: ToastContent) {
+        if toastHost.superview == nil { toastHost.install(in: contentController.view) }
+        toastHost.showUndo(content, mark: undoTopMark, manager: window?.undoManager)
     }
 
     /// Selects `url` and scrolls it into view (return from the viewer).
@@ -1627,7 +1700,7 @@ public final class BrowserWindowController: NSWindowController {
         let snap = KeyEventSnapshot.from(event, isKeyUp: false)
 
         // Special: search field focus goes through the normal responder chain.
-        if NSApp.keyWindow?.firstResponder is NSText,
+        if NSApp?.keyWindow?.firstResponder is NSText,
            window?.firstResponder !== contentController.view {
             return false
         }
@@ -1639,7 +1712,7 @@ public final class BrowserWindowController: NSWindowController {
     func handleKeySnapshot(_ snap: KeyEventSnapshot) -> Bool {
         // Esc while a copy / move shows its progress: stop the rest.
         if chordPrefix == nil, snap.key == "\u{1b}", transfers.cancelRunning() { return true }
-        // Home / End select the first / last photo (audit on-screen L1; the keys did nothing).
+        // Home / End select the first / last photo (the keys did nothing before).
         if chordPrefix == nil, !snap.isKeyUp, snap.keyCode == 115 || snap.keyCode == 119,
            snap.flags.intersection([.command, .control, .option, .shift]).isEmpty {
             let count = contentController.visibleItems.count
@@ -1928,19 +2001,19 @@ extension BrowserWindowController: NSToolbarDelegate, NSToolbarItemValidation {
             return item
         case BrowserToolbarID.inspector:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "Inspector")
+            item.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "Info")
             item.isBordered = true
             item.target = self
             item.action = #selector(toolbarToggleInspector(_:))
             // The » row: the glyph and a check mark while the inspector
             // shows (`validateMenuItem`).
-            let menuForm = NSMenuItem(title: "Inspector", action: #selector(toolbarToggleInspector(_:)), keyEquivalent: "")
+            let menuForm = NSMenuItem(title: "Info", action: #selector(toolbarToggleInspector(_:)), keyEquivalent: "")
             menuForm.target = self
             menuForm.image = item.image
             item.menuFormRepresentation = menuForm
-            item.label = "Inspector"
+            item.label = "Info"
             item.visibilityPriority = .high
-            item.paletteLabel = "Inspector"
+            item.paletteLabel = "Info"
             LiveTooltips.shared.bind(item, command: .toggleInspector, context: .browser)
             return item
         case BrowserToolbarID.openInViewer:
@@ -2091,8 +2164,8 @@ extension BrowserWindowController: NSToolbarDelegate, NSToolbarItemValidation {
         }
         if item.itemIdentifier == BrowserToolbarID.inspector, let tip = item.toolTip {
             // The help text names what the click does now (like the viewer's).
-            let want = isInspectorCollapsed ? "Show Inspector" : "Hide Inspector"
-            let other = isInspectorCollapsed ? "Hide Inspector" : "Show Inspector"
+            let want = isInspectorCollapsed ? "Show Info" : "Hide Info"
+            let other = isInspectorCollapsed ? "Hide Info" : "Show Info"
             if tip.contains(other) { item.toolTip = tip.replacingOccurrences(of: other, with: want) }
         }
         return true
@@ -2113,10 +2186,13 @@ extension BrowserWindowController: FolderTreeDelegate {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    /// An alert title: sentence case.
+    static let newFolderAlertTitle = "New folder"
+
     public func folderTreeRequestNewFolder(parent: URL) {
         // Simple sheet-less prompt via NSAlert.
         let alert = NSAlert()
-        alert.messageText = "New Folder"
+        alert.messageText = Self.newFolderAlertTitle
         alert.informativeText = "Create a new folder inside \(parent.lastPathComponent):"
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22))
         input.placeholderString = "Untitled"
@@ -2138,7 +2214,7 @@ extension BrowserWindowController: FolderTreeDelegate {
     }
 
     /// A disk came or went. If the folder on screen was on a disk that is no
-    /// longer mounted, the Browser says "folder gone" (spec 22-sidebar §4.9);
+    /// longer mounted, the Browser says "folder gone";
     /// the sidebar has already cleared its selection.
     public func folderTreeVolumesDidChange() {
         checkCurrentVolumeStillThere()
@@ -2149,10 +2225,17 @@ extension BrowserWindowController: FolderTreeDelegate {
         }
     }
 
+    /// The mount check runs off the main thread; the answer is
+    /// dropped when the window shows another folder or state by then.
     private func checkCurrentVolumeStillThere() {
-        guard !browserDidClose, let folder = currentFolder, Self.goneVolumeName(of: folder) != nil,
-              !contentController.isShowingFolderGone else { return }
-        showFolderGone(folder)
+        guard !browserDidClose, let folder = currentFolder, !contentController.isShowingFolderGone,
+              folder.standardizedFileURL.path.hasPrefix("/Volumes/") else { return }
+        Task { @MainActor [weak self] in
+            guard let disk = await Task.detached(operation: { Self.goneVolumeName(of: folder) }).value,
+                  let self, !self.browserDidClose, self.currentFolder == folder,
+                  !self.contentController.isShowingFolderGone else { return }
+            self.showFolderGone(folder, disk: disk)
+        }
     }
 
     public func folderTreeRequestOpenInNewWindow(_ url: URL) {
@@ -2280,5 +2363,18 @@ final class BrowserWindow: NSWindow {
             return
         }
         super.keyDown(with: event)
+    }
+}
+
+extension BrowserWindowController: NSPopoverDelegate {
+    public func popoverWillClose(_ notification: Notification) {
+        guard (notification.object as? NSPopover) === filterPopover else { return }
+        noteFilterPopoverWillClose(by: NSApp?.currentEvent)
+    }
+
+    public func popoverDidClose(_ notification: Notification) {
+        // The close is animated: a newer popover may already be stored.
+        guard (notification.object as? NSPopover) === filterPopover else { return }
+        filterPopover = nil
     }
 }

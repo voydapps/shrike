@@ -3,7 +3,7 @@
 //  ShrikeUI
 //
 //  Help ▸ Keyboard Shortcuts (⌘/): a searchable, non-modal window with
-//  every key of the live preset (spec 25 §13.2). The rows come from
+//  every key of the live preset. The rows come from
 //  `ShortcutsTab.sections(for:)`, so the list cannot drift from the keymaps.
 //
 
@@ -33,10 +33,12 @@ enum ShortcutsFilter {
 final class ShortcutsWindowController: NSWindowController, NSWindowDelegate {
 
     static let shared = ShortcutsWindowController()
-    static let autosaveName = "shrike.shortcutsWindow"
+    static let autosaveName = FrameAutosave.name("shrike.shortcutsWindow")
 
     /// Opens Settings ▸ Shortcuts (set by the app).
-    var openSettings: (() -> Void)?
+    /// Static, so assigning it at launch does not build the window.
+    static var openSettings: (() -> Void)?
+    static let settingsLinkTitle = "Settings…"
     private let model = ShortcutsWindowModel()
 
     init() {
@@ -49,7 +51,8 @@ final class ShortcutsWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         window.contentView = NSHostingView(rootView: ShortcutsWindowView(model: model, onSettings: { [weak self] in
-            self?.openSettings?()
+            _ = self
+            Self.openSettings?()
         }, onClose: { [weak self] in self?.window?.close() }))
     }
 
@@ -77,7 +80,7 @@ final class ShortcutsWindowController: NSWindowController, NSWindowDelegate {
         DispatchQueue.main.async { [weak self] in self?.focusSearchField() }
     }
 
-    /// Audit 2026-10-13 (0.2.9): the SwiftUI `@FocusState` alone left the caret
+    /// The SwiftUI `@FocusState` alone left the caret
     /// drawn but typing went nowhere until a click. Put the real field in the
     /// responder chain by hand, every time the window opens or becomes key.
     func focusSearchField() {
@@ -96,7 +99,7 @@ final class ShortcutsWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) { model.query = "" }
 
-    /// Spec 27 P3-10 (regression vs spec 25 §13.2): the search field is focused
+    /// The search field is focused
     /// when the window opens. `onAppear` runs before the hosting view is in a
     /// key window, so focus is asked for again once the window is key.
     func windowDidBecomeKey(_ notification: Notification) {
@@ -150,7 +153,7 @@ final class ShortcutsWindowModel: ObservableObject {
     }
 }
 
-private struct ShortcutsWindowView: View {
+struct ShortcutsWindowView: View {
     @ObservedObject var model: ShortcutsWindowModel
     let onSettings: () -> Void
     let onClose: () -> Void
@@ -178,7 +181,9 @@ private struct ShortcutsWindowView: View {
                 HStack {
                     Text(model.presetLine).font(.system(size: typography.keysSize)).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Settings…", action: onSettings).buttonStyle(.link)
+                    // Named for VoiceOver (SwiftUI's `.link` button had no name).
+                    BatchTextButton(ShortcutsWindowController.settingsLinkTitle, look: .link,
+                                    action: onSettings).fixedSize()
                 }
             }
             .padding(16)

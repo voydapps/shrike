@@ -62,3 +62,6 @@ Config/Local.xcconfig
 # Python bytecode (Scripts/tests import publish-release.py; CI gate rejects untracked files)
 __pycache__/
 *.pyc
+
+# Local source screenshots for the website (Scripts/make-screenshots.sh makes the tracked WebP files)
+site/screenshots/src/

@@ -152,7 +152,7 @@ final class ThumbnailCacheEvictTests: XCTestCase {
         XCTAssertNil(weakCache)
         let ended = await withTaskGroup(of: Bool.self) { group in
             group.addTask { await task.value; return true }
-            group.addTask { try? await Task.sleep(nanoseconds: 5_000_000_000); return false }
+            group.addTask { try? await Task.sleep(nanoseconds: 5_000_000_000); return false }   // timeout racer: only runs out if the real event never comes
             let first = await group.next() ?? false
             group.cancelAll()
             return first

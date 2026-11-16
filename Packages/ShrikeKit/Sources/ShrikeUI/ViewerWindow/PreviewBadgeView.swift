@@ -58,13 +58,21 @@ final class PreviewBadgeView: NSView {
     private static let verticalPadding: CGFloat = 4
 
     private let label = NSTextField(labelWithString: "")
+    private var colorObserver: LiveColorObserver?
+
+    /// The orange stays; under Reduce Transparency it is solid.
+    func applyFill() {
+        layer?.backgroundColor = NSColor.systemOrange
+            .withAlphaComponent(ReduceTransparency.previewBadgeAlpha(reduce: ReduceTransparency.isOn))
+            .cgColor
+    }
+    var fillAlphaForTesting: CGFloat { layer?.backgroundColor.flatMap { NSColor(cgColor: $0)?.alphaComponent } ?? 0 }
 
     init() {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.systemOrange
-            .withAlphaComponent(0.85)
-            .cgColor
+        applyFill()
+        colorObserver = LiveColorObserver(view: self) { [weak self] in self?.applyFill() }
         layer?.cornerRadius = 6
         layer?.masksToBounds = true
 

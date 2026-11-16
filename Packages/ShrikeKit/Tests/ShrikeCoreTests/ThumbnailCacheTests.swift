@@ -249,7 +249,7 @@ final class ThumbnailCacheTests: XCTestCase {
         await waitUntil { await cache.doomedJobCountForTesting() == 1 }
 
         let again = Task { try await cache.thumbnail(for: x, maxPixelSize: 64) }
-        try await Task.sleep(nanoseconds: 20_000_000)
+        await waitUntil { x.decodeCount == 2 }   // fresh work started, not the doomed job reused
         x.open()
         let image = try await again.value
         XCTAssertEqual(image.width, 64)
@@ -275,7 +275,7 @@ final class ThumbnailCacheTests: XCTestCase {
         XCTAssertEqual(doomed, 1)
 
         let shown = Task { try await cache.thumbnail(for: x, maxPixelSize: 64) }
-        try await Task.sleep(nanoseconds: 20_000_000)
+        await waitUntil { x.decodeCount == 2 }
         x.open()
         let image = try await shown.value
         XCTAssertEqual(image.width, 64)
@@ -384,7 +384,7 @@ final class ThumbnailCacheTests: XCTestCase {
         await cache.prefetch([v], maxPixelSize: 64)
         await waitUntil { await cache.decodeWaiterCountForTesting() == 1 }
         let cell = Task { try await cache.thumbnail(for: v, maxPixelSize: 64, priority: .visible) }
-        try await Task.sleep(nanoseconds: 20_000_000)
+        await waitUntil { await cache.interestForTesting(for: v, maxPixelSize: 64) == 1 }   // the cell has joined the pinned job
         cell.cancel()   // the cell scrolled away
         await waitUntil { await cache.decodeWaiterCountForTesting() == 0 }
         let left = await cache.decodeWaiterCountForTesting()

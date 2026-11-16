@@ -128,7 +128,7 @@ final class BrowserAccessibilityLazy028Tests: XCTestCase {
         XCTAssertEqual(isSelected, true)
         XCTAssertEqual(selectedIndices, [selected])
         XCTAssertTrue(rowTexts.contains(String(format: "P%04d.jpg", selected)), "Visible selected row exports its actual filename")
-        XCTAssertLessThan(elapsed, 1.0, "Native rows/children and bounded visible-cell traversal stay far from a full 1000-row walk; the real check is the bounded child counts")
+        perfAssertLessThan(elapsed, 1.0, "Native rows/children and bounded visible-cell traversal stay far from a full 1000-row walk; the real check is the bounded child counts")
         return (rows.count, children.count, elapsed)
     }
 
@@ -226,7 +226,7 @@ final class BrowserAccessibilityLazy028Tests: XCTestCase {
         let visibleCount = grid.indexPathsForVisibleItems().count
         let start = Date()
         let children = grid.accessibilityChildren() ?? []
-        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
+        perfAssertLessThan(Date().timeIntervalSince(start), 1.0)
         XCTAssertLessThanOrEqual(children.count, visibleCount + 2 * BrowserCollectionView.accessibilityOverscan)
         XCTAssertLessThanOrEqual((grid.accessibilityVisibleChildren() ?? []).count, visibleCount)
         XCTAssertGreaterThan(grid.accessibleColumnCount, 0)

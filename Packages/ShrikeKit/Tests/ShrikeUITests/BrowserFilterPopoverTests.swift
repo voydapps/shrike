@@ -87,6 +87,24 @@ final class BrowserFilterPopoverTests: XCTestCase {
         XCTAssertFalse(popover.clearButton.isEnabled, "Clear is off when nothing is set")
     }
 
+    /// The body is opaque in Light and Dark: its root fills with the window
+    /// background of that appearance, alpha 1, so nothing shows through.
+    func testPopoverBodyIsOpaqueInLightAndDark() throws {
+        let popover = BrowserFilterPopover(filter: .none)
+        let root = try XCTUnwrap(popover.view as? OpaquePopoverBackground)
+        XCTAssertTrue(root.isOpaque)
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            root.appearance = appearance
+            root.updateLayer()
+            let fill = try XCTUnwrap(root.layer?.backgroundColor)
+            var expected: CGColor?
+            appearance.performAsCurrentDrawingAppearance { expected = NSColor.windowBackgroundColor.cgColor }
+            XCTAssertEqual(fill.alpha, 1, "\(name.rawValue): opaque")
+            XCTAssertEqual(fill, expected, "\(name.rawValue): the window background of that appearance")
+        }
+    }
+
     func testChangesApplyAtOnceAndClearResetsEverything() {
         let popover = BrowserFilterPopover(filter: .none)
         _ = popover.view
@@ -169,6 +187,35 @@ final class BrowserFilterPopoverTests: XCTestCase {
     }
 
     // MARK: Window
+
+    func testFilterButtonPressTogglesPopover() async throws {
+        try writeJPEG("a.jpg")
+        let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
+        defer { browser.close() }
+        browser.showWindow(nil)
+        browser.showFilterPopover(nil)
+        XCTAssertNotNil(browser.filterPopoverForTesting, "first press opens")
+        XCTAssertEqual(browser.filterPopoverIsShownForTesting, true, "it is really shown")
+        browser.showFilterPopover(nil)
+        XCTAssertNil(browser.filterPopoverForTesting, "second press closes and opens nothing")
+        browser.showFilterPopover(nil)
+        XCTAssertNotNil(browser.filterPopoverForTesting, "third press opens again")
+    }
+
+    func testPressOfTheClickThatClosedThePopoverDoesNotReopen() throws {
+        func event(_ type: NSEvent.EventType, number: Int) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: .zero, modifierFlags: [], timestamp: 1,
+                               windowNumber: 0, context: nil, eventNumber: number, clickCount: 1, pressure: 1)
+        }
+        XCTAssertTrue(BrowserWindowController.filterPressClosedPopover(
+            closingNumber: 7, pressEvent: event(.leftMouseUp, number: 7)))
+        XCTAssertFalse(BrowserWindowController.filterPressClosedPopover(
+            closingNumber: 7, pressEvent: event(.leftMouseUp, number: 8)), "a later click opens")
+        XCTAssertFalse(BrowserWindowController.filterPressClosedPopover(
+            closingNumber: nil, pressEvent: event(.leftMouseUp, number: 7)))
+        XCTAssertFalse(BrowserWindowController.filterPressClosedPopover(
+            closingNumber: 7, pressEvent: nil), "menu or key press opens")
+    }
 
     func testEmptyResultOffersClearFilter() async throws {
         try writeJPEG("a.jpg")

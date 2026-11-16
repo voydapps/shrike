@@ -88,7 +88,7 @@ final class DecodeQueueContentChangeTests: XCTestCase {
         let d = ContinuousClock.now - start
         let seconds = Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
         XCTAssertEqual(evicted.count, 500)
-        XCTAssertLessThan(seconds, 1.5, "burst took \(seconds) s")
+        perfAssertLessThan(seconds, 1.5, "burst took \(seconds) s")
         await q.purge()
     }
 

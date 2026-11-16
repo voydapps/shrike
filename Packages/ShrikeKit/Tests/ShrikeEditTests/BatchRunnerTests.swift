@@ -98,7 +98,14 @@ final class BatchRunnerTests: XCTestCase {
         }
         let seen = try await consumer.value
         XCTAssertEqual(seen, 1)
-        try await Task.sleep(nanoseconds: 500_000_000)   // in-flight items settle
+        // In-flight items settle: no temp (dot) file is left for several looks in a row.
+        var quietLooks = 0
+        let settleDeadline = Date().addingTimeInterval(30)
+        while quietLooks < 5, Date() < settleDeadline {
+            let hidden = try FileManager.default.contentsOfDirectory(atPath: out.path).contains { $0.hasPrefix(".") }
+            quietLooks = hidden ? 0 : quietLooks + 1
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
         let names = try FileManager.default.contentsOfDirectory(atPath: out.path)
         XCTAssertLessThan(names.count, 40, "stopped early")
         for name in names {
@@ -123,7 +130,7 @@ final class BatchRunnerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("a_01.jpg").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: a.path))
 
-        try await runner.undo(result)
+        _ = try await runner.undo(result)
         XCTAssertTrue(FileManager.default.fileExists(atPath: a.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: b.path))
     }
@@ -145,7 +152,7 @@ final class BatchRunnerTests: XCTestCase {
         guard case .skipped(let reason)? = skipped?.outcome else { return XCTFail("gif not skipped") }
         XCTAssertEqual(reason.message, "This file type can't be rotated without re-encoding — skipped.")
 
-        try await runner.undo(result)
+        _ = try await runner.undo(result)
         XCTAssertEqual(pixelSize(j1), CGSize(width: 240, height: 160))
     }
 
@@ -183,7 +190,7 @@ final class BatchRunnerTests: XCTestCase {
         XCTAssertEqual(result.doneCount, 1)
         XCTAssertEqual(result.replacedOriginals.map(\.reason), [.batch])
         XCTAssertEqual(pixelSize(a), CGSize(width: 120, height: 80))
-        try await runner.undo(result)
+        _ = try await runner.undo(result)
         XCTAssertEqual(try Data(contentsOf: a), original)
     }
 
@@ -313,7 +320,7 @@ final class BatchRunnerTests: XCTestCase {
                                   backups: backups, phaseCheckpoint: { phase, url in await counts.record(phase, url) })
         let out = root.appendingPathComponent("out")
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
-        let firstNames = ["007_GPS_1.png", "009_Gardener_1.png"]
+        let firstNames = ["007_GPS_1.png", "008_Gardener_1.png"]
         let victims = firstNames.map { out.appendingPathComponent($0) }
         let victimBytes = Data("original output victim".utf8)
         for victim in victims { try victimBytes.write(to: victim) }
@@ -330,14 +337,14 @@ final class BatchRunnerTests: XCTestCase {
         let sourceBytes = try urls.map { try Data(contentsOf: $0) }
         let newOut = root.appendingPathComponent("new-output")
         try FileManager.default.createDirectory(at: newOut, withIntermediateDirectories: true)
-        let retryVictim = newOut.appendingPathComponent("008_Coast_1.png")
+        let retryVictim = newOut.appendingPathComponent("Coast.png")
         let retryVictimBytes = Data("new folder's previous output".utf8)
         try retryVictimBytes.write(to: retryVictim)
         var retry = counted.retryPlan(for: first, original: plan)
         retry.output = .folder(newOut); retry.onConflict = .replace
         XCTAssertEqual(retry.items, [ImageGroup(primary: b)])
         let rows = await counted.preview(retry)
-        XCTAssertEqual(rows.map(\.outputName), ["008_Coast_1.png"], "counter and metadata identity belong to the original resolution")
+        XCTAssertEqual(rows.map(\.outputName), ["Coast.png"], "audit L-4: the skipped unreadable photo took no counter number, so its retry keeps its own name")
         XCTAssertEqual(rows.first?.destination, retryVictim)
         let final = try await drain(counted.run(retry))
         XCTAssertEqual(final.doneCount, 1); XCTAssertEqual(final.replacedOriginals.count, 3)
@@ -346,7 +353,7 @@ final class BatchRunnerTests: XCTestCase {
         XCTAssertEqual(exports, Dictionary(uniqueKeysWithValues: urls.map { ($0, 1) }), "completed neighbors must not run again")
         for i in victims.indices { XCTAssertEqual(try Data(contentsOf: victims[i]), completedBytes[i]) }
         for i in urls.indices { XCTAssertEqual(try Data(contentsOf: urls[i]), sourceBytes[i]) }
-        try await counted.undo(final)
+        _ = try await counted.undo(final)
         for victim in victims { XCTAssertEqual(try Data(contentsOf: victim), victimBytes) }
         XCTAssertEqual(try Data(contentsOf: retryVictim), retryVictimBytes)
     }
@@ -404,7 +411,7 @@ final class BatchRunnerTests: XCTestCase {
                                rename: try RenameTemplate(parsing: "{counter:000}_{name}", counterStart: 7),
                                output: .folder(out))
         let result = try await drain(runner.run(export)), unreadable = try XCTUnwrap(result.items.first)
-        let planned = out.appendingPathComponent("007_corrupt.png")
+        let planned = out.appendingPathComponent("corrupt.png")
         guard case .skipped(.unreadable) = unreadable.outcome else { return XCTFail("actual unreadable input must skip") }
         XCTAssertEqual(unreadable.plannedDestinationURL, planned)
         XCTAssertNil(unreadable.destinationURL); XCTAssertEqual(unreadable.finalURL, corrupt)
@@ -441,7 +448,7 @@ final class BatchRunnerTests: XCTestCase {
         let source = try XCTUnwrap(CGImageSourceCreateWithURL(destination as CFURL, nil))
         let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         XCTAssertEqual(props?[kCGImagePropertyOrientation] as? Int, 6)
-        try await runner.undo(final)
+        _ = try await runner.undo(final)
         XCTAssertEqual(try Data(contentsOf: a), beforeA); XCTAssertEqual(try Data(contentsOf: b), beforeB)
         XCTAssertEqual(try Data(contentsOf: victim), victimBytes)
     }

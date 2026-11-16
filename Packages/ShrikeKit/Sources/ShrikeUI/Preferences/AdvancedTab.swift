@@ -14,9 +14,9 @@ struct AdvancedTab: View {
 
     @State private var showResetAllConfirmation = false
 
-    /// Spec 27 P3-7: every row is label-left, control-right.
-    static let configurationLabel = "Settings"
-    static let configurationDetail = "Shrike will return to its default settings. Restart to apply."
+    /// Every row is label-left, control-right.
+    static let configurationLabel = "All settings"
+    static let configurationDetail = "Every setting goes back to how it was at install. Restart Shrike to finish."
     static let versionLabel = "Version"
     /// (leading label, has a trailing control) per row of the last two sections.
     static let rowLabelsForTesting: [(label: String, hasControl: Bool)] = [
@@ -33,7 +33,7 @@ struct AdvancedTab: View {
     var body: some View {
         Form {
             Section("Performance") {
-                Picker("Browsing Preview Resolution", selection: store.maxDisplayLongEdge) {
+                Picker("Browsing preview resolution", selection: store.maxDisplayLongEdge) {
                     ForEach(SettingsChoices.including(store.maxDisplayLongEdge.wrappedValue, in: PerformanceTab.longEdgeOptions), id: \.self) { px in
                         Text(verbatim: "\(px) px").tag(px)
                     }
@@ -44,12 +44,12 @@ struct AdvancedTab: View {
             }
 
             Section {
-                // Spec 27 P3-7: label left, control right; no empty left half.
+                // Label left, control right; no empty left half.
                 LabeledContent {
                     Button(role: .destructive) {
                         showResetAllConfirmation = true
                     } label: {
-                        Label("Reset All Preferences…", systemImage: "xmark.circle.fill")
+                        Label("Reset All Settings…", systemImage: "xmark.circle.fill")
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
@@ -60,7 +60,7 @@ struct AdvancedTab: View {
                     }
                 }
             } header: {
-                Text("Configuration").font(.headline)
+                Text("Reset").font(.headline)
             }
 
             Section {
@@ -74,7 +74,7 @@ struct AdvancedTab: View {
         .formStyle(.grouped)
         .preferencesResetFooter("Reset Advanced to Defaults", tab: .advanced)
         .confirmationDialog(
-            "Reset All Preferences?",
+            "Reset all settings?",
             isPresented: $showResetAllConfirmation,
             titleVisibility: .visible
         ) {

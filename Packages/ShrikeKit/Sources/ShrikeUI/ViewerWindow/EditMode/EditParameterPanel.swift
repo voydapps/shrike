@@ -3,7 +3,7 @@
 //  ShrikeUI
 //
 //  Right-side container that hosts whichever tool panel the user is
-//  currently driving. Spec
+//  currently driving.
 //
 //  Width: 280 pt, flush with the right edge, full canvas height minus
 //  the toolbar + status strip. Only one tool panel is installed at a
@@ -35,7 +35,7 @@ final class EditParameterPanel: HUDSurfaceView {
     required init?(coder: NSCoder) { fatalError() }
 
     /// The height available to the panel (the canvas band). A tool view taller
-    /// than this scrolls (spec 25 §3.2). Nil or ≤ 0: no limit known yet.
+    /// than this scrolls. Nil or ≤ 0: no limit known yet.
     var bandHeightProvider: (() -> CGFloat)?
 
     /// The panel is as tall as its content (priority below the owner's
@@ -112,9 +112,9 @@ final class EditParameterPanel: HUDSurfaceView {
         let content = ceil(view.fittingSize.height)
         contentHeight = content
         let band = bandHeightProvider?() ?? 0
-        // Spec 27 V3: with no tool chosen the card spans the whole band, so the
+        // With no tool chosen the card spans the whole band, so the
         // right column reads as a panel, not a hole. A picked tool eases to its content.
-        let fillsBand = view is ChooseToolPanel
+        let fillsBand = view is ChooseToolPanel && !reservesHistogramRoom
         wasFillingBand = fillsBand
         let height = fillsBand ? Self.bandWish : content
         if band > 0, content > band {
@@ -197,7 +197,18 @@ final class EditParameterPanel: HUDSurfaceView {
     }
 
     /// True while the empty card spans the whole band.
-    var fillsBand: Bool { installed is ChooseToolPanel }
+    var fillsBand: Bool { installed is ChooseToolPanel && !reservesHistogramRoom }
+
+    /// With the Histogram toggle on, the empty card is only as tall as its
+    /// text so the docked histogram has the rest of the column (with the toggle off it
+    /// still spans the band). Set by the viewer; changes the card in place.
+    var reservesHistogramRoom = false {
+        didSet {
+            guard reservesHistogramRoom != oldValue, let card = installed as? ChooseToolPanel else { return }
+            install(card)   // the card's height rule is set at install
+            superview?.needsLayout = true
+        }
+    }
     private var wasFillingBand = false
     /// The empty card's height wish; the owner's limits cut it to the band.
     static let bandWish: CGFloat = 4000
@@ -212,13 +223,15 @@ final class EditParameterPanel: HUDSurfaceView {
 final class ChooseToolPanel: NSView {
 
     static let title = "Choose a Tool"
-    /// The text is at most this wide (spec 27 V3).
+    /// The text is at most this wide.
     static let textWidth: CGFloat = 232
 
-    /// Spec 26 §1.6: the picker is icon-only, so this text names the tools and says where they are.
+    /// The card is text only (no chips): where the tools are, then how they apply.
     static func body(inFullScreen: Bool) -> String {
         "Pick Crop, Rotate, Resize, Color or Levels in the bar at the \(inFullScreen ? "bottom" : "top")."
     }
+    static let applyRule = "Crop and Resize need Apply. Rotate, Color and Levels change the photo at once."
+    let ruleLabel = NSTextField(wrappingLabelWithString: ChooseToolPanel.applyRule)
 
     let titleLabel = NSTextField(labelWithString: ChooseToolPanel.title)
     let bodyLabel: NSTextField
@@ -233,25 +246,20 @@ final class ChooseToolPanel: NSView {
         bodyLabel = NSTextField(wrappingLabelWithString: Self.body(inFullScreen: inFullScreen))
         super.init(frame: .zero)
         // The tool-title style (the Levels panel header).
-        titleLabel.font = ChromeTypography.font(13, weight: .semibold)
+        titleLabel.font = ChromeTypography.font(15, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.alignment = .center
         bodyLabel.font = ChromeTypography.font(13)
         bodyLabel.textColor = .secondaryLabelColor
         bodyLabel.isSelectable = false
         bodyLabel.alignment = .center
-        let tools = EditChromeTools.order.map { tool -> NSButton in
-            let button = NSButton(title: EditChromeTools.tooltip(tool), image: EditChromeTools.image(tool), target: nil, action: nil)
-            ChromeTypography.initializeNativeFont(button)
-            button.bezelStyle = .rounded
-            button.heightAnchor.constraint(greaterThanOrEqualToConstant: ChromeTypography.targetHeight).isActive = true
-            button.setAccessibilityLabel(EditChromeTools.name(tool))
-            let target = ToolEntryAction { onSelect?(tool) }
-            button.target = target; button.action = #selector(ToolEntryAction.runTool)
-            entryActions.append(target)
-            return button
-        }
-        let stack = NSStackView(views: [titleLabel] + tools + [bodyLabel])
+        ruleLabel.font = ChromeTypography.font(13)
+        ruleLabel.textColor = .secondaryLabelColor
+        ruleLabel.isSelectable = false
+        ruleLabel.alignment = .center
+        // `onSelect` is kept for callers; the card has nothing clickable.
+        _ = onSelect
+        let stack = NSStackView(views: [titleLabel, bodyLabel, ruleLabel])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 8
@@ -269,14 +277,8 @@ final class ChooseToolPanel: NSView {
             // setting it by hand makes the label re-measure itself in a constraint loop).
             titleLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             bodyLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            ruleLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
-    }
-
-    private var entryActions: [ToolEntryAction] = []
-    private final class ToolEntryAction: NSObject {
-        let body: () -> Void
-        init(_ body: @escaping () -> Void) { self.body = body }
-        @objc func runTool() { body() }
     }
 
     @available(*, unavailable)

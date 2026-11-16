@@ -7,12 +7,21 @@ fail=0
 bad() { echo "FAIL: $1"; fail=1; }
 
 for f in index.html changelog.html style.css site.js 404.html robots.txt sitemap.xml .nojekyll favicon.svg favicon.ico \
-         apple-touch-icon.png og.png screenshots/viewer.webp screenshots/viewer.png screenshots/full/viewer.png screenshots/info-histogram.webp screenshots/info-histogram.png screenshots/full/info-histogram.png \
-         screenshots/browser.webp screenshots/browser.png screenshots/full/browser.png screenshots/edit.webp screenshots/edit.png screenshots/full/edit.png \
-         screenshots/fullscreen.webp screenshots/fullscreen.png screenshots/full/fullscreen.png screenshots/compare.webp screenshots/compare.png screenshots/full/compare.png \
-         screenshots/batch.webp screenshots/batch.png screenshots/full/batch.png screenshots/contact-sheet.webp screenshots/contact-sheet.png screenshots/full/contact-sheet.png; do
+         apple-touch-icon.png og.png \
+         screenshots/batch.webp screenshots/full/batch.webp \
+         screenshots/browser.webp screenshots/full/browser.webp \
+         screenshots/compare.webp screenshots/full/compare.webp \
+         screenshots/contact-sheet.webp screenshots/full/contact-sheet.webp \
+         screenshots/edit.webp screenshots/full/edit.webp \
+         screenshots/fullscreen.webp screenshots/full/fullscreen.webp \
+         screenshots/info-histogram.webp screenshots/full/info-histogram.webp \
+         screenshots/viewer.webp screenshots/full/viewer.webp; do
   [ -f "site/$f" ] || bad "missing site/$f"
 done
+
+# Only WebP pictures are tracked under site/screenshots (sources go in the git-ignored src/ folder;
+# Scripts/make-screenshots.sh makes the WebP files). A tracked PNG/JPEG there would grow the repo for ever.
+if [ -n "$(git ls-files site/screenshots 2>/dev/null | grep -E '\.(png|jpe?g)$')" ]; then bad "PNG/JPEG tracked under site/screenshots (use src/, which is git-ignored)"; fi
 
 # Keep current-version labels and download claims aligned with the verified public release.
 # The download button uses the fixed asset name; update availability copy only after publication.

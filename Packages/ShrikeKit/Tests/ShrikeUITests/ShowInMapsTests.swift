@@ -2,7 +2,7 @@
 //  ShowInMapsTests.swift
 //  ShrikeUITests
 //
-//  Image ▸ Show in Maps is enabled only when the photo has
+//  Photo ▸ Show in Maps is enabled only when the photo has
 //  GPS (viewer and Browser), opens Maps at a signed coordinate (33.86° S
 //  is a negative latitude), and the key on a photo without GPS shows
 //  "This photo has no location." Maps is never opened: `openURL` records.

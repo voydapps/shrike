@@ -2,7 +2,7 @@
 //  ShrikeAccent.swift
 //  ShrikeUI
 //
-//  Spec 27 P3-1: two named accent tokens for everything Shrike draws itself.
+//  Two named accent tokens for everything Shrike draws itself.
 //  System-drawn controls (checkbox, radio, slider, selected tab, the default
 //  button) keep the system's own tone; that two-tone is the system's.
 //

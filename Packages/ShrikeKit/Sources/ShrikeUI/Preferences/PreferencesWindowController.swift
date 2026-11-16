@@ -41,7 +41,7 @@ public final class PreferencesWindowController: NSWindowController {
         self.thumbnailCache = thumbnailCache
 
         // Non-resizable window; size ~600 × 500.
-        let contentRect = NSRect(x: 0, y: 0, width: 600, height: 500)
+        let contentRect = NSRect(x: 0, y: 0, width: SettingsWindowSize.width, height: 460)
         let styleMask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable]
         let window = NSWindow(
             contentRect: contentRect,
@@ -61,10 +61,13 @@ public final class PreferencesWindowController: NSWindowController {
             thumbnailCache: thumbnailCache,
             backupStore: backupStore
         )
-        // One accent, the system's.
-        let host = NSHostingView(rootView: root.tint(Color(nsColor: ShrikeAccent.fill)))
+        // The system accent (no tint); every button bordered
+        // (a grouped form draws flat buttons by default). Links stay `.link`.
+        let host = NSHostingView(rootView: root.buttonStyle(.bordered))
         host.autoresizingMask = [.width, .height]
+        host.sizingOptions = []
         window.contentView = host
+        self.host = host
 
         // Build the toolbar.
         configureToolbar()
@@ -74,12 +77,70 @@ public final class PreferencesWindowController: NSWindowController {
         selection.$tab
             .sink { [weak self] tab in
                 guard let self else { return }
-                self.window?.title = "\(tab.title) — Settings"
+                self.window?.title = tab.title
                 self.window?.toolbar?.selectedItemIdentifier =
                     NSToolbarItem.Identifier(tab.rawValue)
+                // The sink runs before the new tab is drawn: measure a turn later.
+                self.fitGeneration &+= 1
+                let mine = self.fitGeneration
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, self.fitGeneration == mine else { return }
+                        self.fitToTab(animated: self.window?.isVisible == true)
+                    }
+                }
             }
             .store(in: &subs)
+        fitToTab(animated: false)
     }
+
+    private var host: NSView?
+    private var fitGeneration: UInt64 = 0
+    /// The last content height measured (tests read it in messages).
+    private(set) var measuredContentHeight: CGFloat = 0
+    /// Test seam for Reduce Motion.
+    static var reduceMotion: @MainActor () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    /// The window's height follows the shown tab's content
+    /// (the tab is a scroll view, so measure its document), between 320 pt
+    /// and 80 % of the visible screen; the top edge stays put.
+    func fitToTab(animated: Bool) {
+        guard let window, let host else { return }
+        host.layoutSubtreeIfNeeded()
+        var content = host.fittingSize.height
+        if let scroll = Self.firstScrollView(in: host), let document = scroll.documentView {
+            let insets = scroll.contentInsets.top + scroll.contentInsets.bottom
+            content = host.bounds.height - scroll.frame.height + document.frame.height + insets
+        }
+        measuredContentHeight = content
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 900
+        let chrome = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: SettingsWindowSize.width, height: 100)).height - 100
+        let height = SettingsWindowSize.height(fitting: content, chrome: chrome, visibleScreenHeight: visible)
+        let old = window.frame
+        var frame = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: SettingsWindowSize.width, height: height))
+        frame.origin = NSPoint(x: old.minX, y: old.maxY - frame.height)
+        guard frame != old else { return }
+        let duration = animated ? SettingsWindowSize.animationDuration(reduceMotion: Self.reduceMotion()) : 0
+        if duration > 0 {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                window.animator().setFrame(frame, display: true)
+            }
+        } else {
+            window.setFrame(frame, display: true)
+        }
+    }
+
+    private static func firstScrollView(in view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView, scroll.documentView != nil { return scroll }
+        for sub in view.subviews { if let found = firstScrollView(in: sub) { return found } }
+        return nil
+    }
+
+    #if DEBUG
+    func selectTabForTesting(_ tab: PreferencesTab) { selection.tab = tab }
+    #endif
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
@@ -100,7 +161,7 @@ public final class PreferencesWindowController: NSWindowController {
         // its text selected).
         window?.makeFirstResponder(nil)
         DispatchQueue.main.async { [weak self] in self?.window?.makeFirstResponder(nil) }
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp?.activate(ignoringOtherApps: true)
     }
 
     /// Opens Settings on `tab` (Help ▸ Keyboard Shortcuts → `.shortcuts`).

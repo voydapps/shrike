@@ -9,20 +9,41 @@ public struct EditSaveCapability: Sendable {
     public let sourceBitsPerComponent: Int
     public let isHDR: Bool
     public let conversionDisclosure: String?
+    /// The header could not be read. It warns about changing the original,
+    /// so it is only true where the original is changed (Batch in place).
+    public static let unverifiedPrecision = "The original's precision could not be verified. Use Save Copy… to keep the original unchanged."
 }
 
 extension ImageExporter {
+    /// Last-resort check on a profile name: "2100", "hlg" or "pq" as whole words
+    /// ("Rec. ITU-R BT.2100 PQ"), not inside another word.
+    nonisolated static func profileNameSaysHDR(_ name: String) -> Bool {
+        let words = name.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        return words.contains { $0 == "2100" || $0 == "hlg" || $0 == "pq" }
+    }
+
     public nonisolated static func capability(for url: URL, operations: [EditOperation],
                                                format: ExportFormat? = nil) -> EditSaveCapability {
         guard let source = CGImageSourceCreateWithURL(url as CFURL,
                                                       [kCGImageSourceShouldCache: false] as CFDictionary),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         else { return EditSaveCapability(requiresCopy: true, sourceBitsPerComponent: 0, isHDR: false,
-            conversionDisclosure: "The original's precision could not be verified. Use Save Copy… to keep the original unchanged.") }
+            conversionDisclosure: EditSaveCapability.unverifiedPrecision) }
         let bits = properties[kCGImagePropertyDepth] as? Int ?? 8
         let profile = (properties[kCGImagePropertyProfileName] as? String ?? "").lowercased()
+        // Real signals first: a gain map, or a colour space whose transfer function is ITU-R 2100
+        // (PQ / HLG). Reading the colour space of a lazily made CGImage does not decode pixels.
+        // The profile's name is only a narrow last resort, matched as whole words.
+        let transferIsHDR: Bool = {
+            // PQ / HLG photos are 10 bit or more. A plain 8-bit file (nearly every JPEG) never is,
+            // so it needs no colour-space lookup and the Batch preview stays header-only.
+            guard bits > 8 else { return false }
+            guard let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  let space = image.colorSpace else { return false }
+            return CGColorSpaceUsesITUR_2100TF(space)
+        }()
         let hdr = CGImageSourceCopyAuxiliaryDataInfoAtIndex(source, 0, kCGImageAuxiliaryDataTypeHDRGainMap) != nil
-            || profile.contains("2100") || profile.contains("hlg") || profile.contains("pq")
+            || transferIsHDR || Self.profileNameSaysHDR(profile)
         let losesPrecision = operations.contains { operation in
             switch operation {
             case .crop: return false
@@ -41,7 +62,7 @@ extension ImageExporter {
                    : "These adjustments may convert the \(bits)-bit original to 8-bit pixels. Use Save Copy… to keep the original precision.")
             : nil
         // CMYK / grayscale photos are turned into RGB when an edit needs
-        // pixels (COR-1 / COR-2). That changes the file, so say so and
+        // pixels. That changes the file, so say so and
         // keep the original: the save goes to a copy.
         let colorText = colorConversionDisclosure(model: properties[kCGImagePropertyColorModel] as? String,
                                                   operations: operations)
@@ -73,8 +94,8 @@ private func colorConversionDisclosure(model: String?, operations: [EditOperatio
             if case .levels = $0 { return true }
             return false
         }
-        return needsColour ? "These edits will convert this grayscale photo to RGB colour. Use Save Copy… to keep the original." : nil
+        return needsColour ? "These edits will convert this grayscale photo to RGB color. Use Save Copy… to keep the original." : nil
     }
-    let name = model == (kCGImagePropertyColorModelCMYK as String) ? "CMYK" : "its colour model"
+    let name = model == (kCGImagePropertyColorModelCMYK as String) ? "CMYK" : "its color model"
     return "These edits will convert this photo from \(name) to RGB. Use Save Copy… to keep the original."
 }

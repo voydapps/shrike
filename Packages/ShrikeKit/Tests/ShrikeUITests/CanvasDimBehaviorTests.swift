@@ -26,6 +26,25 @@ import XCTest
 @MainActor
 final class CanvasDimBehaviorTests: XCTestCase {
 
+    /// Resumes on the main queue after `delay` seconds. Main-queue timers run in
+    /// deadline order, so anything scheduled earlier with a shorter delay has
+    /// already run (or been cancelled) when this returns: no guess about speed.
+    private func mainQueueSentinel(after delay: TimeInterval) async {
+        await withCheckedContinuation { cont in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { cont.resume() }
+        }
+    }
+
+    /// Polls until `condition` holds (up to 30 s).
+    private func waitUntil(_ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        return condition()
+    }
+
     // MARK: - Fast path
 
     /// The regression fix: when a paint lands inside the 120 ms deferral
@@ -50,8 +69,9 @@ final class CanvasDimBehaviorTests: XCTestCase {
             "cancel() must nil the pending work item"
         )
 
-        // Wait well past the delay and verify the callback never fired.
-        try? await Task.sleep(nanoseconds: 150_000_000)  // 150 ms
+        // A main-queue timer set later than the cancelled item's 50 ms deadline
+        // has run by the time this returns; the callback must still not have fired.
+        await mainQueueSentinel(after: 0.060)
         XCTAssertEqual(
             fireCount, 0,
             "onApply must not fire when cancelled within the delay window"
@@ -70,8 +90,9 @@ final class CanvasDimBehaviorTests: XCTestCase {
 
         scheduler.scheduleApply()
 
-        // Wait past the delay plus runloop slack.
-        try? await Task.sleep(nanoseconds: 150_000_000)  // 150 ms
+        let fired = await waitUntil { fireCount >= 1 }
+        XCTAssertTrue(fired, "onApply must fire after the delay")
+        await mainQueueSentinel(after: 0.040)   // a second (wrong) firing would have come by now
 
         XCTAssertEqual(
             fireCount, 1,
@@ -106,7 +127,9 @@ final class CanvasDimBehaviorTests: XCTestCase {
         )
 
         // Let the single work item fire.
-        try? await Task.sleep(nanoseconds: 150_000_000)  // 150 ms
+        let fired = await waitUntil { fireCount >= 1 }
+        XCTAssertTrue(fired)
+        await mainQueueSentinel(after: 0.060)   // a second firing would have come by now
         XCTAssertEqual(
             fireCount, 1,
             "coalesced schedules must result in exactly one callback invocation"

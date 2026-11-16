@@ -115,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         services.backupStore = .shared
         coordinator.services = services
         ShrikeSignposts.launch.end("makeServices", servicesState)
+        coordinator.scheduleLaunchRecovery()
 
         coordinator.onWindowOpened = { [weak self] in
             self?.recordWindowReady()
@@ -217,24 +218,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ShrikeSignposts.launch.end("coldLaunch", launchSignpost, metadata)
     }
 
-    /// Unsaved edits get the edit exit alert first; Cancel
-    /// cancels the quit. Then a rotate still waiting for its 500 ms write
-    /// is written before the app quits; that wait is
-    /// capped at 2 s.
+    /// The ⌘Q flow lives in `WindowCoordinator.prepareToQuit` (tested
+    /// without a window): unsaved edits first, then one alert when a Batch
+    /// or a copy / move runs, then the pending rotate
+    /// writes (bounded; a slow write is told).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard coordinator.hasViewersInEditMode || coordinator.hasPendingFileWrites else {
-            return .terminateNow
-        }
-        let coordinator = coordinator
-        Task { @MainActor in
-            guard await coordinator.resolveUnsavedEditsBeforeQuit() else {
-                sender.reply(toApplicationShouldTerminate: false)
-                return
-            }
-            await coordinator.flushPendingFileWrites()
-            sender.reply(toApplicationShouldTerminate: true)
-        }
-        return .terminateLater
+        coordinator.terminateRequest { sender.reply(toApplicationShouldTerminate: $0) }
     }
 
     /// Closing the last window keeps Shrike running.
@@ -307,7 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// still opening: the Workspace's Browser when one is set and there,
     /// else Welcome (with a message when the Workspace is gone). The
     /// Workspace is only opened from the deferred call (`settled`), after a
-    /// Finder open event had its chance (spec 23-workspace §3).
+    /// Finder open event had its chance.
     private func showStartWindowIfIdle(settled: Bool) {
         switch startWindowDecision(settled: settled) {
         case .wait: break

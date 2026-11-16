@@ -69,7 +69,7 @@ final class BrowserKeyRoutingTests: XCTestCase {
         let second = first.appendingPathComponent("shrike-recent-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: second) }
-        let controller = WelcomeWindowController(recentURLs: { [first, second] })
+        let controller = WelcomeWindowController(recentURLs: { [first, second] }, forgetRecents: { _ in })
         defer { controller.close() }
         var opened: [URL] = []
         controller.onOpenURLs = { opened += $0 }

@@ -244,7 +244,7 @@ final class FileOpsTests: XCTestCase {
         XCTAssertEqual(copiedRating, 3)
         XCTAssertTrue(copiedFlag)
 
-        try await ops.undo(last.receipt)
+        _ = try await ops.undo(last.receipt)
         XCTAssertEqual(names(in: dest), [])
         for url in g.allURLs { XCTAssertTrue(exists(url)) }
     }
@@ -269,7 +269,7 @@ final class FileOpsTests: XCTestCase {
         XCTAssertEqual(change?.kind, .move)
         XCTAssertEqual(change?.moved.map(\.from), g.allURLs)
 
-        try await ops.undo(last.receipt)
+        _ = try await ops.undo(last.receipt)
         for url in g.allURLs { XCTAssertTrue(exists(url)) }
         XCTAssertEqual(names(in: dest), [])
         let backRating = try await metadata.rating(for: g.primary)
@@ -299,7 +299,7 @@ final class FileOpsTests: XCTestCase {
         XCTAssertEqual(edited, .edited, "pencil badge survives the rename")
 
         _ = try await ops.rename(renamed, toStem: "B1")
-        try await ops.undo(last.receipt)
+        _ = try await ops.undo(last.receipt)
         let home = await backups.records(for: g.primary)
         XCTAssertEqual(home.count, 1, "undo of the move brings the chain back")
     }
@@ -321,7 +321,7 @@ final class FileOpsTests: XCTestCase {
         let inTrash = await backups.records(for: trashed)
         XCTAssertEqual(inTrash.map(\.reason), [.replace])
 
-        try await ops.undo(last.receipt)
+        _ = try await ops.undo(last.receipt)
         XCTAssertEqual(try String(contentsOf: victim, encoding: .utf8), "old victim")
         let back = await backups.records(for: victim)
         XCTAssertEqual(back.map(\.reason), [.replace], "chain returns with the file")
@@ -372,7 +372,7 @@ final class FileOpsTests: XCTestCase {
         let records = await backups.allRecords()
         XCTAssertEqual(records.count, 3, "every replaced file was backed up first")
 
-        try await ops.undo(last.receipt)
+        _ = try await ops.undo(last.receipt)
         XCTAssertEqual(names(in: dest), ["x.ORF", "x.jpg", "x.xmp"])
         XCTAssertEqual(readString(dest.appendingPathComponent("x.jpg")), "old x.jpg")
     }
@@ -390,7 +390,7 @@ final class FileOpsTests: XCTestCase {
         XCTAssertNotNil(replaced.backup)
         XCTAssertEqual(readString(dest.appendingPathComponent("x.jpg")), "content of x.jpg")
 
-        try await ops.undo(last.receipt)
+        _ = try await ops.undo(last.receipt)
         XCTAssertEqual(readString(dest.appendingPathComponent("x.jpg")), "old", "restored from BackupStore")
         XCTAssertTrue(exists(g.primary))
     }
@@ -487,7 +487,7 @@ final class FileOpsTests: XCTestCase {
         XCTAssertEqual(names(in: dest).count, final.receipt.items.count, "disk matches the receipt")
         XCTAssertEqual(final.completed, final.receipt.items.count)
 
-        try await ops.undo(final.receipt)
+        _ = try await ops.undo(final.receipt)
         XCTAssertEqual(names(in: dest), [], "Undo leaves nothing behind")
     }
 
@@ -560,9 +560,30 @@ final class FileOpsTests: XCTestCase {
         let ops = makeOps()
         XCTAssertEqual(ops.validate(stem: "", for: g), .empty)
         XCTAssertEqual(ops.validate(stem: "   ", for: g), .empty)
+        // Spec 28 §17.3 order: control, "/" ":", leading ".", edge space, trailing period.
+        XCTAssertEqual(ops.validate(stem: "/\n", for: g), .controlCharacters)
+        XCTAssertEqual(ops.validate(stem: ".a/b", for: g), .invalidCharacters)
+        XCTAssertEqual(ops.validate(stem: ".a ", for: g), .hidden)
+        XCTAssertEqual(ops.validate(stem: " a.", for: g), .edgeSpace)
+        XCTAssertEqual(RenameValidation.controlCharacters.message, "Names can't contain line breaks or other hidden characters.")
+        XCTAssertEqual(RenameValidation.edgeSpace.message, "Names can't start or end with a space.")
+        XCTAssertEqual(RenameValidation.trailingDot.message, "Names can't end with a period.")
+        XCTAssertEqual(RenameValidation.hidden.message, "Names starting with “.” are hidden. Choose another name.")
         XCTAssertEqual(ops.validate(stem: "a/b", for: g), .invalidCharacters)
         XCTAssertEqual(ops.validate(stem: "a:b", for: g), .invalidCharacters)
         XCTAssertEqual(ops.validate(stem: ".x", for: g), .hidden)
+        XCTAssertEqual(ops.validate(stem: "a\nb", for: g), .controlCharacters)
+        XCTAssertEqual(ops.validate(stem: "a\tb", for: g), .controlCharacters)
+        XCTAssertEqual(ops.validate(stem: "a\u{0}b", for: g), .controlCharacters)
+        XCTAssertEqual(ops.validate(stem: "Rome\n", for: g), .controlCharacters)
+        XCTAssertEqual(ops.validate(stem: " Rome", for: g), .edgeSpace)
+        XCTAssertEqual(ops.validate(stem: "Rome ", for: g), .edgeSpace)
+        XCTAssertEqual(ops.validate(stem: "Rome.", for: g), .trailingDot)
+        XCTAssertEqual(ops.validate(stem: "Rome 2", for: g), .valid, "a space inside is fine")
+        XCTAssertEqual(ops.validate(stem: "Rome.v2", for: g), .valid, "a dot inside is fine")
+        XCTAssertNotNil(RenameValidation.controlCharacters.message)
+        XCTAssertNotNil(RenameValidation.edgeSpace.message)
+        XCTAssertNotNil(RenameValidation.trailingDot.message)
         XCTAssertEqual(ops.validate(stem: String(repeating: "é", count: 126), for: g), .tooLong)
         XCTAssertEqual(ops.validate(stem: "DSC_0042", for: g), .unchanged)
         let taken = ops.validate(stem: "Venice", for: g)

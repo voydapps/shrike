@@ -51,7 +51,7 @@ public enum PreferencesTab: String, CaseIterable, Identifiable, Sendable {
     public var symbolName: String {
         switch self {
         case .general:         return "gearshape"
-        case .editing:         return "slider.horizontal.3"
+        case .editing:         return "pencil"
         case .shortcuts:       return "keyboard"
         case .thumbnails:      return "square.grid.2x2"
         case .performance:     return "speedometer"

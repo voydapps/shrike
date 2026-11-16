@@ -33,6 +33,7 @@ enum EditToolTransitionModal {
         alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
         let discard = alert.addButton(withTitle: "Discard Changes")
         discard.keyEquivalent = "d"; discard.keyEquivalentModifierMask = [.command]
+        discard.hasDestructiveAction = true   // red, never the default
         return alert
     }
 

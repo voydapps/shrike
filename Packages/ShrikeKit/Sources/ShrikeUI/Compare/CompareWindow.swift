@@ -113,6 +113,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     let watcherScope = WindowWatcherScope()
     lazy var fileOps = FileOps(metadata: services.metadataStore, backups: services.backupStore,
                                watchers: watcherScope)
+    let undoTopMark = UndoTopMark()
     let compareUndoManager: UndoManager = {
         let manager = UndoManager()
         manager.groupsByEvent = true
@@ -124,6 +125,16 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     private var isApplyingImage = false
     var trashChain: Task<Void, Never>?
     private var orientationWriteChain: Task<Void, Never>?
+    /// A pane's delayed rotate, from the first press until the write
+    /// lands, is open work (`ActiveWork` `.rotateWrite`) and is flushed at quit.
+    let rotateWriteHold = ActiveWorkHold(kind: .rotateWrite)
+    private var orientationWritesInFlight = 0 {
+        didSet { syncRotateWriteHold() }
+    }
+    var hasPendingOrientationWrites: Bool {
+        panes.contains { $0.pendingOrientation != nil } || orientationWritesInFlight > 0
+    }
+    func syncRotateWriteHold() { rotateWriteHold.set(hasPendingOrientationWrites) }
     private var sizeRefetchTask: Task<Void, Never>?
     private var shownOnceToasts: Set<String> = []
     private var isClosed = false
@@ -187,7 +198,8 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         }
         let toolbar = NSToolbar(identifier: "shrike.compare.toolbar")
         toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
+        // Sync and Fit carry their words.
+        toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = false
         self.toolbar = toolbar
         toolbarStyle = .unified
@@ -294,7 +306,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
 
     /// "2 images · Tab switches pane · ← → change its photo"; no hint for one pane.
     static func subtitle(paneCount: Int) -> String {
-        paneCount == 1 ? "1 photo" : "\(paneCount) photos · Tab switches pane · arrows change candidates"
+        paneCount == 1 ? "1 photo" : "\(paneCount) photos · Tab switches pane · Arrow keys change the photo"
     }
 
     /// Tab / ⇧Tab: the next or previous pane, wrapping. Nothing with one pane.
@@ -394,6 +406,10 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         } else {
             view.contentMode = .bestFit
         }
+        // The footer's size depends on the view turn just reset: an info read
+        // that landed before this (a rotate written to the file) showed it
+        // turned once more. Also refreshes the zoom pill.
+        updateFooter(pane)
     }
 
     private func readInfo(_ pane: ComparePane, url: URL) {
@@ -416,7 +432,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
                 pane.view.imageView.sourcePixelSize = size
                 // A new candidate that arrived while the other panes are zoomed was
                 // placed before its file size was known, so its "pixel" scale was in
-                // texture units and the photo came up too small (audit M3). Now that
+                // texture units and the photo came up too small. Now that
                 // the size is known, take the shared zoom and position again.
                 if !hadSize || self.needsLockedViewRefresh(pane) { self.applyLockedView(to: pane) }
                 self.requestFullResolutionIfNeeded(pane)
@@ -434,6 +450,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     }
 
     private func updateFooter(_ pane: ComparePane) {
+        pane.view.refreshZoomPill()
         guard list.indices.contains(pane.index) else { return }
         let info = pane.info
         pane.view.setFooter(CompareFooter.text(
@@ -513,6 +530,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
 
     private func viewChanged(_ view: MetalImageView) {
         guard let pane = pane(of: view) else { return }
+        pane.view.refreshZoomPill()
         requestFullResolutionIfNeeded(pane)
         guard isLocked, !isSyncing, !isApplyingImage else { return }
         syncOthers(from: pane)
@@ -525,6 +543,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         defer { isSyncing = false }
         for pane in panes where pane !== leader && pane.view.imageView.image != nil {
             copyView(from: leader, to: pane)
+            pane.view.refreshZoomPill()
             requestFullResolutionIfNeeded(pane)
         }
     }
@@ -555,6 +574,15 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
     func stepZoom(in zoomIn: Bool) {
         guard let pane = focusedPane, pane.view.imageView.image != nil else { return }
         pane.view.imageView.stepZoom(in: zoomIn)
+        if isLocked { syncOthers(from: pane) }
+    }
+
+    /// View ▸ Actual Size: 1 image pixel per screen pixel in the focused
+    /// pane (all panes when locked).
+    func actualSize() {
+        guard let pane = focusedPane, pane.view.imageView.image != nil else { return }
+        pane.view.imageView.zoomToActual()
+        requestFullResolutionIfNeeded(pane)
         if isLocked { syncOthers(from: pane) }
     }
 
@@ -597,7 +625,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
             moved = true
             load(pane)
         }
-        if !moved { if focusedPane === referencePane { toast(ToastContent("Uncheck Keep Photo to change this photo.")) } else { NSSound.beep() } }
+        if !moved { if focusedPane === referencePane { toast(ToastContent("Uncheck Keep photo to change this photo.")) } else { NSSound.beep() } }
     }
 
     /// Wheel or swipe navigation moves that pane (and focuses it). The
@@ -764,7 +792,7 @@ public final class CompareWindow: NSWindow, NSToolbarDelegate, MetalImageViewDel
         // the keys back with its grid, list or canvas focused, so the
         // next ⇧→ acts at once. Not when another
         // window already has the keys.
-        let handsBackKeys = isKeyWindow || NSApp.keyWindow == nil
+        let handsBackKeys = isKeyWindow || NSApp?.keyWindow == nil
         sizeRefetchTask?.cancel()
         for pane in panes { tearDown(pane) }
         panes = []
@@ -869,7 +897,7 @@ extension CompareWindow: ShrikeMenuActions, ShrikeCommandTarget {
         switch command {
         case .rate0, .rate1, .rate2, .rate3, .rate4, .rate5, .toggleFlag, .moveToTrash, .revealInFinder:
             return true
-        case .rotateLeft, .rotateRight, .zoomIn, .zoomOut, .zoomToFit:
+        case .rotateLeft, .rotateRight, .zoomIn, .zoomOut, .zoomToFit, .actualSize:
             return pane.view.imageView.image != nil
         default:
             return false
@@ -883,6 +911,8 @@ extension CompareWindow: ShrikeMenuActions, ShrikeCommandTarget {
             if let pane = focusedPane { NSWorkspace.shared.activateFileViewerSelecting([list[pane.index].primary]) }
         case .zoomToFit:
             fitAll()
+        case .actualSize:
+            actualSize()
         default:
             perform(CompareKeyMap.Hit(command: command, allPanes: false))
         }
@@ -972,9 +1002,10 @@ extension CompareWindow {
             MainActor.assumeIsolated { target.undoTrash(receipt, removed: removed, place: place) }
         }
         compareUndoManager.setActionName("Move to Trash")
-        toast(ToastContent.trashed(FileActionCopy.movedToTrash(receipt.trashedGroups))) { [weak self] in
-            self?.compareUndoManager.undo()
-        }
+        let content = BackupNotice.toast(ToastContent.trashed(FileActionCopy.movedToTrash(receipt.trashedGroups)),
+                                         notSaved: receipt.backupsNotSaved, of: receipt.trashedGroups.count)
+        toastsForTesting.append(content.message)
+        toastHost.showUndo(content, mark: undoTopMark, manager: compareUndoManager)
     }
 
     private func trashFailed(_ removed: RemovedGroup, place: CompareTrashPlace?, error: any Error) async {
@@ -1053,7 +1084,8 @@ extension CompareWindow {
                 }
                 self.reinsert(RemovedGroup(index: removed.index, group: restored), place: place)
                 self.origin?.compareDidRestore(result.groups)
-                self.toast(ToastContent(FileActionCopy.putBack(original: removed.group, restored: restored)))
+                self.toast(BackupNotice.toast(ToastContent(FileActionCopy.putBack(original: removed.group, restored: restored)),
+                                              notSaved: result.backupsNotSaved, of: result.groups.count))
             } catch {
                 self.toast(ToastContent(FileActionCopy.noLongerInTrash(name), kind: .error))
             }
@@ -1099,6 +1131,7 @@ extension CompareWindow {
             flushPendingOrientation(pane)
             pane.pendingOrientation = PendingOrientation(url: url, ops: [op])
         }
+        syncRotateWriteHold()
         pane.orientationTimer?.cancel()
         pane.orientationTimer = Task { @MainActor [weak self, weak pane] in
             try? await Task.sleep(for: ViewerWindow.orientationWriteDelay)
@@ -1113,19 +1146,22 @@ extension CompareWindow {
         pane.orientationTimer = nil
         guard let pending = pane.pendingOrientation else { return }
         pane.pendingOrientation = nil
+        defer { syncRotateWriteHold() }
         let writes = ViewerWindow.writeOps(for: pending.net)
         guard !writes.isEmpty, let store = services.backupStore else { return }
         let rotator = LosslessRotator(backupStore: store)
         let url = pending.url
         let previous = orientationWriteChain
+        orientationWritesInFlight += 1
         orientationWriteChain = Task { @MainActor [weak self] in
+            defer { self?.orientationWritesInFlight -= 1 }
             await previous?.value
             self?.watcherScope.ignore(paths: [url], for: .seconds(2))
             var results: [LosslessRotateResult] = []
             do {
                 for op in writes { results.append(try await rotator.apply(op, to: url)) }
             } catch {
-                if let first = results.first { try? await rotator.undo(first) }
+                if let first = results.first { _ = try? await rotator.undo(first) }
                 self?.toast(ToastContent(RotateCopy.failed(url.lastPathComponent), kind: .error))
                 self?.fileChanged(url)
                 return

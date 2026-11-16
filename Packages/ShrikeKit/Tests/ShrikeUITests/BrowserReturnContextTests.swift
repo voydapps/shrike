@@ -118,6 +118,48 @@ final class BrowserReturnContextTests: XCTestCase {
         }
     }
 
+    /// The Browser's listing reaches the paired viewer: the Info panel's
+    /// Size and Modified rows are filled in the turn the photo is shown.
+    func testPairedViewerInfoRowsComeFromTheListingInTheSameTurn() async throws {
+        let browser = coordinator.openBrowser(at: a, selecting: photo, services: services)
+        await browser.listingTask?.value
+        let viewer = try await openPair(browser)
+        let item = try XCTUnwrap(browser.contentController.visibleItems.first { $0.url == photo })
+        let panel = viewer.contentRoot.inspectorPanel
+        panel.headerReadsEnabled = true
+        panel.updateForURL(nil)
+        panel.updateForURL(photo)
+        let rows = panel.modelForTesting.facts.file
+        XCTAssertEqual(rows.first { $0.label == "Size" }?.value, FileSizeText.string(item.fileSize))
+        XCTAssertNotEqual(rows.first { $0.label == "Modified" }?.value, InspectorRows.emptyValue)
+    }
+
+    /// Through the coordinator: the viewer opens with the first photo's facts, and the
+    /// rest of the listing (the walk off the main thread) lands in its Info panel later.
+    func testCoordinatorFillsTheRestOfTheListingFromTheOffMainWalk() async throws {
+        let second = a.appendingPathComponent("second.jpg")
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(second as CFURL, UTType.jpeg.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, SaveFlowTests.image(width: 200, height: 100), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let browser = coordinator.openBrowser(at: a, selecting: photo, services: services)
+        await browser.listingTask?.value
+        let items = browser.contentController.visibleItems
+        let start = try XCTUnwrap(items.firstIndex { $0.url == photo })
+        let other = try XCTUnwrap(items.first { $0.url == second })
+        let viewer = try XCTUnwrap(coordinator.openPairedViewer(from: browser, groups: items.map { $0.group }, startIndex: start))
+        let panel = viewer.contentRoot.inspectorPanel
+        panel.headerReadsEnabled = true   // rows read in the same turn come from the listing only
+        func size(of url: URL) -> String? {
+            panel.updateForURL(nil); panel.updateForURL(url)
+            return panel.modelForTesting.facts.file.first { $0.label == "Size" }?.value
+        }
+        XCTAssertEqual(size(of: photo), FileSizeText.string(try XCTUnwrap(items.first { $0.url == photo }).fileSize),
+                       "the first photo's facts come at once")
+        // No event marks the walk's landing; poll the panel (bounded).
+        try await until { size(of: second) == FileSizeText.string(other.fileSize) }
+        try await until { viewer.navCoalescer.isIdle }
+    }
+
     func testCoordinatorReuseForCorruptOnlyFolderRefreshesSeenHintContextAndUnpair() async throws {
         let originalA = try Data(contentsOf: photo), originalB = try Data(contentsOf: broken)
         let browser = coordinator.openBrowser(at: a, selecting: photo, services: services)

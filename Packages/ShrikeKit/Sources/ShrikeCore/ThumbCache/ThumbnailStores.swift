@@ -159,7 +159,7 @@ final class ThumbnailDiskStore: @unchecked Sendable {
     /// through 10 000 files must not hold 10 000 decoded thumbnails.
     static let maxPendingWrites = 96
     /// ... and by size: 96 decoded 1024 px thumbnails are ~270 MB held until
-    /// the encoders catch up (audit MP-14). One write is always accepted.
+    /// the encoders catch up. One write is always accepted.
     static let maxPendingBytes = 32 * 1024 * 1024
 
     let root: URL
@@ -196,7 +196,7 @@ final class ThumbnailDiskStore: @unchecked Sendable {
         ]
         guard let image = CGImageSourceCreateImageAtIndex(src, 0, opts as CFDictionary) else { return nil }
         // A hit counts as use: the size trim deletes the oldest dates first,
-        // so a folder browsed every day is not the first to go (audit MP-11).
+        // so a folder browsed every day is not the first to go.
         utimes(url.path, nil)
         return image
     }
@@ -445,8 +445,8 @@ final class KeyStemMemo: @unchecked Sendable {
         }
     }
 
-    /// Entries each keep a URL alive: 200k was ~30 MB after a huge library
-    /// (audit MP-15); a grid needs far fewer at once.
+    /// Entries each keep a URL alive: 200k was ~30 MB after a huge library;
+    /// a grid needs far fewer at once.
     private let limit = 20_000
     private var map: [Key: String] = [:]
     private let lock = NSLock()

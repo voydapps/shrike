@@ -219,6 +219,9 @@ final class LivePhotoPlaybackTests: XCTestCase {
         let start = ContinuousClock.now
         badge.beginHover()
         XCTAssertTrue(badge.isHoverPending)
+        // Sleep is intended: half the product's hover delay is the point of the
+        // check, and the "not yet" assertion below is skipped when the machine
+        // oversleeps, so a loaded runner cannot fail it.
         try await Task.sleep(nanoseconds: UInt64(delay / 2 * 1_000_000_000))
         // A loaded runner can oversleep past the delay, and then playback
         // has legitimately started. Check "not yet" only if the measured
@@ -308,7 +311,12 @@ final class LivePhotoPlaybackTests: XCTestCase {
         XCTAssertFalse(badge.isHoverPending, "no hover timer when dimmed")
         content.playLivePhoto(withSound: false, fromHover: true)
         XCTAssertFalse(badge.requestPlay(withSound: false, fromHover: false), "a click does nothing either")
-        try await Task.sleep(nanoseconds: 400_000_000)
+        // No hover timer exists (asserted above), so there is nothing to wait for;
+        // let anything already queued run, then look.
+        for _ in 0..<3 {
+            await withCheckedContinuation { cont in DispatchQueue.main.async { cont.resume() } }
+            for _ in 0..<20 { await Task.yield() }
+        }
         XCTAssertNil(content.livePhotoPlayback)
 
         content.imageView.zoomToFit()

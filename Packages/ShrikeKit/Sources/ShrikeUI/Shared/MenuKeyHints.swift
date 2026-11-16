@@ -2,7 +2,7 @@
 //  MenuKeyHints.swift
 //  ShrikeUI
 //
-//  Bare keys shown in menus (spec 25 §13.1). A bare key must never be a
+//  Bare keys shown in menus. A bare key must never be a
 //  menu `keyEquivalent` (the menu would take "q" before a search field
 //  sees it), so the hint is an `NSMenuItemBadge` in the key column (the user
 //  chose badges over a tab-stop column, 2026-10-13). Display only: the key
@@ -27,7 +27,7 @@ enum MenuKeyHints {
         return nil
     }
 
-    /// A function-key binding (F2, F5) shown as a real key on a context-menu
+    /// A function-key binding shown as a real key on a context-menu
     /// row, with the binding's own modifiers (none), never the default ⌘.
     static func applyFunctionKey(to item: NSMenuItem, command: ShrikeCommand) {
         guard let binding = ShortcutTable.menuBinding(for: command), let key = binding.menuKeyEquivalent else { return }

@@ -85,6 +85,10 @@ public final class ViewerWindow: NSWindow {
     public weak var pairedBrowser: BrowserWindowController? {
         didSet { watcherScope.setPartner(pairedBrowser?.watcherScope) }
     }
+    /// The paired Browser selects the shown photo 150 ms after
+    /// the last change. Tests swap the clock.
+    static var browserFollowSchedule: TrailingDebouncer.Schedule = TrailingDebouncer.mainActorClock
+    lazy var browserFollow = TrailingDebouncer(delay: 0.15, schedule: Self.browserFollowSchedule)
     var reviewDecisionSerial: UInt64 = 0
     var reviewAutomaticMove = false
     var reviewPersistenceBanner: PersistenceBanner?
@@ -101,13 +105,13 @@ public final class ViewerWindow: NSWindow {
     var hiddenTrimTask: Task<Void, Never>?
     /// Hidden by Return-to-Browser and waiting to be shown again.
     var isParkedForBrowser = false
-    /// The ⌥R readability check (spec 24 §4).
+    /// The ⌥R readability check.
     var rawSwitchTask: Task<Void, Never>?
     /// FastStone preset: Esc in paired full screen also returns to the Browser.
     var returnToBrowserAfterFullScreenExit = false
     /// Go ▸ Go to Folder… while its sheet is up.
     var goToFolderSheet: GoToFolderSheet?
-    /// The pinned folder (spec 23-workspace); tests inject their own.
+    /// The pinned folder; tests inject their own.
     var workspaceStore: WorkspaceStore = .standard()
     /// The user's toolbar setting, read as full screen starts and
     /// put back in `didExitFullScreen`. AppKit restores the
@@ -129,6 +133,13 @@ public final class ViewerWindow: NSWindow {
     var savePanelResponderForTesting: ((URL, String?) -> URL?)?
     var savePanelAsyncResponderForTesting: ((URL, String?) async -> URL?)?
     var exportCheckpointForTesting: (@Sendable (ImageExporter.Checkpoint) async throws -> Void)?
+    /// How long a written in-place save waits for a navigation (a list rebuild) to
+    /// end before it says "Saved" without an undo (tests shorten it).
+    var saveOwnershipWait: Duration = .seconds(2)
+    /// After that, how long it keeps waiting, still locked, to close out its session.
+    var saveCloseOutLimit: Duration = .seconds(20)
+    /// See `UnclosedInPlaceWrite` (ViewerWindow+Save.swift).
+    var unclosedInPlaceWrite: UnclosedInPlaceWrite?
     /// The latest Undo / Redo Save or Revert file swap.
     var pendingFileVersionTask: Task<Void, Never>?
     /// Bumps when a pencil state read lands (tests).
@@ -143,7 +154,20 @@ public final class ViewerWindow: NSWindow {
     var textureRefetchCount = 0
     var textureLongEdgeForTesting: Int?
     /// Rotations / flips waiting for the 500 ms quiet period.
-    var pendingOrientation: PendingOrientation?
+    var pendingOrientation: PendingOrientation? {
+        didSet { syncRotateWriteHold() }
+    }
+    /// From the first press until the last write lands, the delayed
+    /// rotate write is open work (`ActiveWork` `.rotateWrite`).
+    let rotateWriteHold = ActiveWorkHold(kind: .rotateWrite)
+    /// Which undo the Undo button of a file-action toast may still undo.
+    let undoTopMark = UndoTopMark()
+    var orientationWritesInFlight = 0 {
+        didSet { syncRotateWriteHold() }
+    }
+    func syncRotateWriteHold() {
+        rotateWriteHold.set(pendingOrientation != nil || orientationWritesInFlight > 0)
+    }
     var orientationTimer: Task<Void, Never>?
     /// Orientation writes run one after another.
     var orientationWriteChain: Task<Void, Never>?
@@ -308,6 +332,8 @@ public final class ViewerWindow: NSWindow {
         toolbarStyle = .unified
         minSize = EditLayout.windowMinSize
         backgroundColor = .black
+        // The viewer is always dark, like Photos and Quick Look.
+        appearance = NSAppearance(named: .darkAqua)
 
         // Canvas + system inspector item. The inspector view is built
         // on first expand (no EXIF read on the first-pixel path).
@@ -325,17 +351,19 @@ public final class ViewerWindow: NSWindow {
             if shown { self?.contentRoot.inspectorPanel.headerReadsEnabled = true }
             self?.contentRoot.setWindowedInspectorShown(shown)
         }
-        // Edit mode on a narrow canvas: the inspector steps aside (spec 26 §5).
+        // Edit mode on a narrow canvas: the inspector steps aside.
         contentRoot.onEditModeActiveChanged = { [weak self] active in
+            // In edit mode ⌘Z undoes edit steps: an open file-action Undo toast goes away.
+            if active { self?.undoTopMark.invalidate() }
             self?.editModeLayoutChanged(active: active)
         }
         // Another app changed the photo's file during the edit: the pre-edit image is not put
-        // back; the file's current pixels are decoded fresh (0.2.28 gate D1).
+        // back; the file's current pixels are decoded fresh.
         contentRoot.onPreEditImageStale = { [weak self] in
             self?.contentRoot.reloadInspectorFile()
             self?.redrawDisplayedKeepingView(fit: true)
         }
-        // 0.2.10 audit item 3: a resize that bypasses `contentMinSize` (a programmatic
+        // A resize that bypasses `contentMinSize` (a programmatic
         // or Accessibility `setFrame`) must not leave edit mode under 648 pt.
         NotificationCenter.default.addObserver(
             self, selector: #selector(editWindowDidResize(_:)),
@@ -353,8 +381,14 @@ public final class ViewerWindow: NSWindow {
         let bar = ViewerWindowToolbar(host: nil)
         toolbarController = bar
         // The Edit item's tooltip says why Edit is off (RAW shown, decode error).
-        contentRoot.onEditEntryReasonChanged = { [weak bar] reason in bar?.setEditExtraLine(reason) }
+        // A changed reason also re-checks the items at once (no event may follow).
+        contentRoot.onEditEntryReasonChanged = { [weak bar, weak self] reason in
+            bar?.setEditExtraLine(reason)
+            bar?.setRotateExtraLine(self?.contentRoot.rotateEntryReason)
+            self?.toolbar?.validateVisibleItems()
+        }
         bar.setEditExtraLine(contentRoot.editEntryReason)
+        navCoalescer.onIdle = { [weak self] in self?.refreshEditAvailability() }
         toolbar = bar.toolbar
         bar.host = self
         toolbarHover = ToolbarHover.install(in: self)
@@ -380,10 +414,10 @@ public final class ViewerWindow: NSWindow {
             guard let self else { return }
             if let state {
                 self.subtitle = state.subtitle
-                self.isDocumentEdited = state.hasEdits
+                self.isDocumentEdited = state.hasUnsavedChanges
             } else {
                 self.isDocumentEdited = false
-                // Any exit outcome: the size is read again (spec 25 §1.1).
+                // Any exit outcome: the size is read again.
                 self.forgetDrawnSizes()
                 self.updateTitle()
             }
@@ -542,7 +576,7 @@ public final class ViewerWindow: NSWindow {
     /// The visible hover platter of the toolbar (macOS 26+).
     var toolbarHover: ToolbarHover?
     var autoHider: TitlebarAutoHider?
-    /// Spec 27 V7: the frames before and after the window widened for edit mode.
+    /// The frames before and after the window widened for edit mode.
     var editWidenRestore: (original: NSRect, widened: NSRect)?
     /// True while `setEditWidthFrame` runs (scopes the 150 ms resize time).
     var editWidthResizing = false
@@ -565,9 +599,13 @@ public final class ViewerWindow: NSWindow {
     /// Oriented pixel sizes read from file headers, by URL, so "100 %" is
     /// known at once when a photo comes back.
     var headerPixelSizes: [URL: CGSize] = [:]
+    /// Bumps on every title update; a header read that a later update passed is dropped.
+    var headerReadGeneration: UInt64 = 0
     /// Files turned for viewing only (types that can't be written): the
     /// turn is dropped on navigation, so their cached size is too.
     var viewOnlyTurnedURLs: Set<URL> = []
+    /// Turned before the size read landed (written file → shown file): the write's landing reads the size again.
+    var turnedWhileSizeUnknown: [URL: URL] = [:]
     var fullResHairlineShown = false
     /// The edit exit alert asked by a close or a
     /// navigation. One at a time; a second request while it runs is dropped.
@@ -583,6 +621,19 @@ public final class ViewerWindow: NSWindow {
     /// hold the window object (AppKit, accessibility clients, a late
     /// task), the pixels are gone.
     /// Shown again after being parked: bring back the detail a trim dropped.
+    /// A sheet is its own window and does not take the
+    /// viewer's dark appearance; every sheet (Rename, Go to Folder, Slideshow,
+    /// alerts, panels) begins here, so this one place makes it dark.
+    public override func beginSheet(_ sheetWindow: NSWindow, completionHandler handler: ((NSApplication.ModalResponse) -> Void)? = nil) {
+        sheetWindow.appearance = appearance
+        super.beginSheet(sheetWindow, completionHandler: handler)
+    }
+
+    public override func beginCriticalSheet(_ sheetWindow: NSWindow, completionHandler handler: ((NSApplication.ModalResponse) -> Void)? = nil) {
+        sheetWindow.appearance = appearance
+        super.beginCriticalSheet(sheetWindow, completionHandler: handler)
+    }
+
     public override func becomeKey() {
         super.becomeKey()
         guard isParkedForBrowser else { return }
@@ -590,7 +641,7 @@ public final class ViewerWindow: NSWindow {
         requestFullResolutionIfNeeded()
     }
 
-    // A hidden viewer's canvas holds a 1 x 1 drawable (MP-04). Every way of
+    // A hidden viewer's canvas holds a 1 x 1 drawable. Every way of
     // showing the window first restores it and draws one frame at full size.
     public override func makeKeyAndOrderFront(_ sender: Any?) {
         contentRoot.imageView.unparkCanvas()
@@ -613,6 +664,7 @@ public final class ViewerWindow: NSWindow {
         // Final close is already authorized by windowShouldClose. Retire the
         // attached canvas before AppKit orders the window out; afterwards its
         // live-drawable guard must (correctly) refuse an invisible window.
+        browserFollow.cancel()
         tearDownAfterClose()
         super.close()
     }
@@ -671,6 +723,47 @@ public final class ViewerWindow: NSWindow {
     internal var contentRootForTesting: ViewerContentView { contentRoot }
     /// The canvas view that takes the keys (Compare hands them back here).
     var canvasResponder: NSView { contentRoot }
+
+    // With the Crop tool chosen, Tab runs panel fields ↔ crop frame.
+    public override func selectKeyView(following view: NSView) {
+        if let target = contentRoot.editModeController.cropKeyLoopTarget(leaving: view, forward: true) {
+            makeFirstResponder(target)
+        } else {
+            super.selectKeyView(following: view)
+        }
+    }
+
+    public override func selectKeyView(preceding view: NSView) {
+        if let target = contentRoot.editModeController.cropKeyLoopTarget(leaving: view, forward: false) {
+            makeFirstResponder(target)
+        } else {
+            super.selectKeyView(preceding: view)
+        }
+    }
+
+    public override func selectNextKeyView(_ sender: Any?) {
+        if let view = keyLoopView(of: firstResponder),
+           let target = contentRoot.editModeController.cropKeyLoopTarget(leaving: view, forward: true) {
+            makeFirstResponder(target)
+        } else {
+            super.selectNextKeyView(sender)
+        }
+    }
+
+    public override func selectPreviousKeyView(_ sender: Any?) {
+        if let view = keyLoopView(of: firstResponder),
+           let target = contentRoot.editModeController.cropKeyLoopTarget(leaving: view, forward: false) {
+            makeFirstResponder(target)
+        } else {
+            super.selectPreviousKeyView(sender)
+        }
+    }
+
+    /// The key-loop view behind a responder (a field editor stands for its field).
+    private func keyLoopView(of responder: NSResponder?) -> NSView? {
+        if let text = responder as? NSText, text.isFieldEditor, let field = text.delegate as? NSView { return field }
+        return responder as? NSView
+    }
     public override var canBecomeMain: Bool { true }
     public override var acceptsFirstResponder: Bool { true }
 
@@ -1545,11 +1638,24 @@ public final class ViewerWindow: NSWindow {
         contentRoot.userChangedZoom()
     }
 
+    /// The zoom keys. Pure.
+    nonisolated static func isZoom(_ action: ViewerAction) -> Bool {
+        switch action {
+        case .zoomActualSize, .zoom100, .zoomBestFit, .fitToWindow, .zoom200, .zoom300, .zoom1000,
+             .zoomIn, .zoomOut, .fitWidth, .fitHeight: return true
+        default: return false
+        }
+    }
+
     internal func dispatch(_ action: ViewerAction) {
         if action == .slideshow { reviewDecisionSerial &+= 1 }
         if Self.leavesPhoto(action), !reviewAutomaticMove { reviewDecisionSerial &+= 1 }
         // RAW files are never written: refuse edits and rotates on that view.
         if refuseWriteWhileRAWShown(action) { return }
+        // On a broken file the zoom keys do nothing, as the grey Zoom
+        // items (the pixels behind the error card are the previous photo's). No
+        // toast: the reason line says "nothing to edit", which is wrong for zoom.
+        if contentRoot.isShowingDecodeError, Self.isZoom(action) { return }
         // Any action during a swipe finishes it at once.
         contentRoot.imageView.finishActiveSwipe()
         // Leaving the photo while editing asks first
@@ -1736,6 +1842,8 @@ public final class ViewerWindow: NSWindow {
         case .saveEditedFile:
             Task { [weak self] in await self?.saveEditedFile(asPanel: false) }
         case .saveEditedFileAs:
+            // The menu and ⇧⌘S: the same rule as the toolbar's Save Copy….
+            guard canPerform(.saveAs) else { break }
             Task { [weak self] in await self?.saveEditedFile(asPanel: true) }
         case .rotateLossless(let quarters), .editRotate90(let quarters):
             // One rotate concept. Edit mode turns the recipe;
@@ -1794,6 +1902,15 @@ public final class ViewerWindow: NSWindow {
         return intended.id == FileImageSource(url: source).id
     }
 
+    /// Re-reads "still loading" after the inputs of
+    /// `canBeginEditingDisplayedPhoto` change (photo shown, full resolution in,
+    /// navigation idle). The toolbar is re-checked only when it changed.
+    func refreshEditAvailability() {
+        guard !didTearDown else { return }
+        let loading = contentRoot.imageView.image != nil && !canBeginEditingDisplayedPhoto
+        contentRoot.editBlockedWhileLoading = loading   // didSet: reason + toolbar, only on a change
+    }
+
     var canBeginEditingDisplayedPhoto: Bool {
         guard navCoalescer.isIdle, let item = displayedItem,
               editSourceMatchesDisplayed(item.group.primary, item: item),
@@ -1809,19 +1926,19 @@ public final class ViewerWindow: NSWindow {
         }
         // A photo that cannot be opened has nothing to edit. The image view still holds the
         // previous photo's pixels behind the error card, so without this the keys (E, C, R...)
-        // would edit and save the wrong pixels over the broken file (spec 26 §2).
+        // would edit and save the wrong pixels over the broken file.
         if contentRoot.isShowingDecodeError {
             contentRoot.toast(ViewerContentView.decodeErrorEditReason)
             return
         }
         guard contentRoot.imageView.image != nil else {
-            contentRoot.toast("No photo to edit")
+            contentRoot.toast(ViewerGreyReason.noPhotoText)
             return
         }
         guard !didTearDown, editLoadTask == nil else { return }
         guard canBeginEditingDisplayedPhoto, let item = displayedItem,
               !contentRoot.editModeController.isActive else {
-            contentRoot.toast("Wait for the current photo to finish loading before editing.")
+            contentRoot.toast(ViewerGreyReason.loadingToast)
             return
         }
         reviewDecisionSerial &+= 1
@@ -1961,6 +2078,59 @@ public final class ViewerWindow: NSWindow {
             guard !Task.isCancelled, let self, !self.didTearDown,
                   !self.contentRoot.isEditModeActive, self.displayedItem != nil else { return }
             self.enterEditMode(landOn: nil)
+        }
+    }
+
+    /// Edit Photo from the Browser: waits until `url` is the shown photo and can
+    /// be edited, then enters edit mode with no tool. Drops the request when the viewer shows
+    /// another photo for the whole wait, on teardown, or after `timeout`; at the timeout it
+    /// asks once more, so the viewer's own "still loading" toast explains the refusal.
+    func enterEditModeWhenShown(_ url: URL, timeout: Duration = .seconds(5)) {
+        editReentryTask?.cancel()
+        editReentryGeneration &+= 1
+        let generation = editReentryGeneration
+        editReentryTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.editReentryGeneration == generation { self.editReentryTask = nil }
+            }
+            let step = Duration.milliseconds(20)
+            var waited = Duration.zero
+            var cancelsWhenAsked: Int?
+            while let self, !Task.isCancelled, !self.didTearDown {
+                // An unsaved-edits question for ANOTHER photo is up. The 5 s wait
+                // starts once it is answered. The answer is known where it is asked: Cancel bumps
+                // `exitQuestionCancelCount`, and a Cancel of a question this wait saw drops the
+                // request at once (Save and Discard go on as before).
+                let editingOther = self.contentRoot.isEditModeActive && self.displayedItem?.group.primary != url
+                let questionOpen = editingOther && self.attachedSheet != nil
+                let cancels = self.contentRoot.editModeController.exitQuestionCancelCount
+                if questionOpen, cancelsWhenAsked == nil { cancelsWhenAsked = cancels }
+                switch EditReentryWait.step(questionOpen: questionOpen,
+                                            cancelledSinceAsked: cancelsWhenAsked.map { cancels != $0 } ?? false) {
+                case .drop: return
+                case .holdClock:
+                    waited = .zero
+                    try? await Task.sleep(for: step)
+                    continue
+                case .proceed:
+                    if !questionOpen { cancelsWhenAsked = nil }
+                }
+                let shown = self.displayedItem?.group.primary == url
+                if shown {
+                    if self.contentRoot.isEditModeActive { return }
+                    if self.contentRoot.isShowingDecodeError
+                        || (self.canBeginEditingDisplayedPhoto && self.contentRoot.imageView.image != nil) {
+                        self.enterEditMode(landOn: nil)
+                        return
+                    }
+                }
+                if waited >= timeout {
+                    if shown { self.enterEditMode(landOn: nil) }
+                    return
+                }
+                try? await Task.sleep(for: step)
+                waited += step
+            }
         }
     }
 
@@ -2116,3 +2286,18 @@ public final class ViewerWindow: NSWindow {
     }
 }
 
+/// What the wait in `enterEditModeWhenShown` does while the paired viewer
+/// asks about unsaved edits of another photo. Pure.
+enum EditReentryWait: Equatable {
+    /// The question is up: the 5 s clock does not run.
+    case holdClock
+    /// No question: wait as before.
+    case proceed
+    /// The question this wait saw was answered Cancel: the photo will not be shown, end now.
+    case drop
+
+    static func step(questionOpen: Bool, cancelledSinceAsked: Bool = false) -> EditReentryWait {
+        if cancelledSinceAsked { return .drop }
+        return questionOpen ? .holdClock : .proceed
+    }
+}

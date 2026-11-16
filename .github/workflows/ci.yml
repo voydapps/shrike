@@ -39,6 +39,9 @@ jobs:
       - name: Release-process tests
         timeout-minutes: 5
         run: python3 Scripts/tests/test-release-gate.py
+      - name: Install-script quit tests
+        timeout-minutes: 5
+        run: python3 Scripts/tests/test-quit-shrike.py
       - name: Site and changelog page checks
         timeout-minutes: 5
         run: |

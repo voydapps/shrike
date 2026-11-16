@@ -130,11 +130,26 @@ extension BrowserWindowController {
     }
 
     /// "Folder gone" content state, with Go to Enclosing Folder.
-    func showFolderGone(_ folder: URL) {
+    /// `disk` is the gone disk's name when the caller already knows it;
+    /// else a /Volumes path is checked off the main thread (a
+    /// lost network share can block a check for seconds).
+    func showFolderGone(_ folder: URL, disk: String? = nil) {
         stopWatching()
-        contentController.showFolderGone(folder) { [weak self] in
+        contentController.showFolderGone(folder, disk: disk) { [weak self] in
             guard let self else { return }
-            self.navigate(to: Self.nearestExistingAncestor(of: folder))
+            let generation = self.folderRequestGeneration
+            Task { @MainActor [weak self] in
+                let target = await Task.detached { BrowserWindowController.nearestExistingAncestor(of: folder) }.value
+                guard let self, self.acceptsFolderRequest(generation, folder: folder) else { return }
+                self.navigate(to: target)
+            }
+        }
+        if disk == nil, folder.standardizedFileURL.path.hasPrefix("/Volumes/") {
+            Task { @MainActor [weak self] in
+                guard let name = await Task.detached(operation: { BrowserWindowController.goneVolumeName(of: folder) }).value
+                else { return }
+                self?.contentController.setFolderGoneDisk(name, for: folder)
+            }
         }
         updateInspectorFromSelection()
         // The status bar and subtitle stop counting the

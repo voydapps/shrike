@@ -82,7 +82,7 @@ public enum ScrollAction: Sendable, Equatable {
 public struct ScrollInputRouter: Sendable {
     /// Points one wheel line pans when zoomed in.
     public static let panPointsPerLine: Double = 24
-    /// Zoom per wheel notch (12 %). Audit 2026-10-13: 1.25 per line took
+    /// Zoom per wheel notch (12 %). Earlier, 1.25 per line took
     /// 25 % to 1600 % in a few turns. The size of a notch does not matter
     /// (an accelerated wheel sends 3-10); a small tick counts in proportion.
     public static let zoomPerLine: Double = 1.12

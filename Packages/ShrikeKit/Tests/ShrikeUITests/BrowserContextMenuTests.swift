@@ -30,9 +30,10 @@ final class BrowserContextMenuTests: XCTestCase {
         let browser = BrowserWindowController(services: ShrikeServices.makeDefault(), initialFolder: dir)
         defer { browser.close() }
         let titles = browser.contentController.contextMenuTitlesForTesting
-        XCTAssertEqual(Array(titles.suffix(8)),
-                       ["Rating", "Flag", "—", "Copy to Folder", "Move to Folder", "Rename…", "—",
-                        "Move to Trash"])
+        // Spec 28 §12: the full list is pinned in GridContextMenuModelTests.
+        XCTAssertEqual(Array(titles.suffix(13)),
+                       ["Rating", "Flag", "Tags…", "—", "Copy to Folder", "Move to Folder", "Rename…",
+                        ShrikeCommand.revertToOriginal.title, "—", "Copy", "Copy Path", "—", "Move to Trash"])
         XCTAssertEqual(titles.first, "Open")
     }
 

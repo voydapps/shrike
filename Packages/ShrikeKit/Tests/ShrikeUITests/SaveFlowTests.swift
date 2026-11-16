@@ -166,6 +166,52 @@ final class SaveFlowTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), after)
     }
 
+    /// The Save toast's Undo undoes the save only: once anything else is on the
+    /// undo stack the toast goes away, and its button would not undo that other action.
+    func testSaveToastUndoUndoesOnlyTheSave() async throws {
+        let url = dir.appendingPathComponent("a.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(saved)
+        let host = viewer.contentRootForTesting.toastHost
+        XCTAssertEqual(host.content?.actionTitle, "Undo", "positive control")
+
+        // Something else lands on the stack after the save.
+        final class Box { var undone = false }
+        let other = Box()
+        let manager = viewer.undoManagerForTesting
+        // A later event: the run loop closes the save's own undo group first.
+        try await Task.sleep(for: .milliseconds(50))
+        manager.beginUndoGrouping()
+        manager.registerUndo(withTarget: other) { $0.undone = true }
+        manager.setActionName("Other")
+        manager.endUndoGrouping()
+        XCTAssertNotEqual(host.content?.message, "Saved “a.jpg”. Original backup available.",
+                          "the save toast is gone")
+        XCTAssertNotEqual(try Data(contentsOf: url), before, "the save stays")
+        XCTAssertFalse(other.undone)
+        XCTAssertEqual(manager.undoActionName, "Other")
+    }
+
+    func testSaveToastUndoUndoesTheSaveWhenNothingCameAfter() async throws {
+        let url = dir.appendingPathComponent("a.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(saved)
+        let host = viewer.contentRootForTesting.toastHost
+        XCTAssertEqual(host.content?.actionTitle, "Undo")
+        host.beginPressForTesting()
+        host.performToastAction(nil)
+        await viewer.waitForFileVersionSwap()
+        XCTAssertEqual(try Data(contentsOf: url), before, "the save is undone")
+    }
+
     /// FS-7: another program rewrites the file while it is open in edit mode.
     private func rewriteBehindTheEditorsBack(_ url: URL) throws -> Data {
         let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)!
@@ -429,5 +475,335 @@ final class SaveFlowTests: XCTestCase {
         XCTAssertTrue(mayQuit, "after the save, the normal exit flow ran (Don't Save)")
         XCTAssertEqual(asked, 1)
         XCTAssertEqual(viewer.contentRootForTesting.toastHost.content?.message, ViewerWindow.quitWaitsForSave)
+    }
+}
+
+// MARK: - Pass 2k Q2: edit answers wait for the work question
+
+extension SaveFlowTests {
+
+    /// Runs `prepareToQuit` with a copy "running", a real editing viewer,
+    /// `edit` as the edit answer and `work` as the work answer (0 Quit
+    /// Anyway, 1 Cancel). Returns the quit result and the question order.
+    private func quitWithWork(_ viewer: ViewerWindow, edit: EditExitModal.Choice, work: Int)
+        async -> (quits: Bool, asked: [String]) {
+        var asked: [String] = []
+        EditExitModal.responderForTesting = { _ in asked.append("edits"); return edit }
+        let c = WindowCoordinator()
+        c.runningWorkOverride = { QuitWork(transfers: [.init(verb: .copy, completed: 1, total: 9)]) }
+        c.unsavedEditsAsker = { await WindowCoordinator.askUnsavedEdits(in: [viewer]) }
+        c.quitAlertResponder = { _, _ in asked.append("work"); return work }
+        c.stoppedForQuitOverride = { true }
+        c.flushOverride = { true }
+        let quits = await c.prepareToQuit()
+        EditExitModal.responderForTesting = nil
+        return (quits, asked)
+    }
+
+    private func hasPendingEdits(_ viewer: ViewerWindow) async -> Bool {
+        let editor = viewer.contentRootForTesting.editModeController
+        guard editor.isActive, let recipe = editor.recipe else { return false }
+        return !(await recipe.operations.isEmpty)
+    }
+
+    func testDontSaveThenCancelKeepsTheEdits() async throws {
+        let url = dir.appendingPathComponent("q2a.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        let result = await quitWithWork(viewer, edit: .discard, work: 1)
+        XCTAssertFalse(result.quits)
+        XCTAssertEqual(result.asked, ["edits", "work"], "edits first, then work; each once")
+        let pending = await hasPendingEdits(viewer)
+        XCTAssertTrue(pending, "Cancel at the work question: the edits are still there")
+        XCTAssertFalse(viewer.contentRootForTesting.editModeController.isTransitioning)
+        XCTAssertEqual(try Data(contentsOf: url), before)
+    }
+
+    func testSaveThenCancelLeavesTheFileAndTheEdits() async throws {
+        let url = dir.appendingPathComponent("q2b.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        let result = await quitWithWork(viewer, edit: .save, work: 1)
+        XCTAssertFalse(result.quits)
+        XCTAssertEqual(try Data(contentsOf: url), before, "nothing was saved")
+        let pending = await hasPendingEdits(viewer)
+        XCTAssertTrue(pending)
+    }
+
+    func testDontSaveThenQuitAnywayDiscardsAndQuits() async throws {
+        let url = dir.appendingPathComponent("q2c.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        let result = await quitWithWork(viewer, edit: .discard, work: 0)
+        XCTAssertTrue(result.quits)
+        XCTAssertEqual(result.asked, ["edits", "work"], "the answer is not asked again")
+        XCTAssertFalse(viewer.contentRootForTesting.isEditModeActive)
+        XCTAssertEqual(try Data(contentsOf: url), before)
+    }
+
+    func testSaveThenQuitAnywaySavesAndQuits() async throws {
+        let url = dir.appendingPathComponent("q2d.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        let result = await quitWithWork(viewer, edit: .save, work: 0)
+        XCTAssertTrue(result.quits)
+        XCTAssertEqual(result.asked, ["edits", "work"])
+        XCTAssertFalse(viewer.contentRootForTesting.isEditModeActive)
+        XCTAssertNotEqual(try Data(contentsOf: url), before, "saved")
+    }
+
+    func testFailedSaveAfterQuitAnywayCancelsTheQuit() async throws {
+        let url = dir.appendingPathComponent("q2e.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let failing = BackupStore(root: root.appendingPathComponent("Bad", isDirectory: true),
+                                  retentionDays: { 30 }, maxBytes: { 1 << 30 },
+                                  now: { Date() }, copier: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let viewer = try await viewer(url, store: failing)
+        defer { viewer.close() }
+        viewer.alertResponderForTesting = { _ in 1 }
+        try await enterEditWithRotate(viewer, url: url)
+        let result = await quitWithWork(viewer, edit: .save, work: 0)
+        XCTAssertFalse(result.quits, "a failed save cancels the quit")
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        let pending = await hasPendingEdits(viewer)
+        XCTAssertTrue(pending)
+    }
+
+    /// R1 follow-up: a REAL viewer starts editing while the work question
+    /// is up. Quit Anyway asks about those edits once; Don't Save quits;
+    /// Cancel keeps the app, the edits and the work. The viewer list is
+    /// injected (a fresh coordinator has none registered); the ask and the
+    /// re-check are the real functions.
+    private func editsDuringWorkQuestion(_ viewer: ViewerWindow, url: URL, edit: EditExitModal.Choice)
+        async -> (quits: Bool, edits: Int, stops: Int) {
+        var edits = 0, stops = 0
+        EditExitModal.responderForTesting = { _ in edits += 1; return edit }
+        defer { EditExitModal.responderForTesting = nil }
+        let c = WindowCoordinator()
+        c.runningWorkOverride = { QuitWork(transfers: [.init(verb: .copy, completed: 1, total: 9)]) }
+        c.unsavedEditsAsker = { await WindowCoordinator.askUnsavedEdits(in: [viewer]) }
+        c.unsavedEditsRecheck = { await WindowCoordinator.resolveUnsavedEdits(in: [viewer]) }
+        c.stoppedForQuitOverride = { stops += 1; return true }
+        c.flushOverride = { true }
+        c.quitAlertPresenter = { _, completion in
+            Task { @MainActor in
+                try? await self.enterEditWithRotate(viewer, url: url)   // edits begun while the question is up
+                // Quit Anyway is button index 0 of two (the right-to-left order of `ShrikeAlert.index`).
+                completion(NSApplication.ModalResponse(rawValue: NSApplication.ModalResponse.alertFirstButtonReturn.rawValue + 1))
+            }
+            return { _ in }
+        }
+        let quits = await c.prepareToQuit()
+        return (quits, edits, stops)
+    }
+
+    func testEditsBegunDuringTheWorkQuestionDontSaveQuits() async throws {
+        let url = dir.appendingPathComponent("r1a.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        let result = await editsDuringWorkQuestion(viewer, url: url, edit: .discard)
+        XCTAssertTrue(result.quits)
+        XCTAssertEqual(result.edits, 1, "asked once for that viewer")
+        XCTAssertEqual(result.stops, 1, "the work is stopped after the answer")
+        XCTAssertFalse(viewer.contentRootForTesting.isEditModeActive)
+        XCTAssertEqual(try Data(contentsOf: url), before)
+    }
+
+    func testEditsBegunDuringTheWorkQuestionCancelKeepsEverything() async throws {
+        let url = dir.appendingPathComponent("r1b.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        let result = await editsDuringWorkQuestion(viewer, url: url, edit: .cancel)
+        XCTAssertFalse(result.quits)
+        XCTAssertEqual(result.edits, 1)
+        XCTAssertEqual(result.stops, 0, "Cancel: the work goes on")
+        let pending = await hasPendingEdits(viewer)
+        XCTAssertTrue(pending, "the edits are still there")
+        XCTAssertEqual(try Data(contentsOf: url), before)
+    }
+
+    /// Plain ⌘Q with unsaved edits and no work: one question, not two.
+    func testPlainQuitWithEditsAndNoWorkAsksOnce() async throws {
+        let url = dir.appendingPathComponent("r1c.jpg")
+        _ = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        var edits = 0
+        EditExitModal.responderForTesting = { _ in edits += 1; return .discard }
+        defer { EditExitModal.responderForTesting = nil }
+        let c = WindowCoordinator()
+        c.runningWorkOverride = { QuitWork() }
+        c.unsavedEditsResolver = { await WindowCoordinator.resolveUnsavedEdits(in: [viewer]) }
+        c.unsavedEditsRecheck = { await WindowCoordinator.resolveUnsavedEdits(in: [viewer]) }
+        c.flushOverride = { true }
+        let quits = await c.prepareToQuit()
+        XCTAssertTrue(quits)
+        XCTAssertEqual(edits, 1)
+    }
+
+    /// No work running: one question, acted on at once (as before).
+    func testWithoutWorkTheEditAnswerActsAtOnce() async throws {
+        let url = dir.appendingPathComponent("q2f.jpg")
+        _ = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        EditExitModal.responderForTesting = { _ in .discard }
+        defer { EditExitModal.responderForTesting = nil }
+        let c = WindowCoordinator()
+        c.runningWorkOverride = { QuitWork() }
+        c.unsavedEditsResolver = { await WindowCoordinator.resolveUnsavedEdits(in: [viewer]) }
+        c.unsavedEditsAsker = { XCTFail("no deferring without work"); return nil }
+        c.flushOverride = { true }
+        let quits = await c.prepareToQuit()
+        XCTAssertTrue(quits)
+        XCTAssertFalse(viewer.contentRootForTesting.isEditModeActive)
+    }
+
+    // MARK: - ⌘S writes only when Done would (pass 2zc)
+
+    /// Oriented size of the file on disk (EXIF orientation applied).
+    private func orientedSize(_ url: URL) throws -> CGSize {
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                     kCGImageSourceCreateThumbnailWithTransform: true,
+                                     kCGImageSourceThumbnailMaxPixelSize: 64]
+        let image = try XCTUnwrap(CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary))
+        return CGSize(width: image.width, height: image.height)
+    }
+
+    /// Quarter turns that cancel out are no change for Done, the status and
+    /// ⌘S alike. The raw edit list still holds both steps (undo needs them).
+    func testQuarterTurnsLeftAndRightCancelOut() async {
+        let recipe = EditRecipe()
+        let start = await recipe.checkpoint()
+        await recipe.append(.rotate90(quarters: -1))
+        await recipe.append(.rotate90(quarters: 1))
+        let changed = await recipe.hasContentChanges(since: start)
+        let ops = await recipe.snapshot()
+        XCTAssertFalse(changed, "ops \(ops)")
+        XCTAssertEqual(ops.count, 2, "ops \(ops)")
+    }
+
+    /// ⌘S with a colour change put back to none: Done would just leave, so
+    /// ⌘S leaves too, with no write and no new backup.
+    func testCommandSWithEditsThatCancelOutWritesNothing() async throws {
+        let url = dir.appendingPathComponent("cancel-save.jpg")
+        let before = try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        let ready = await waitUntil { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == url }
+        XCTAssertTrue(ready)
+        let controller = viewer.contentRootForTesting.editModeController
+        viewer.contentRootForTesting.enterEditMode(image: Self.image(), url: url, landOn: .color)
+        await controller.settleForTesting()
+        let recipe = try XCTUnwrap(controller.recipe)
+        let start = await EditRecipe().checkpoint()
+        await recipe.append(.colorAdjust(ColorAdjustParams(brightness: 0.3)))
+        await recipe.append(.colorAdjust(.identity))
+        let ops = await recipe.snapshot()
+        XCTAssertEqual(ops.count, 2, "the raw edit list is not empty")
+        let changed = await recipe.hasContentChanges(since: start)
+        XCTAssertFalse(changed, "Done would see no change")
+        XCTAssertNotNil(controller.sourceStamp)
+        var asked = false
+        viewer.alertResponderForTesting = { _ in asked = true; return 0 }
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(saved)
+        XCTAssertFalse(asked, "an untouched file needs no question")
+        XCTAssertFalse(viewer.contentRootForTesting.isEditModeActive)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(try Data(contentsOf: url), before, "the file was written again")
+        let records = await store.records(for: url)
+        XCTAssertEqual(records.count, 0, "a new backup was made")
+    }
+
+    /// Edits that cancel out on a file another program rewrote: ⌘S does not
+    /// just leave (the screen would show the old picture); it asks first, as with real edits.
+    private func enterEditWithCancellingColor(_ viewer: ViewerWindow, url: URL) async throws -> EditModeController {
+        let ready = await waitUntil { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == url }
+        XCTAssertTrue(ready)
+        let controller = viewer.contentRootForTesting.editModeController
+        viewer.contentRootForTesting.enterEditMode(image: Self.image(), url: url, landOn: .color)
+        await controller.settleForTesting()
+        XCTAssertNotNil(controller.sourceStamp, "the session knows the file it started from")
+        let recipe = try XCTUnwrap(controller.recipe)
+        await recipe.append(.colorAdjust(ColorAdjustParams(brightness: 0.3)))
+        await recipe.append(.colorAdjust(.identity))
+        let changed = await controller.hasSessionContentChanges(recipe)
+        XCTAssertFalse(changed, "Done would see no change")
+        return controller
+    }
+
+    func testCommandSWithEditsThatCancelOutOnAFileChangedOnDiskAsks_cancelKeepsEditing() async throws {
+        let url = dir.appendingPathComponent("cancel-changed.jpg")
+        try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        let controller = try await enterEditWithCancellingColor(viewer, url: url)
+        let other = try rewriteBehindTheEditorsBack(url)
+        var asked: String?
+        viewer.alertResponderForTesting = { message in asked = message; return 0 }   // Cancel
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertFalse(saved)
+        XCTAssertEqual(asked, "“cancel-changed.jpg” changed while you were editing it.")
+        XCTAssertTrue(viewer.contentRootForTesting.isEditModeActive, "edit mode is not left without a word")
+        XCTAssertTrue(controller.isActive)
+        XCTAssertEqual(try Data(contentsOf: url), other, "Cancel changes nothing on disk")
+    }
+
+    func testCommandSWithEditsThatCancelOutOnAFileChangedOnDisk_saveAnywayWrites() async throws {
+        let url = dir.appendingPathComponent("cancel-changed2.jpg")
+        try Self.writeImage(url, type: .jpeg)
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        let controller = try await enterEditWithCancellingColor(viewer, url: url)
+        let other = try rewriteBehindTheEditorsBack(url)
+        var asked = false
+        viewer.alertResponderForTesting = { _ in asked = true; return 1 }   // Save Anyway
+        let saved = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(saved)
+        XCTAssertTrue(asked)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertNotEqual(try Data(contentsOf: url), other, "Save Anyway writes, as with real edits")
+        let records = await store.records(for: url)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(try records.first.map { try Data(contentsOf: $0.backupURL) }, other, "the version on disk was backed up first")
+    }
+
+    /// Rotate, ⌘S, rotate back, ⌘S: each ⌘S starts from the saved file, so
+    /// the second one is a real change and the file ends in the original orientation.
+    func testRotateSaveRotateBackSaveEndsInTheOriginalOrientation() async throws {
+        let url = dir.appendingPathComponent("twice.jpg")
+        try Self.writeImage(url, type: .jpeg)
+        XCTAssertEqual(try orientedSize(url), CGSize(width: 16, height: 8))
+        let viewer = try await viewer(url, store: store)
+        defer { viewer.close() }
+        try await enterEditWithRotate(viewer, url: url)
+        let first = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(first)
+        XCTAssertEqual(try orientedSize(url), CGSize(width: 8, height: 16), "rotate + ⌘S writes")
+
+        let ready = await waitUntil { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == url }
+        XCTAssertTrue(ready)
+        let content = viewer.contentRootForTesting
+        content.enterEditMode(image: Self.image(width: 8, height: 16), url: url, landOn: .rotate)
+        content.editModeController.appendSnapped90(quarters: -1)
+        await content.editModeController.settleForTesting()
+        let second = await viewer.saveEditedFile(asPanel: false)
+        XCTAssertTrue(second)
+        XCTAssertFalse(content.isEditModeActive)
+        XCTAssertEqual(try orientedSize(url), CGSize(width: 16, height: 8), "rotate back + ⌘S writes")
     }
 }

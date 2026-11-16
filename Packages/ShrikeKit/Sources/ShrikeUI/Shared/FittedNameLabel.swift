@@ -3,7 +3,7 @@
 //  ShrikeUI
 //
 //  A one-line file name label that cuts the name with `FileNameFit`
-//  (spec 25 §6.2) instead of the system's middle truncation: the frame
+// instead of the system's middle truncation: the frame
 //  number and the extension stay. It asks for the width of the full name
 //  and takes whatever the layout gives it.
 //

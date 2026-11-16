@@ -30,15 +30,20 @@ struct EditChromeState: Equatable {
     var acceptsInput: Bool { !isSaving && !isTransitioning }
     /// The secondary "Save Copy…" has its own place from the start (greyed
     /// until there is something to save), so the buttons never shift when
-    /// the first edit is made (audit on-screen L10). When the primary already
+    /// the first edit is made. When the primary already
     /// is "Save Copy…" there is no secondary at all.
     var showsSaveCopy: Bool { !requiresCopy }
-    var saveCopyEnabled: Bool { hasEdits && acceptsInput }
+    /// File ▸ Save Copy… uses it too. A pending draft counts: the copy applies it.
+    var saveCopyEnabled: Bool { hasUnsavedChanges && acceptsInput }
     var savePolicy = "Changes will replace this file. An original backup is kept."
-    var primaryTitle: String { (isSaving && !isAwaitingDestination) ? "Saving…" : (!(hasEdits || hasPendingToolEdits) ? "Done" : (requiresCopy ? "Save Copy…" : "Save Changes")) }
+    /// One rule: an applied edit or a changed, not yet applied crop / resize /
+    /// levels draft is an unsaved change. Done applies the draft and saves it,
+    /// so the status, the dot and the button say so before it happens.
+    var hasUnsavedChanges: Bool { hasEdits || hasPendingToolEdits }
+    var primaryTitle: String { (isSaving && !isAwaitingDestination) ? "Saving…" : (!hasUnsavedChanges ? "Done" : (requiresCopy ? "Save Copy…" : "Save Changes")) }
 
     /// Window subtitle in edit mode.
-    var subtitle: String { hasEdits ? "Editing · Unsaved changes" : "Editing" }
+    var subtitle: String { hasUnsavedChanges ? "Editing · Unsaved changes" : "Editing" }
 }
 
 /// Everything the edit chrome can ask for.
@@ -104,7 +109,7 @@ enum EditChromeTools {
 
 // MARK: - The tool picker (window toolbar and capsule share it)
 
-/// The five edit tools as one icon-only, single-choice control (spec 26 §1.3).
+/// The five edit tools as one icon-only, single-choice control.
 /// The window's toolbar item and the full-screen capsule use this one class.
 /// It is drawn here, not by `NSSegmentedControl`: on macOS 26 the toolbar
 /// ignores a segmented control's bezel colour and paints the chosen segment
@@ -115,12 +120,92 @@ enum EditChromeTools {
 /// named after its tool, value 1 when chosen, and it can be pressed.
 /// Keyboard (when the picker has focus): Left / Right choose the previous /
 /// next tool, Space chooses the focused one.
+/// The two forms of the tool picker.
+enum EditPickerForm: Equatable, Sendable {
+    /// Icon + name in each segment (the widths of `EditToolPicker.segmentWidth(for:)`).
+    case words
+    /// The five icons, 32 pt each; the name is in the tooltip and for VoiceOver.
+    case icons
+}
+
+/// The form follows the WINDOW width (the toolbar spans the
+/// window). Words from `wordsFromWidth`; below it icons; back to words only at
+/// `wordsFromWidth + hysteresis`, so dragging the edge near the line does not flicker.
+/// Called on window resize only (never per frame, never on the launch path).
+enum EditPickerFormRule {
+    /// Measured on screen: words fit down to 1080 pt; + 20 pt margin; + 20 pt
+    /// since each name gets its label's full width (4 pt more per segment).
+    /// See the note at `EditLayout.minCanvasWidth`.
+    static let wordsFromWidth: CGFloat = 1120
+    static let hysteresis: CGFloat = 20
+
+    /// `current` nil = a fresh choice (edit just started): no hysteresis.
+    static func form(windowWidth: CGFloat, current: EditPickerForm?) -> EditPickerForm {
+        if current == .icons { return windowWidth >= wordsFromWidth + hysteresis ? .words : .icons }
+        return windowWidth >= wordsFromWidth ? .words : .icons
+    }
+
+    #if DEBUG
+    /// Look checks only: `-ShrikeDebugEditPickerForm words|icons` pins the toolbar form.
+    static let debugForced: EditPickerForm? = {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "-ShrikeDebugEditPickerForm"), i + 1 < args.count else { return nil }
+        return args[i + 1] == "icons" ? .icons : (args[i + 1] == "words" ? .words : nil)
+    }()
+    #endif
+}
+
 @MainActor
 final class EditToolPicker: NSControl {
 
-    static var segmentWidth: CGFloat { ChromeTypography.targetHeight + 4 }
+    /// One icon segment.
+    static let iconSegmentWidth: CGFloat = 32
+
+    /// Words or icons. The capsule keeps words; the toolbar follows the window.
+    /// The switch is instant (no animation) and keeps the chosen tool.
+    var form: EditPickerForm = .words {
+        didSet {
+            guard form != oldValue else { return }
+            for seg in segments { seg.showsName = (form == .words) }
+            widthConstraint?.constant = currentTotalWidth
+            invalidateIntrinsicContentSize()
+            needsLayout = true
+        }
+    }
+    private var widthConstraint: NSLayoutConstraint?
+
+    /// This picker's segment width for `tool` in its current form.
+    /// Words: measured from the label as it draws now (Larger Text scales
+    /// the capsule's labels).
+    func currentWidth(for tool: EditTool) -> CGFloat {
+        guard form == .words else { return Self.iconSegmentWidth }
+        guard let seg = segments.first(where: { $0.tool == tool }) else { return Self.segmentWidth(for: tool) }
+        return ceil(10 + 16 + 4 + seg.nameFittingWidth + 10)
+    }
+    var currentTotalWidth: CGFloat { EditChromeTools.order.map(currentWidth(for:)).reduce(0, +) }
+
+    /// Icon (16 pt) + 4 pt + name
+    /// (12 pt medium), 10 pt side padding. The narrowest segment's width.
+    static var segmentWidth: CGFloat { segmentWidths.min() ?? 0 }
+    static let labelFont = NSFont.systemFont(ofSize: 12, weight: .medium)
+    static func segmentWidth(for tool: EditTool) -> CGFloat {
+        ceil(10 + 16 + 4 + labelFittingWidth(EditChromeTools.name(tool)) + 10)
+    }
+    /// The width the name label itself needs (its text plus the cell's own
+    /// padding); the bare text width cut the last letter off.
+    static func labelFittingWidth(_ name: String) -> CGFloat {
+        measuringLabel.stringValue = name
+        return ceil(measuringLabel.fittingSize.width)
+    }
+    private static let measuringLabel: NSTextField = {
+        let label = NSTextField(labelWithString: "")
+        label.font = labelFont
+        return label
+    }()
+    static var segmentWidths: [CGFloat] { EditChromeTools.order.map(segmentWidth(for:)) }
+    static var totalWidth: CGFloat { segmentWidths.reduce(0, +) }
     static var height: CGFloat { ChromeTypography.targetHeight }
-    /// The active tool's platter. 0.2.10 audit item 4: at 0.30 the fill was
+    /// The active tool's platter. At 0.30 the fill was
     /// 1.7:1 against the dark bar and read grey (WCAG 1.4.11 asks 3:1 for the
     /// state of a control). 0.62 is about 3.1:1 on (17,17,17); the ring is
     /// the guarantee when a user's accent colour is darker.
@@ -150,7 +235,7 @@ final class EditToolPicker: NSControl {
     init() {
         let tools = EditChromeTools.order
         segments = tools.map { SegmentView(tool: $0) }
-        super.init(frame: NSRect(x: 0, y: 0, width: CGFloat(tools.count) * Self.segmentWidth, height: Self.height))
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.totalWidth, height: Self.height))
         for (i, seg) in segments.enumerated() {
             seg.picker = self
             seg.index = i
@@ -169,7 +254,9 @@ final class EditToolPicker: NSControl {
         setAccessibilityLabel("Tool")
         setAccessibilityChildren(segments)
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: CGFloat(tools.count) * Self.segmentWidth).isActive = true
+        let width = widthAnchor.constraint(equalToConstant: Self.totalWidth)
+        width.isActive = true
+        widthConstraint = width
         heightAnchor.constraint(equalToConstant: Self.height).isActive = true
     }
 
@@ -177,22 +264,32 @@ final class EditToolPicker: NSControl {
     required init?(coder: NSCoder) { fatalError("programmatic only") }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: CGFloat(segments.count) * Self.segmentWidth, height: Self.height)
+        NSSize(width: currentTotalWidth, height: Self.height)
     }
 
     override func layout() {
+        let total = currentTotalWidth
+        if let width = widthConstraint, width.constant != total {
+            width.constant = total
+            invalidateIntrinsicContentSize()
+        }
         super.layout()
-        for (i, seg) in segments.enumerated() {
-            seg.frame = NSRect(x: CGFloat(i) * Self.segmentWidth, y: 0, width: Self.segmentWidth, height: bounds.height)
+        var x: CGFloat = 0
+        for seg in segments {
+            let w = currentWidth(for: seg.tool)
+            seg.frame = NSRect(x: x, y: 0, width: w, height: bounds.height)
+            x += w
         }
     }
 
     // MARK: Segmented-control surface (tests and callers)
 
-    func width(forSegment i: Int) -> CGFloat { segments.indices.contains(i) ? Self.segmentWidth : 0 }
+    func width(forSegment i: Int) -> CGFloat { segments.indices.contains(i) ? currentWidth(for: segments[i].tool) : 0 }
     func image(forSegment i: Int) -> NSImage? { segments.indices.contains(i) ? segments[i].glyph : nil }
-    /// Icon-only: no segment has a text label.
-    func label(forSegment i: Int) -> String? { "" }
+    /// The words form shows each tool's name; the icons form none.
+    func label(forSegment i: Int) -> String? {
+        segments.indices.contains(i) && form == .words ? EditChromeTools.name(segments[i].tool) : nil
+    }
     func toolTip(forSegment i: Int) -> String? { segments.indices.contains(i) ? segments[i].toolTip : nil }
     func isEnabled(forSegment i: Int) -> Bool { segments.indices.contains(i) }
     /// The segment views (tests: pixel and hover checks).
@@ -210,7 +307,9 @@ final class EditToolPicker: NSControl {
         guard segments.indices.contains(i) else { return }
         focusedSegment = i
         selectedSegment = i
-        _ = sendAction(action, to: target)
+        // `NSControl.sendAction` goes through `NSApp`, which is nil in a fresh test worker;
+        // `NSApplication.shared` is the same object in the app.
+        if let action { _ = NSApplication.shared.sendAction(action, to: target, from: self) }
     }
 
     @objc private func picked() {
@@ -221,7 +320,7 @@ final class EditToolPicker: NSControl {
     // MARK: Keyboard
 
     override var acceptsFirstResponder: Bool { true }
-    override var canBecomeKeyView: Bool { NSApp.isFullKeyboardAccessEnabled }
+    override var canBecomeKeyView: Bool { (NSApp?.isFullKeyboardAccessEnabled ?? false) }
     override var focusRingMaskBounds: NSRect { bounds }
     override func drawFocusRingMask() {
         NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
@@ -247,12 +346,23 @@ final class EditToolPicker: NSControl {
         var index = 0
         let glyph: NSImage
         private let imageView = NSImageView()
+        private let nameLabel = NSTextField(labelWithString: "")
+        var nameFittingWidth: CGFloat { ceil(nameLabel.fittingSize.width) }
         private var area: NSTrackingArea?
         private var hovered = false { didSet { if hovered != oldValue { needsDisplay = true } } }
         private var pressed = false { didSet { if pressed != oldValue { needsDisplay = true } } }
+        /// Words form: the name beside the icon. Icons form: the icon centred.
+        var showsName = true {
+            didSet {
+                guard showsName != oldValue else { return }
+                nameLabel.isHidden = !showsName
+                needsLayout = true
+            }
+        }
         var isChosen = false {
             didSet {
                 guard isChosen != oldValue else { return }
+                nameLabel.textColor = isChosen ? .labelColor : .secondaryLabelColor
                 needsDisplay = true
                 NSAccessibility.post(element: self, notification: .valueChanged)
             }
@@ -268,6 +378,11 @@ final class EditToolPicker: NSControl {
             imageView.imageScaling = .scaleNone
             imageView.setAccessibilityElement(false)
             addSubview(imageView)
+            nameLabel.stringValue = EditChromeTools.name(tool)
+            nameLabel.font = EditToolPicker.labelFont
+            nameLabel.textColor = .secondaryLabelColor
+            nameLabel.setAccessibilityElement(false)
+            addSubview(nameLabel)
             setAccessibilityElement(true)
             setAccessibilityRole(.radioButton)
             setAccessibilityLabel(EditChromeTools.name(tool))
@@ -279,7 +394,9 @@ final class EditToolPicker: NSControl {
         override var isFlipped: Bool { false }
         override func layout() {
             super.layout()
-            imageView.frame = bounds
+            let text = nameLabel.intrinsicContentSize
+            imageView.frame = NSRect(x: showsName ? 10 : floor((bounds.width - 16) / 2), y: 0, width: 16, height: bounds.height)
+            nameLabel.frame = NSRect(x: 30, y: floor((bounds.height - text.height) / 2), width: bounds.width - 40, height: text.height)
         }
 
         /// The platter's rect: inside the segment, like the toolbar hover.
@@ -374,11 +491,16 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
         .flexibleSpace, ItemID.reset, ItemID.saveCopy, ItemID.done,
     ]
 
-    /// Which items leave the bar first in a narrow window (spec 26 §1.4).
+    /// Which items leave the bar first in a narrow window:
+    /// Reset, then Save Copy…, then Undo/Redo, then the picker; Cancel and Done never.
+    /// The three low items are all below `.standard`, a little apart: with one shared `.low`
+    /// AppKit drops the rightmost first, and on screen Save Copy… left before Reset.
     static func visibilityPriority(_ id: NSToolbarItem.Identifier) -> NSToolbarItem.VisibilityPriority {
         switch id {
         case ItemID.cancel, ItemID.done: return .high
         case ItemID.tools: return .standard
+        case ItemID.undoRedo: return NSToolbarItem.VisibilityPriority(rawValue: NSToolbarItem.VisibilityPriority.low.rawValue + 20)
+        case ItemID.saveCopy: return NSToolbarItem.VisibilityPriority(rawValue: NSToolbarItem.VisibilityPriority.low.rawValue + 10)
         default: return .low
         }
     }
@@ -468,7 +590,7 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
     }
 
     /// The primary button keeps the width of its longest title, so "Done" turning
-    /// into "Save Changes" does not move the buttons beside it (audit on-screen L10).
+    /// into "Save Changes" does not move the buttons beside it.
     private var widestPrimaryWidth: CGFloat?
     private func widestPrimaryTitleWidth() -> CGFloat {
         if let widestPrimaryWidth { return widestPrimaryWidth }
@@ -589,6 +711,10 @@ final class EditToolbarController: NSObject, NSToolbarDelegate {
                 for sub in group.subitems { sub.autovalidates = false }
             }
             group.autovalidates = false
+            // Seen on screen: `.automatic` collapsed the pair into an
+            // empty menu button with only a chevron. Two buttons while they
+            // fit; when they do not, the group leaves for » (its menu form), never collapses.
+            group.controlRepresentation = .expanded
             group.visibilityPriority = Self.visibilityPriority(itemIdentifier)
             let form = NSMenuItem(title: "Undo / Redo", action: nil, keyEquivalent: "")
             let sub = NSMenu(title: "Undo / Redo")
@@ -718,6 +844,18 @@ final class EditCapsuleView: HUDSurfaceView {
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+    }
+
+    /// Words, unless the capsule with words plus 48 pt of margin is
+    /// wider than the screen (no real Mac screen: 1280 pt and up always gets words).
+    func chooseForm(screenWidth: CGFloat) {
+        toolPicker.form = .words
+        let wordsWidth = fittingSize.width
+        toolPicker.form = Self.form(capsuleWordsWidth: wordsWidth, screenWidth: screenWidth)
+    }
+
+    nonisolated static func form(capsuleWordsWidth: CGFloat, screenWidth: CGFloat) -> EditPickerForm {
+        capsuleWordsWidth + 48 <= screenWidth ? .words : .icons
     }
 
     /// Every view under the capsule (tests).

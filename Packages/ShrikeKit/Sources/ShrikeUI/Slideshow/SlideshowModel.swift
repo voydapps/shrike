@@ -199,3 +199,25 @@ struct SlideshowScope: Equatable {
     /// on purpose). One selected is only the cursor: "All" stays the default.
     var defaultsToSelection: Bool { selectedCount >= 2 }
 }
+
+/// The control bar grows with the screen.
+enum SlideshowBarScale {
+    /// `clamp(screenWidth / 1440, 1, 1.6)`.
+    static func scale(screenWidth: CGFloat) -> CGFloat {
+        min(max(screenWidth / 1440, 1), 1.6)
+    }
+    /// The largest button (32 pt buttons grow to 48 pt; 32 × 1.6 = 51 is clamped).
+    static let maxButtonSize: CGFloat = 48
+    /// Buttons are 32 pt at scale 1, 4 pt more with Larger Text, never above 48 pt.
+    static func buttonSize(scale: CGFloat, largerText: Bool = Prefs.largerChrome) -> CGFloat {
+        min((32 * scale + (largerText ? 4 : 0)).rounded(), maxButtonSize)
+    }
+    /// The bar is 44 pt high at scale 1 and keeps 12 pt around the buttons.
+    static func barHeight(scale: CGFloat, largerText: Bool = Prefs.largerChrome) -> CGFloat {
+        max((44 * scale).rounded(), buttonSize(scale: scale, largerText: largerText) + 12)
+    }
+    /// Glyph point size inside a button; Larger Text adds 2 pt (as `ChromeTypography`).
+    static func glyphSize(scale: CGFloat, largerText: Bool = Prefs.largerChrome) -> CGFloat {
+        min(((14 + (largerText ? 2 : 0)) * scale).rounded(), 22)
+    }
+}

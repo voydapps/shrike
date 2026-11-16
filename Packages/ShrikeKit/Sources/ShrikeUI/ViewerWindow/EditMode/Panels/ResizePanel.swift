@@ -2,7 +2,7 @@
 //  ResizePanel.swift
 //  ShrikeUI
 //
-//  Right-side Resize tool panel. Spec
+//  Right-side Resize tool panel.
 //  W/H fields (linked by default), percent entry, prevent-upscale,
 //  interpolation popup, Apply.
 //
@@ -29,7 +29,18 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
     private enum DraftField { case width, height, percent }
     private var editedField: DraftField?
     func controlTextDidBeginEditing(_ notification: Notification) { trackDraftField(notification) }
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard (control as? PanelTextField)?.cancelTyping(textView, commandSelector) == true else { return false }
+        updatePreviewLabel()   // Esc's restored number sets Apply and the preview again
+        return true
+    }
     func controlTextDidChange(_ notification: Notification) { trackDraftField(notification) }
+    /// Before an edit undo / redo: typed text goes, Apply follows the shown numbers.
+    func discardTyping() {
+        guard [widthField, heightField, percentField].contains(where: { $0.discardTyping() }) else { return }
+        editedField = nil
+        updatePreviewLabel()
+    }
     func controlTextDidEndEditing(_ notification: Notification) {
         editedField = nil
         onDraftChanged?()
@@ -52,11 +63,18 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
             // A clean panel follows restored geometry (Undo/Redo/Reset).
             // An unapplied target belongs to the user, even when an older
             // render is only now reporting the new source dimensions.
-            let wasClean = widthField.integerValue == Int(oldValue.width)
-                && heightField.integerValue == Int(oldValue.height)
+            // Typing that is not committed yet does not count: Esc would bring back the old number.
+            let wasClean = widthField.shownIntegerBeforeTyping == Int(oldValue.width)
+                && heightField.shownIntegerBeforeTyping == Int(oldValue.height)
             if sourcePixelSize.width > 0 && sourcePixelSize.height > 0 &&
                 (widthField.stringValue.isEmpty || wasClean) {
-                setDimensionsFromSource()
+                if [widthField, heightField, percentField].contains(where: \.isTyping) {
+                    widthField.showValue(String(Int(sourcePixelSize.width)))
+                    heightField.showValue(String(Int(sourcePixelSize.height)))
+                    percentField.showValue("100")
+                } else {
+                    setDimensionsFromSource()
+                }
             }
             updatePreviewLabel()
         }
@@ -146,10 +164,10 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
         preventUpscaleCheckbox.action = #selector(handlePreventUpscaleToggle(_:))
 
         interpPopup.translatesAutoresizingMaskIntoConstraints = false
-        interpPopup.addItem(withTitle: "Lanczos")
-        interpPopup.addItem(withTitle: "Bicubic")
-        interpPopup.addItem(withTitle: "Bilinear")
-        interpPopup.addItem(withTitle: "Nearest")
+        interpPopup.addItem(withTitle: "Sharp (Lanczos)")
+        interpPopup.addItem(withTitle: "Smooth (Bicubic)")
+        interpPopup.addItem(withTitle: "Soft (Bilinear)")
+        interpPopup.addItem(withTitle: "Pixels (Nearest)")
         interpPopup.selectItem(at: 0)
         interpPopup.target = self
         interpPopup.action = #selector(handleInterpChange(_:))
@@ -159,7 +177,7 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
         previewLabel.textColor = .secondaryLabelColor
 
         applyButton.bezelStyle = .rounded
-        // Plain bezel, no key equivalent: Done is the one accent and the one Return (spec 25 §3.1).
+        // Plain bezel, no key equivalent: Done is the one accent and the one Return.
         applyButton.isEnabled = false
         widthField.setAccessibilityLabel("Resize width, pixels")
         heightField.setAccessibilityLabel("Resize height, pixels")
@@ -171,7 +189,7 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
         let widthRow = labelled("Width", field: widthField)
         let heightRow = labelled("Height", field: heightField)
         let percentRow = labelled("Scale", field: percentField)
-        // Keep the decorative unit outside the native numeric field (spec 16 §3.3).
+        // Keep the decorative unit outside the native numeric field.
         let suffix = percentSuffix
         suffix.font = ChromeTypography.font(12)
         suffix.textColor = .secondaryLabelColor
@@ -182,7 +200,7 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
         suffix.setContentCompressionResistancePriority(.required, for: .horizontal)
         percentRow.addArrangedSubview(suffix)
         percentRow.setCustomSpacing(8, after: percentField)
-        resetButton.bezelStyle = .rounded
+        resetButton.styleAsQuietLink()
         resetButton.translatesAutoresizingMaskIntoConstraints = false
         resetButton.target = self
         resetButton.action = #selector(handleReset(_:))
@@ -193,7 +211,7 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
             percentRow,
             maintainCheckbox,
             preventUpscaleCheckbox,
-            sectionLabel("Resample"),
+            sectionLabel("Method"),
             interpPopup,
             sectionLabel("Preview"),
             previewLabel,
@@ -245,7 +263,7 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
         return l
     }
 
-    private let resetButton = NSButton(title: "Reset Resize", target: nil, action: nil)
+    private let resetButton = EditQuietLinkButton(title: "Reset Resize", target: nil, action: nil)
 
     private func labelled(_ text: String, field: NSTextField) -> NSStackView {
         let label = NSTextField(labelWithString: text)
@@ -387,7 +405,7 @@ final class ResizePanel: NSView, NSTextFieldDelegate {
         EditRenderer.outputPixelSize(from: sourcePixelSize, operations: [.resize(spec)])
     }
 
-    /// "New size: 5184 × 3456 px", or "Same size as the current image." (spec 27 P3-8c).
+    /// "New size: 5184 × 3456 px", or "Same size as the current image.".
     static func previewText(source: CGSize, width: Int, height: Int) -> String {
         guard width > 0, height > 0 else { return "Same size as the current photo." }
         if width == Int(source.width), height == Int(source.height) { return "Same size as the current photo." }

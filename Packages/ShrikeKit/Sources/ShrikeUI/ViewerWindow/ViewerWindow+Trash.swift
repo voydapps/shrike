@@ -55,15 +55,13 @@ extension ViewerWindow {
             MainActor.assumeIsolated { target.undoTrash(receipt, removed: removed) }
         }
         windowUndoManager.setActionName("Move to Trash")
-        contentRoot.toast(
-            ToastContent.trashed(FileActionCopy.movedToTrash(receipt.trashedGroups))
-        ) { [weak self] in
-            self?.performUndo()
-        }
+        showUndoToast(BackupNotice.toast(
+            ToastContent.trashed(FileActionCopy.movedToTrash(receipt.trashedGroups)),
+            notSaved: receipt.backupsNotSaved, of: receipt.trashedGroups.count))
     }
 
     /// No Trash on the volume → the permanent-delete alert (Cancel puts the item back).
-    /// Any other error → the item goes back where it was, toast T2.
+    /// Any other error → the item goes back where it was and an error toast.
     private func trashFailed(_ removed: [RemovedGroup], error: any Error) async {
         guard let entry = removed.first else { return }
         if case .noTrash? = error as? FileOpsError {
@@ -137,9 +135,9 @@ extension ViewerWindow {
                     RemovedGroup(index: $0.index, group: $1)
                 }
                 self.reinsert(restored)
-                self.contentRoot.toast(ToastContent(
+                self.contentRoot.toast(BackupNotice.toast(ToastContent(
                     FileActionCopy.putBack(original: removed[0].group, restored: restored[0].group)
-                ))
+                ), notSaved: result.backupsNotSaved, of: result.groups.count))
             } catch {
                 self.contentRoot.toast(ToastContent(FileActionCopy.noLongerInTrash(name), kind: .error))
             }

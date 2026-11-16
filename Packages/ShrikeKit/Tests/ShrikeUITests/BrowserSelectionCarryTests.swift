@@ -94,6 +94,28 @@ final class BrowserSelectionCarryTests: XCTestCase {
         return compare.panes.map { compare.list[$0.index].primary.lastPathComponent }.sorted()
     }
 
+    // MARK: Follow-the-viewer keeps a selection that holds the photo
+
+    func testViewerFollowKeepsASelectionThatHoldsThePhotoAndReplacesItOutside() async throws {
+        let browser = try await browser(count: 8)
+        defer { browser.close() }
+        let content = browser.contentController
+        let grid = content.collectionViewForTesting
+        grid.selectionIndexPaths = [ip(1), ip(2), ip(3), ip(4), ip(5)]
+        XCTAssertEqual(names(browser), ["p01.jpg", "p02.jpg", "p03.jpg", "p04.jpg", "p05.jpg"])
+        let viewer = ViewerWindow(groups: content.visibleItems.map { ImageGroup(primary: $0.url) },
+                                  startIndex: 1, services: ShrikeServices.makeDefault())
+        defer { viewer.close() }
+        viewer.pair(with: browser)
+        // Opening on (and walking inside) the selection leaves all five selected.
+        viewer.followInBrowser(dir.appendingPathComponent("p01.jpg"))
+        viewer.followInBrowser(dir.appendingPathComponent("p04.jpg"))
+        XCTAssertEqual(names(browser), ["p01.jpg", "p02.jpg", "p03.jpg", "p04.jpg", "p05.jpg"])
+        // A photo outside it replaces the selection.
+        viewer.followInBrowser(dir.appendingPathComponent("p07.jpg"))
+        XCTAssertEqual(names(browser), ["p07.jpg"])
+    }
+
     // MARK: Grid ↔ List keeps one selection
 
     func testGridToListAndBackKeepsTheSelectionAnchorAndKeysAndCompareUsesIt() async throws {
@@ -433,7 +455,7 @@ final class BrowserSelectionCarryTests: XCTestCase {
         grid.layoutSubtreeIfNeeded()
         let top = try XCTUnwrap(grid.layoutAttributesForItem(at: ip(0))?.frame.minY)
         let perRow = (0..<10).filter { grid.layoutAttributesForItem(at: ip($0))?.frame.minY == top }.count
-        XCTAssertLessThan(perRow, 10, "the test window has two rows")
+        perfAssertLessThan(perRow, 10, "the test window has two rows")
         grid.selectionIndexPaths = [ip(1)]
         grid.noteClick(on: ip(1), command: false)
         grid.keyDown(with: Self.key("\u{F701}", keyCode: 125, mods: [.shift, .numericPad, .function]))

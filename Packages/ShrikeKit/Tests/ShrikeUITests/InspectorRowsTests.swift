@@ -64,7 +64,10 @@ final class InspectorRowsTests: XCTestCase {
         info.whiteBalanceAuto = true
         let rows = Dictionary(uniqueKeysWithValues: InspectorRows.capture(info, locale: gb).map { ($0.label, $0.value) })
         XCTAssertTrue(rows["Date taken"]?.contains("2026") ?? false)
-        XCTAssertTrue(rows["Date taken"]?.contains("14:02:31") ?? false, "shown in the recorded offset")
+        // Spec 28 §7: one format (short time); the seconds are in the tooltip.
+        XCTAssertTrue(rows["Date taken"]?.contains("14:02") ?? false, "shown in the recorded offset")
+        XCTAssertFalse(rows["Date taken"]?.contains("14:02:31") ?? true)
+        XCTAssertTrue(InspectorRows.capture(info, locale: gb).first?.tooltip?.contains("14:02:31") ?? false)
         XCTAssertEqual(rows["Camera"], "FUJIFILM X-T5")
         XCTAssertEqual(rows["Lens"], "M.Zuiko 25mm F1.8")
         XCTAssertEqual(rows["Aperture"], "ƒ/2.8")
@@ -84,10 +87,13 @@ final class InspectorRowsTests: XCTestCase {
         info.colorProfileName = "Display P3"
         let url = URL(fileURLWithPath: "/tmp/Italy 2026/DSC_0042.jpg")
         let rows = InspectorRows.file(url: url, fileSize: 12_400_000, info: info)
-        XCTAssertEqual(rows.map(\.label), ["Name", "Folder", "Size", "Dimensions", "Type", "Colour profile"])
-        XCTAssertEqual(rows[1].value, "Italy 2026")
-        XCTAssertEqual(rows[3].value, "6000 × 4000 (24.0 MP)")
-        XCTAssertEqual(InspectorRows.file(url: url, fileSize: nil, info: nil).map(\.label), ["Name", "Folder"])
+        // Spec 28 §7 order; the name is the title line, not a row.
+        XCTAssertEqual(rows.map(\.label), ["Type", "Dimensions", "Size", "Modified", "Color profile", "Folder"])
+        XCTAssertEqual(rows[5].value, "Italy 2026")
+        XCTAssertEqual(rows[1].value, "6000 × 4000")
+        XCTAssertEqual(rows[1].tooltip, "6000 × 4000 (24.0 MP)")
+        XCTAssertEqual(InspectorRows.file(url: url, fileSize: nil, info: nil).map(\.label),
+                       ["Type", "Dimensions", "Size", "Modified", "Folder"])
         XCTAssertTrue(InspectorRows.originalKept(since: Date(timeIntervalSince1970: 1_790_344_951), locale: gb)
             .hasPrefix("Original kept since "))
     }

@@ -15,7 +15,7 @@ import AppKit
 @MainActor
 final class BrowserCollectionView: NSCollectionView {
 
-    /// Spec 27 B3: VoiceOver gets the items on screen plus this many each side,
+    /// VoiceOver gets the items on screen plus this many each side,
     /// never an item that is not built. (An accessibility query used to build
     /// every one of 1000 items: the app was deaf for ~2 minutes.)
     static let accessibilityOverscan = 10
@@ -72,7 +72,7 @@ final class BrowserCollectionView: NSCollectionView {
         super.keyDown(with: event)
     }
 
-    // MARK: Hover (spec 24 §2, the filmstrip view's strip)
+    // MARK: Hover
     //
     // One tracking area over the whole collection. Only the filmstrip view
     // turns it on; the grid keeps its plain look. The thumbnail under the
@@ -341,7 +341,7 @@ final class BrowserCollectionView: NSCollectionView {
             // NSCollectionView may track the press itself and return after
             // the mouse-up (or when a drag starts); else the mouse-up comes
             // to `mouseUp` below. A drag never narrows (`noteDragBegan`).
-            switch NSApp.currentEvent?.type {
+            switch NSApp?.currentEvent?.type {
             case .leftMouseUp?: narrowSelection(to: narrowTo)
             case .leftMouseDragged?: break
             default: pendingSingleSelect = narrowTo
@@ -490,7 +490,7 @@ final class BrowserTableView: NSTableView {
     }
 }
 
-/// Tab order of the Browser (audit on-screen M6): photos → search → sidebar → info
+/// Tab order of the Browser: photos → search → sidebar → info
 /// panel → photos. Tab used to stay in the grid for ever, so the sidebar, the
 /// search field and the info panel could not be reached from the keyboard.
 @MainActor

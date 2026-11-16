@@ -55,6 +55,15 @@ public struct InspectorState: Sendable, Equatable {
     public var commonHeight: Int?
     /// Modification date, when common.
     public var commonDate: Date?
+    /// One item: the colour profile from its header.
+    public var colorProfile: String?
+
+    /// The File section's inputs (the rows are shared with the viewer).
+    public var fileInput: InspectorFileInput {
+        InspectorFileInput(type: commonType, pixelWidth: commonWidth, pixelHeight: commonHeight,
+                           fileSize: commonFileSize, totalSize: totalFileSize, modified: commonDate,
+                           colorProfile: count == 1 ? colorProfile : nil)
+    }
     /// Capture rows of a single item, filled once its
     /// header has been read.
     public var capture: [InspectorRow] = []
@@ -337,6 +346,8 @@ private struct InspectorRoot: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Info panel")
         .frame(minWidth: 220, maxWidth: .infinity)
         .background(Color(nsColor: InspectorLayout.browserPaneBackground))
     }
@@ -360,7 +371,7 @@ private struct FolderHeaderSection: View {
                         .truncationMode(.middle)
                     if let summary = state.folderSummary {
                         Text(summary)
-                            .font(.system(size: InspectorLayout.rowFontSize))
+                            .font(.system(size: InspectorStyle.smallFontSize))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -411,7 +422,7 @@ struct PreviewSection: View {
                     .truncationMode(.middle)
                     .multilineTextAlignment(.center)
                 Text(summary)
-                    .font(.system(size: InspectorLayout.rowFontSize))
+                    .font(.system(size: InspectorStyle.smallFontSize))
                     .foregroundStyle(.secondary)
             } else if state.count == 0 {
                 Text("No selection")
@@ -421,19 +432,11 @@ struct PreviewSection: View {
                 Text(InspectorState.multipleHeader(state.count))
                     .font(.callout.weight(.medium))
             } else if let name = state.commonName {
-                // Fixed heights (two name lines, one "Also" line, used or
-                // not): the rows below never move between two photos.
-                Text(name)
-                    .font(.callout.weight(.medium))
-                    .lineLimit(2, reservesSpace: true)
-                    .truncationMode(.middle)
-                    .multilineTextAlignment(.center)
-                // "Also: DSC_0042.ORF (24.1 MB)".
-                Text(state.alsoLine ?? " ")
-                    .font(.system(size: InspectorLayout.rowFontSize))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                // Nothing reserved — the name takes 1 or 2
+                // lines and the "Also" line exists only for a pair (rows
+                // below may move by a line between photos; the old fixed
+                // gap was worse).
+                InspectorTitleBlock(name: name, also: state.alsoLine)
             }
         }
     }
@@ -523,7 +526,7 @@ final class InspectorPreviewImageView: NSImageView {
             setContentHuggingPriority(.init(1), for: axis)
             setContentCompressionResistancePriority(.init(1), for: axis)
         }
-        // A file that can't be previewed: glyph and one line (spec 25 §2.2).
+        // A file that can't be previewed: glyph and one line.
         brokenGlyph.image = Badges.brokenFileGlyph(pointSize: 32)
         brokenGlyph.markDecorative()
         brokenGlyph.contentTintColor = Badges.brokenFileTint
@@ -545,7 +548,7 @@ final class InspectorPreviewImageView: NSImageView {
 
     /// Several photos are selected and the first one can't be read: the box
     /// shows a neutral stack of photos, not a warning about one file that
-    /// is not the selection's subject (audit on-screen L13).
+    /// is not the selection's subject.
     var isMultiple = false {
         didSet { if isMultiple != oldValue { applyBrokenLook() } }
     }
@@ -726,37 +729,11 @@ private struct FileInfoSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: InspectorLayout.rowGap) {
             InspectorSectionHeader("File")
-            InspectorRowView(label: "Type", value: Self.typeLabel(state.commonType), compact: compact)
-            if let w = state.commonWidth, let h = state.commonHeight {
-                InspectorRowView(label: "Dimensions", value: "\(w) × \(h)", compact: compact)
-            } else {
-                InspectorRowView(label: "Dimensions", value: "—")
-            }
-            if let total = state.totalFileSize {
-                // The status bar's number and form.
-                InspectorRowView(label: "Total size", value: BrowserBottomBar.bytes(total))
-            } else if let size = state.commonFileSize {
-                InspectorRowView(label: "Size", value: FileSizeText.string(size))
-            } else {
-                InspectorRowView(label: "Size", value: "—")
-            }
-            if let d = state.commonDate {
-                InspectorRowView(label: "Modified", value: Self.dateFormatter.string(from: d), compact: compact)
-            } else {
-                InspectorRowView(label: "Modified", value: "—")
+            ForEach(InspectorRows.fileRows(state.fileInput)) { row in
+                InspectorRowView(label: row.label, value: row.value, tooltip: row.tooltip, compact: compact)
             }
         }
     }
-    private static func typeLabel(_ t: UTType?) -> String {
-        guard let t else { return "—" }
-        return t.localizedDescription ?? t.identifier
-    }
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .short
-        return f
-    }()
 }
 
 /// Capture and Location; rows with no value are absent.
@@ -768,7 +745,7 @@ private struct CaptureSection: View {
             if !state.capture.isEmpty {
                 InspectorSectionHeader("Capture")
                 ForEach(state.capture) { row in
-                    InspectorRowView(label: row.label, value: row.value, compact: compact)
+                    InspectorRowView(label: row.label, value: row.value, tooltip: row.tooltip, compact: compact)
                 }
             }
             if let location = state.location {
@@ -790,65 +767,21 @@ private struct RatingSection: View {
     let onRate: (Int) -> Void
     let onFlag: (Bool) -> Void
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 7) {
             InspectorSectionHeader("Rating & Flag")
-
-            HStack(spacing: 4) {
-                HStack(spacing: 4) {
-                    ForEach(1...5, id: \.self) { i in
-                    let fill = (state.commonRating ?? 0) >= i
-                    Button {
-                        onRate(i)
-                    } label: {
-                        Image(systemName: fill ? "star.fill" : "star")
-                            .foregroundStyle(fill ? .yellow : .secondary)
-                            .font(.system(size: 16))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Rate \(i) star\(i == 1 ? "" : "s")")
-                }
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Rating")
-                .accessibilityValue((state.commonRating ?? 0) == 0 ? "No stars" : "\((state.commonRating ?? 0)) of 5 stars")
-                .accessibilityAdjustableAction { direction in
-                    let now = (state.commonRating ?? 0)
-                    switch direction {
-                    case .increment: onRate(min(5, now + 1))
-                    case .decrement: onRate(max(0, now - 1))
-                    @unknown default: break
-                    }
-                }
-                Button {
-                    onRate(0)
-                } label: {
-                    Text("Clear")
-                        .font(.system(size: InspectorLayout.rowFontSize))
-                        .foregroundStyle(ShrikeAccent.linkTextColor)
-                }
-                .buttonStyle(.plain)
-                .padding(.leading, 8)
-            }
+            InspectorStarsRow(rating: state.commonRating,
+                              showsClear: InspectorStarsRow.showsClear(
+                                rating: state.commonRating, mixed: state.count > 1 && state.commonRating == nil),
+                              onRate: onRate)
             if state.count > 1 && state.commonRating == nil {
                 Text("— Mixed")
-                    .font(.system(size: InspectorLayout.rowFontSize))
+                    .font(.system(size: InspectorStyle.smallFontSize))
                     .foregroundStyle(.secondary)
             }
-
-            Toggle(isOn: Binding(
-                get: { state.commonFlag ?? false },
-                set: { onFlag($0) }
-            )) {
-                HStack(spacing: 6) {
-                    Image(systemName: "flag.fill")
-                        .foregroundStyle((state.commonFlag ?? false) ? .orange : .secondary)
-                    Text("Flagged")
-                }
-            }
-            .toggleStyle(.checkbox)
+            InspectorFlagToggle(isOn: state.commonFlag ?? false, onChange: onFlag)
             if state.count > 1 && state.commonFlag == nil {
                 Text("— Mixed")
-                    .font(.system(size: InspectorLayout.rowFontSize))
+                    .font(.system(size: InspectorStyle.smallFontSize))
                     .foregroundStyle(.secondary)
             }
         }
@@ -885,7 +818,7 @@ private struct TagsSection: View {
                 if state.count > 0 {
                     Button(action: onAddTag) {
                         Image(systemName: "plus")
-                            .font(.system(size: InspectorLayout.rowFontSize, weight: .semibold))
+                            .font(.system(size: InspectorStyle.smallFontSize, weight: .semibold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(
@@ -923,10 +856,10 @@ private struct TagChip: View {
     var body: some View {
         HStack(spacing: 4) {
             Text(label)
-                .font(.system(size: InspectorLayout.rowFontSize))
+                .font(.system(size: InspectorStyle.smallFontSize))
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: InspectorLayout.rowFontSize))
+                    .font(.system(size: InspectorStyle.smallFontSize))
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)

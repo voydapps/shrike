@@ -592,4 +592,16 @@ final class FineRotationWorkflowTests: XCTestCase {
         }
     }
 
+    /// The Fine slider is centred: at 0.0 degrees it shows no accent fill.
+    func testFineSliderLooksUnsetAtZero() {
+        let panel = RotatePanel()
+        let slider = panel._angleSlider
+        if #available(macOS 26, *) {
+            XCTAssertEqual(slider.neutralValue, 0, "the fill starts at 0, so at rest nothing is filled")
+        } else {
+            XCTAssertEqual(slider.trackFillColor, .clear)
+            panel.setAngle(10); XCTAssertNil(slider.trackFillColor)
+            panel.setAngle(0); XCTAssertEqual(slider.trackFillColor, .clear)
+        }
+    }
 }

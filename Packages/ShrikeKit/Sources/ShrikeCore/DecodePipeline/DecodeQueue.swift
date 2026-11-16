@@ -133,7 +133,7 @@ public actor DecodeQueue {
     private var list: [any ImageSource] = [] { didSet { listIDsByPath = nil } }
     /// Standardized file path → decode ids of the list's files; built on
     /// first use after the list changes, so a burst of changed files is not
-    /// one full list scan each (audit MP-10).
+    /// one full list scan each.
     private var listIDsByPath: [String: [String]]?
     private var currentIndex: Int = 0 {
         didSet {
@@ -431,7 +431,7 @@ public actor DecodeQueue {
                 ShrikeSignposts.navigation.end("jumpTo", state, "superseded")
                 throw CancellationError()
             } catch DecodeQueueError.memoryBudgetExceeded where !respawned {
-                // COR-5: this task was started as a far neighbour (speculative, may be
+                // This task was started as a far neighbour (speculative, may be
                 // refused under memory pressure). The user has jumped onto it, so it is
                 // the current photo now: decode it again as REQUIRED instead of
                 // reporting a good file as unreadable.

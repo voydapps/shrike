@@ -5,6 +5,7 @@
 
 import XCTest
 import CoreGraphics
+import os
 @testable import ShrikeCore
 
 // MARK: - TestImageSource
@@ -26,7 +27,13 @@ struct TestImageSource: ImageSource {
     var fileSize: Int64? { 0 }
     var mtime: Date? { nil }
 
+    /// Decodes that have started and not yet returned (all instances).
+    /// Lets a test wait for stale work to end instead of sleeping.
+    static let inFlight = OSAllocatedUnfairLock(initialState: 0)
+
     func loadCGImage(maxPixelSize: Int?) async throws -> CGImage {
+        Self.inFlight.withLock { $0 += 1 }
+        defer { Self.inFlight.withLock { $0 -= 1 } }
         if decodeDelayMS > 0 {
             try? await Task.sleep(nanoseconds: UInt64(decodeDelayMS) * 1_000_000)
         }
@@ -92,8 +99,11 @@ final class DecodeQueueTests: XCTestCase {
 
         let q = DecodeQueue()
         await q.setNavigation(list: sources, currentIndex: 0)
-        // Drain prefetch.
-        try await Task.sleep(nanoseconds: 200_000_000)
+        // Drain prefetch: wait until the neighbour is cached, not a fixed time.
+        let primed = Set(sources.prefix(2).map(\.id))
+        for _ in 0..<1000 where !primed.isSubset(of: await q.cachedIDs()) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
 
         let (img1, i1) = try await q.advance()
         XCTAssertEqual(i1, 1)
@@ -144,7 +154,15 @@ final class DecodeQueueTests: XCTestCase {
         let sources = try makeNavList(count: 8, tmp: tmp)
         let q = DecodeQueue(idleTrimDelay: nil)
         await q.setNavigation(list: sources, currentIndex: 3)
-        try await Task.sleep(nanoseconds: 600_000_000)
+        for _ in 0..<1000 where await q.cachedIDs().count < 5 { try await Task.sleep(nanoseconds: 10_000_000) }
+        // A control queue over the same list with a short trim delay. Once it
+        // has trimmed, the queue under test has had the same chance to trim
+        // (it started earlier) and must still hold the whole window.
+        let control = DecodeQueue(idleTrimDelay: .milliseconds(50))
+        await control.setNavigation(list: sources, currentIndex: 3)
+        for _ in 0..<1000 where await control.cachedIDs().count != 3 { try await Task.sleep(nanoseconds: 10_000_000) }
+        let trimmed = await control.cachedIDs().count
+        XCTAssertEqual(trimmed, 3, "the control queue must have trimmed to the current photo and its neighbours")
         let n = await q.cachedIDs().count
         XCTAssertEqual(n, 5)
     }
@@ -288,6 +306,7 @@ final class DecodeQueueTests: XCTestCase {
         }
 
         let elapsed = Date().timeIntervalSince(start)
+        print("[DecodeQueue] 128-jump burst resolved in \(elapsed) s")
 
         // Sanity: all 128 jumps returned (either success or cancel);
         // none hung.
@@ -296,9 +315,14 @@ final class DecodeQueueTests: XCTestCase {
         // Target: well under 1 s. If the generation supersession broke,
         // stale jumps would each wait on their own 50 ms decode and
         // this would easily exceed 5 s. Leave some slack for CI noise.
-        XCTAssertLessThan(elapsed, 1.0,
+        // Wall-clock bound: opt-in (SHRIKE_BENCH=1) so a busy machine
+        // cannot fail the normal run. The structural check is the
+        // cancellation count in the sibling test above.
+        do {
+            perfAssertLessThan(elapsed, 1.0,
                           "128-jump burst took \(elapsed)s — expected < 1.0s; "
                           + "supersession regressed, stale jumps are decoding")
+        }
     }
 
     /// Jump to index 5 and immediately jump to index 80 before the

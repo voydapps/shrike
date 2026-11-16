@@ -18,7 +18,7 @@ public enum PairCopy {
     public static func alsoLine(for group: ImageGroup, shownURL: URL? = nil) -> String? {
         let raws = group.rawURLs.filter { $0 != group.primary }
         guard !raws.isEmpty else { return nil }
-        // Spec 24 §4.5: the shown file is never listed; with the RAW shown
+        // The shown file is never listed; with the RAW shown
         // the line names the primary instead.
         let others = (shownURL != nil && shownURL != group.primary) ? [group.primary] : raws
         let parts = others.map { url -> String in

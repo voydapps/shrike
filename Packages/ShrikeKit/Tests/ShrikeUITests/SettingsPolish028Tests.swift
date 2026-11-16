@@ -63,7 +63,7 @@ final class SettingsPolish028Tests: XCTestCase {
 
     func testThumbnailsHintReadsTheLiveDefault() {
         XCTAssertEqual(ThumbnailsTab.cellSizeHint,
-                       "Longest edge of a grid cell, in points. The default is \(Prefs.defaultThumbnailSizePt) pt.")
+                       "How large photos are in the grid. The default is \(Prefs.defaultThumbnailSizePt) pt.")
         XCTAssertFalse(ThumbnailsTab.cellSizeHint.contains("FastStone"))
         XCTAssertTrue(ThumbnailsTab.sizeOptions.contains(Prefs.defaultThumbnailSizePt))
     }
@@ -75,7 +75,7 @@ final class SettingsPolish028Tests: XCTestCase {
             XCTAssertFalse(row.label.isEmpty)
         }
         XCTAssertTrue(AdvancedTab.rowLabelsForTesting.contains { $0.hasControl })
-        XCTAssertEqual(AdvancedTab.configurationLabel, "Settings")
+        XCTAssertEqual(AdvancedTab.configurationLabel, "All settings")
     }
 
     // MARK: T1

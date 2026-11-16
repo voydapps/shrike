@@ -20,10 +20,9 @@ import Foundation
 
 /// Root-level grouping in the source list. Renders as a header row in the
 /// `NSOutlineView` (styled via `.sourceList`); headers do not collapse.
-/// Order: Workspace (one tree root, only while one is set; spec
-/// 23-workspace §2), Favorites (flat jumps, shown while there is at least
+/// Order: Workspace (one tree root, only while one is set),
+/// Favorites (flat jumps, shown while there is at least
 /// one), then Locations (Home first, then the volumes; each a tree root).
-/// Spec 22-sidebar §4.1.
 public enum FolderTreeSection: Sendable, Hashable, CaseIterable {
     case workspace
     case favorites
@@ -80,15 +79,15 @@ public final class FolderTreeNode: NSObject {
     public var symbolName = "folder"
     /// The Home root under Locations.
     public var isHome = false
-    /// The root row of the Workspace section (spec 23-workspace).
+    /// The root row of the Workspace section.
     public var isWorkspaceRoot = false
     /// A row inserted for one path part that the parent's listing did not
     /// show (hidden while "Show hidden files" is off, or a listing that
-    /// failed). Path only, drawn at 50 % (spec 22-sidebar §4.4 rule 5).
+    /// failed). Path only, drawn at 50 %.
     public var isPathRow = false
     /// Name starts with "." or the file system says hidden: drawn at 50 %.
     public var isHidden = false
-    /// The folder could not be read when it was opened (spec 22-sidebar §4.11).
+    /// The folder could not be read when it was opened.
     public var isUnreadable = false
     /// Drawn at 50 %: hidden folders and path rows.
     public var isDimmed: Bool { isHidden || isPathRow }
@@ -344,8 +343,7 @@ public final class FolderTreeDataSource {
 
     // MARK: Lookup by path
 
-    /// The tree row for folder `url`, found by path alone (spec
-    /// 22-sidebar §4.4).
+    /// The tree row for folder `url`, found by path alone.
     ///
     /// Picks the Locations root (Home or a volume, "/" last) whose path is
     /// the longest prefix of `url`, then loads children one path component

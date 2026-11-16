@@ -170,7 +170,7 @@ final class ViewerFullScreenTransition: NSObject, NSWindowDelegate {
         // Above the menu bar and Dock while moving, as in Apple's sample.
         window.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 1)
         NSAnimationContext.runAnimationGroup({ context in
-            // Reduce Motion: the window takes its new size at once (audit L15); the
+            // Reduce Motion: the window takes its new size at once; the
             // system's own transition cross-fades, this custom one would zoom the frame.
             context.duration = ReduceMotion.isOn ? 0 : max(0, duration)
             context.allowsImplicitAnimation = false

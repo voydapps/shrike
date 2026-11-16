@@ -5,7 +5,7 @@
 //  The edit tools render 8-bit RGBA. CMYK (and other non-RGB) photos can't
 //  be rendered that way, and grayscale can't go through Core Image's colour
 //  filters, so each tool used to hand back its input unchanged while the
-//  save said "Saved" (audit COR-1 / COR-2). Tools call `workingRGB` first,
+//  save said "Saved". Tools call `workingRGB` first,
 //  as `LevelsTool` always did, so the edit really happens. Converting is a
 //  change of file format, so `ImageExporter.capability` tells the user.
 //

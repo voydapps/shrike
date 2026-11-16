@@ -90,7 +90,7 @@ public final class NavigationFeedbackState {
     public let overlayIdleTimeout: TimeInterval
 
     /// When true, the position overlay fades out after `overlayIdleTimeout`
-    /// seconds of nav inactivity (the default, spec 24 §1.2). When false, the
+    /// seconds of nav inactivity (the default). When false, the
     /// overlay is held open for the life of the viewer window.
     ///
     /// Mirrored from `Prefs.viewerPositionOverlayAutoHides` by the viewer at

@@ -153,6 +153,85 @@ final class DrawnSizeTests: XCTestCase {
         XCTAssertEqual(viewer.imageViewForTesting.sourcePixelSize, CGSize(width: 8, height: 16))
     }
 
+    /// The flake of `testDelayedWatcherRedrawAfterRotateKeepsKnownDrawnSize`, made
+    /// certain: a size read that saw the file before a turn landed after the
+    /// turn was written, and put the old (landscape) size back.
+    func testStaleSizeReadLandingAfterRotateIsDropped() async throws {
+        let url = dir.appendingPathComponent("stale-read.jpg")
+        try SaveFlowTests.writeImage(url, type: .jpeg)
+        let viewer = await viewer(url)
+        defer { viewer.close() }
+        viewer.updateTitle()
+        let landscape = await settle(viewer, containing: "16 × 8")
+        XCTAssertTrue(landscape, viewer.subtitle)
+        // Read A: reads the unturned file, then waits at the gate.
+        let readStarted = DispatchSemaphore(value: 0), allowRead = DispatchSemaphore(value: 0)
+        defer { allowRead.signal() }
+        viewer.headerPixelSizeReaderForTesting = { url in
+            let size = WindowTitles.headerPixelSize(of: url)
+            readStarted.signal()
+            allowRead.wait()
+            return size
+        }
+        viewer.headerPixelSizes[url] = nil
+        viewer.updateTitle()
+        let started = await Task.detached { waitForSignal(readStarted) }.value
+        XCTAssertTrue(started)
+        // Read B lands first, as the viewer's own read did in the flake.
+        viewer.headerPixelSizeReaderForTesting = nil
+        viewer.updateTitle()
+        let known = await settle(viewer, containing: "16 × 8")
+        XCTAssertTrue(known, viewer.subtitle)
+        viewer.dispatch(.rotateRight)
+        await viewer.waitForOrientationWrites()
+        XCTAssertEqual(viewer.imageViewForTesting.sourcePixelSize, CGSize(width: 8, height: 16))
+        allowRead.signal()
+        // A bounded negative wait: with the bug read A lands within a few ms.
+        let deadline = Date().addingTimeInterval(1)
+        while viewer.imageViewForTesting.sourcePixelSize == CGSize(width: 8, height: 16), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(viewer.imageViewForTesting.sourcePixelSize, CGSize(width: 8, height: 16))
+        XCTAssertTrue(viewer.subtitle.contains("8 × 16"), viewer.subtitle)
+    }
+
+    /// Turned while the size is unknown; the read lands after the write timer
+    /// cleared the pending turn (file not yet written when it read): the title
+    /// still ends with the turned size.
+    func testTurnWhileSizeUnknownWithReadLandingAfterTheWriteEndsTurned() async throws {
+        let url = dir.appendingPathComponent("unknown-turn.jpg")
+        try SaveFlowTests.writeImage(url, type: .jpeg)
+        let viewer = await viewer(url)
+        defer { viewer.close() }
+        viewer.updateTitle()
+        let landscape = await settle(viewer, containing: "16 × 8")
+        XCTAssertTrue(landscape, viewer.subtitle)
+        // The read gets the unturned file, then waits at the gate.
+        let readStarted = DispatchSemaphore(value: 0), allowRead = DispatchSemaphore(value: 0)
+        defer { allowRead.signal() }
+        viewer.headerPixelSizeReaderForTesting = { url in
+            let size = WindowTitles.headerPixelSize(of: url)
+            readStarted.signal()
+            allowRead.wait()
+            return size
+        }
+        viewer.headerPixelSizes[url] = nil
+        viewer.updateTitle()
+        let started = await Task.detached { waitForSignal(readStarted) }.value
+        XCTAssertTrue(started)
+        viewer.headerPixelSizeReaderForTesting = nil
+        viewer.dispatch(.rotateRight)              // size unknown: nothing to swap yet
+        await viewer.waitForOrientationWrites()    // pending cleared, file written
+        allowRead.signal()                         // the old read lands now
+        let turned = await settle(viewer, containing: "8 × 16")
+        XCTAssertTrue(turned, viewer.subtitle)
+        let deadline = Date().addingTimeInterval(1)
+        while !viewer.subtitle.contains("16 × 8"), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(viewer.subtitle.contains("8 × 16"), viewer.subtitle)
+    }
+
     // Vector 1b: a turn pressed before the size read returned still ends portrait.
     func testRotateBeforeTheFirstReadReturnedStillEndsPortrait() async throws {
         let url = dir.appendingPathComponent("early.jpg")

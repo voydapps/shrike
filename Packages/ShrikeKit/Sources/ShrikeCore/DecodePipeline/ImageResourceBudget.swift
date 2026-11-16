@@ -96,7 +96,7 @@ public final class ImagePressureObservation: Sendable {
 public final class ImageResourceBudget: Sendable {
     /// How many discretionary jobs may run at once. At least as many as the
     /// thumbnail decode slots: every thumbnail job holds one reservation, so
-    /// a lower cap silently throttled them (measured 2026-10-24, audit MP-05:
+    /// a lower cap silently throttled them (measured 2026-10-24:
     /// cap 3 with 4 slots 53/s vs 69/s; cap 6 with 8 slots 99/s vs 119/s).
     /// On macOS 14 decodes run on the cooperative pool, so one core stays free.
     public static var defaultDiscretionaryWorkLimit: Int {

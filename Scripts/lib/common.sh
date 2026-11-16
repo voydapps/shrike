@@ -159,6 +159,16 @@ build_archive() {
     local start=$SECONDS dd
     dd="/tmp/shrike-dd.$$"
     [[ -e "$dd" ]] && rm -rf "$dd"
+    # SWIFT_OPTIMIZATION_LEVEL=-Osize: keeps the app under the 20 MB budget
+    # (_check_app_size below). Only a command-line setting reaches every target,
+    # including the GRDB package (a project.yml setting reaches the app target
+    # only). ShrikeCore and ShrikeRendering (decode, Metal) stay on -O through
+    # speedOptimizedSettings in Packages/ShrikeKit/Package.swift; launch and
+    # next/prev were measured unchanged with this setting (2026-11-14). Side
+    # effect: every package module is then compiled file by file (no
+    # whole-module / cross-module optimisation); whole-module everywhere costs
+    # +672 KB and gave no measurable launch gain (see Package.swift). Do not
+    # remove either half without re-measuring size, launch and next/prev.
     if ! xcodebuild archive \
             -project "$src/Shrike.xcodeproj" \
             -scheme Shrike \
@@ -166,6 +176,7 @@ build_archive() {
             -destination "generic/platform=macOS" \
             -derivedDataPath "$dd" \
             -archivePath "$archive" \
+            SWIFT_OPTIMIZATION_LEVEL=-Osize \
             CURRENT_PROJECT_VERSION="$build" \
             CODE_SIGNING_ALLOWED=NO \
             >"$log" 2>&1; then

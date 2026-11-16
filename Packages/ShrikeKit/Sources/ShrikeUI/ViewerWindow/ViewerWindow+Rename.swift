@@ -36,36 +36,62 @@ extension ViewerWindow {
 
     /// Renames every file of `group`, queued behind other file work.
     func rename(_ group: ImageGroup, to stem: String, registerUndo: Bool) {
+        runRename({ group }, { ops in try await ops.renameReporting(group, toStem: stem) }, done: { [weak self] result in
+            if registerUndo { self?.registerRenameUndo(RenameStep(result)) }
+        })
+    }
+
+    /// Undo / Redo of a rename: from its own result (filled in `from` when
+    /// the earlier step finished), through this window's `FileOps` (the
+    /// earlier-name memory is per instance; relaxed rules). Its result goes
+    /// into `into`, which the step already registered on the other stack reads.
+    func undoRename(from box: RenameStep, into next: RenameStep) {
+        // Read after the earlier step ran (it may still be queued now).
+        runRename({ box.shownGroup }, { ops in
+            // The earlier step failed: told with the rename failure toast, never silent.
+            guard let result = box.result else { throw CancellationError() }
+            return try await ops.undoRename(result)
+        }, done: { next.result = $0 })
+    }
+
+    private func runRename(_ shownGroup: @escaping @MainActor () -> ImageGroup?, _ work: @escaping @MainActor (FileOps) async throws -> RenameResult?,
+                           done: @escaping @MainActor (RenameResult) -> Void) {
         let ops = fileOps
         let previous = trashChain
         trashChain = Task { @MainActor [weak self] in
             await previous?.value
+            let group = shownGroup()
             do {
-                let renamed = try await ops.rename(group, toStem: stem)
-                self?.didRename(from: group, to: renamed, registerUndo: registerUndo)
+                guard let result = try await work(ops) else { return }
+                done(result)
+                self?.didRename(from: group ?? result.group, to: result.group)
+                if let notice = BackupNotice.standaloneToast(lead: BackupNotice.renamed,
+                                                             notSaved: result.backupsNotSaved, of: 1) {
+                    self?.contentRoot.toast(notice)
+                }
             } catch {
+                guard let group else { return }
                 self?.contentRoot.toast(ToastContent(RenameCopy.failed(group, error: error), kind: .error))
             }
         }
     }
 
-    private func didRename(from old: ImageGroup, to new: ImageGroup, registerUndo: Bool) {
+    private func didRename(from old: ImageGroup, to new: ImageGroup) {
         if let index = list.index(of: old.primary) {
             list.replace(at: index, with: new)
             evictFromDecodeCache(old.primary)
             reloadList(showing: intent.currentIndex)
         }
-        if registerUndo { registerRenameUndo(from: old, to: new) }
     }
 
-    /// The inverse is registered inside the undo so it lands on the redo
-    /// stack (and the other way round).
-    private func registerRenameUndo(from old: ImageGroup, to new: ImageGroup) {
-        let oldStem = old.primary.deletingPathExtension().lastPathComponent
+    private func registerRenameUndo(_ step: RenameStep) {
         windowUndoManager.registerUndo(withTarget: self) { target in
             MainActor.assumeIsolated {
-                target.registerRenameUndo(from: new, to: old)
-                target.rename(new, to: oldStem, registerUndo: false)
+                // Registered here, while the manager is undoing, so the
+                // inverse lands on the redo stack (and the other way round).
+                let next = RenameStep(nil, source: step)
+                target.registerRenameUndo(next)
+                target.undoRename(from: step, into: next)
             }
         }
         windowUndoManager.setActionName("Rename")

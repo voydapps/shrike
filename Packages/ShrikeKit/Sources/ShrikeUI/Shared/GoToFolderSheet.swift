@@ -140,7 +140,7 @@ final class GoToFolderSheet: NSObject, NSTextFieldDelegate {
     let panel: NSPanel
     private let base: URL?
     private let field = NSTextField()
-    private let errorLabel = NSTextField(labelWithString: GoToFolder.noFolderMessage)
+    private let errorView = ErrorMessageView()
     private let goButton = NSButton(title: "Go", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private var continuation: CheckedContinuation<GoToFolderTarget?, Never>?
@@ -169,9 +169,8 @@ final class GoToFolderSheet: NSObject, NSTextFieldDelegate {
         field.setAccessibilityLabel("Folder path")
         field.setAccessibilityHelp("Type a folder path. Press Tab to complete a folder name.")
 
-        errorLabel.font = ChromeTypography.font(11)
-        errorLabel.textColor = .systemRed
-        errorLabel.isHidden = true
+        errorView.label.stringValue = GoToFolder.noFolderMessage
+        errorView.normalHelp = "Type a folder path. Press Tab to complete a folder name."
 
         cancelButton.keyEquivalent = "\u{1b}"
         cancelButton.target = self
@@ -188,7 +187,7 @@ final class GoToFolderSheet: NSObject, NSTextFieldDelegate {
         let buttonRow = NSStackView(views: [spacer, buttons])
         buttonRow.orientation = .horizontal
 
-        let stack = NSStackView(views: [label, field, errorLabel, buttonRow])
+        let stack = NSStackView(views: [label, field, errorView, buttonRow])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -221,7 +220,7 @@ final class GoToFolderSheet: NSObject, NSTextFieldDelegate {
     // MARK: Field
 
     func controlTextDidChange(_ obj: Notification) {
-        errorLabel.isHidden = true
+        errorView.set(nil, for: field)
         updateGoButton()
     }
 
@@ -248,7 +247,7 @@ final class GoToFolderSheet: NSObject, NSTextFieldDelegate {
             if let editor = self.field.currentEditor() {
                 editor.selectedRange = NSRange(location: (completed as NSString).length, length: 0)
             }
-            self.errorLabel.isHidden = true
+            self.errorView.set(nil, for: self.field)
             self.updateGoButton()
         }
     }
@@ -285,10 +284,7 @@ final class GoToFolderSheet: NSObject, NSTextFieldDelegate {
             let target = await GoToFolder.resolve(typed, base: base)
             guard let self, !Task.isCancelled else { return }
             guard let target else {
-                self.errorLabel.isHidden = false
-                NSAccessibility.post(element: self.errorLabel, notification: .announcementRequested,
-                                     userInfo: [.announcement: GoToFolder.noFolderMessage,
-                                                .priority: NSAccessibilityPriorityLevel.high.rawValue])
+                self.errorView.set(GoToFolder.noFolderMessage, for: self.field, reannounce: true)
                 return
             }
             self.finish(target)
@@ -300,7 +296,8 @@ final class GoToFolderSheet: NSObject, NSTextFieldDelegate {
     var fieldForTesting: NSTextField { field }
     var goButtonForTesting: NSButton { goButton }
     var cancelButtonForTesting: NSButton { cancelButton }
-    var errorLabelForTesting: NSTextField { errorLabel }
+    var errorLabelForTesting: NSTextField { errorView.label }
+    var errorViewForTesting: ErrorMessageView { errorView }
     var isRunningForTesting: Bool { continuation != nil }
     func typeForTesting(_ text: String) {
         field.stringValue = text

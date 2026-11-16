@@ -70,8 +70,11 @@ final class WindowedViewerChromeTests: XCTestCase {
         let bar = try XCTUnwrap(window.toolbarController)
         let ids = bar.toolbar.items.map(\.itemIdentifier)
         let at = try XCTUnwrap(ids.firstIndex(of: ViewerWindowToolbar.ID.fullScreen))
-        XCTAssertEqual(ids[at + 1], .inspectorTrackingSeparator)
-        XCTAssertEqual(ids[at + 2], ViewerWindowToolbar.ID.inspector)
+        // Spec 28 §10 D: Full Screen, a fixed space, Trash, the separator, Info.
+        XCTAssertEqual(ids[at + 1], .space)
+        XCTAssertEqual(ids[at + 2], ViewerWindowToolbar.ID.trash)
+        XCTAssertEqual(ids[at + 3], .inspectorTrackingSeparator)
+        XCTAssertEqual(ids[at + 4], ViewerWindowToolbar.ID.inspector)
         let item = try XCTUnwrap(bar.item(ViewerWindowToolbar.ID.fullScreen))
         let button = try XCTUnwrap(item.view as? ToolbarToggleButton)
         XCTAssertEqual(button.command, .toggleFullScreen)
@@ -91,8 +94,8 @@ final class WindowedViewerChromeTests: XCTestCase {
     func testToolbarWindowSetupAndSubtitle() throws {
         let window = try makeViewer()
         defer { window.close() }
-        XCTAssertEqual(window.toolbar?.identifier, "shrike.viewer.toolbar.v3")
-        XCTAssertEqual(ViewerWindowToolbar.defaultItems.count, 14)
+        XCTAssertEqual(window.toolbar?.identifier, "shrike.viewer.toolbar.v4")
+        XCTAssertEqual(ViewerWindowToolbar.defaultItems.count, 15, "14 + the fixed space before Trash (spec 28 §10 D)")
         XCTAssertEqual(window.toolbar?.items.map(\.itemIdentifier), ViewerWindowToolbar.defaultItems)
         // Auto-hide is on by default: no titlebar backdrop under a hidden titlebar (user test 5).
         XCTAssertEqual(window.titlebarAppearsTransparent, window.autoHider?.isActive == true)
@@ -127,14 +130,14 @@ final class WindowedViewerChromeTests: XCTestCase {
         XCTAssertFalse(window.contentRootForTesting.inspectorPanel.headerReadsEnabled)
         XCTAssertEqual(split.inspectorItem.minimumThickness, 240)
         XCTAssertEqual(split.inspectorItem.maximumThickness, 360)
-        XCTAssertEqual(window.inspectorMenuTitle(), "Show Inspector")
+        XCTAssertEqual(window.inspectorMenuTitle(), "Show Info")
 
         window.dispatch(.toggleInspector)
         XCTAssertTrue(split.isInspectorShown)
         XCTAssertFalse(split.inspectorItem.isCollapsed)
         XCTAssertNotNil(split.inspectorController.contentView)
         XCTAssertTrue(window.contentRootForTesting.inspectorPanel.headerReadsEnabled)
-        XCTAssertEqual(window.inspectorMenuTitle(), "Hide Inspector")
+        XCTAssertEqual(window.inspectorMenuTitle(), "Hide Info")
         XCTAssertTrue(Prefs.viewerInspectorVisibleWindowed)
 
         // Full screen collapses it and puts it back after.

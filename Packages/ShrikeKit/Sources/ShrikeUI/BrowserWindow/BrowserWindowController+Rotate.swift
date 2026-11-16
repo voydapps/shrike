@@ -58,7 +58,9 @@ extension BrowserWindowController {
         let rotator = LosslessRotator(backupStore: store)
         let previous = orientationWriteChain
         let allFlips = pending.ops.allSatisfy { if case .rotate = $0 { return false }; return true }
+        orientationWritesInFlight += 1
         orientationWriteChain = Task { @MainActor [weak self] in
+            defer { self?.orientationWritesInFlight -= 1 }
             await previous?.value
             self?.watcherScope.ignore(paths: pending.urls, for: .seconds(2))
             var steps: [(URL, FileVersionStep)] = []
@@ -69,7 +71,7 @@ extension BrowserWindowController {
                     for op in writes { results.append(try await rotator.apply(op, to: url)) }
                     steps.append((url, FileVersionStep(record: results[0].backup)))
                 } catch {
-                    if let first = results.first { try? await rotator.undo(first) }
+                    if let first = results.first { _ = try? await rotator.undo(first) }
                     failed.append(url)
                 }
             }

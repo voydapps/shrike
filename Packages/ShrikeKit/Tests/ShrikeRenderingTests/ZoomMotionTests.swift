@@ -126,6 +126,19 @@ final class ZoomMotionTests: XCTestCase {
         return (below, view.fitPixelScale)
     }
 
+    /// Task 6 (spec 28 §2): on a broken file (error card) a pinch does nothing.
+    func testPinchDoesNothingBehindTheErrorCard() {
+        view.canvasIsEmptyBehindCard = true
+        let before = view.pixelScale
+        view.handleMagnify(magnification: 0.5, phase: .began, anchor: CGPoint(x: 400, y: 300))
+        view.handleMagnify(magnification: 0.5, phase: .changed, anchor: CGPoint(x: 400, y: 300))
+        XCTAssertEqual(view.pixelScale, before)
+        XCTAssertTrue(view.isAtFit)
+        view.canvasIsEmptyBehindCard = false
+        view.handleMagnify(magnification: 0.5, phase: .began, anchor: CGPoint(x: 400, y: 300))
+        XCTAssertGreaterThan(view.pixelScale, before, "a good photo zooms again")
+    }
+
     func testPinchReleaseBelowFitEasesBackToFit() {
         let (below, fit) = pinchBelowFitAndRelease()
         XCTAssertLessThan(below, fit * 0.9, "the pinch never went below Fit")

@@ -40,6 +40,13 @@ ShrikeSignposts.launch.end("documentController", docState)
 let appState = ShrikeSignposts.launch.begin("sharedApplication")
 let app = NSApplication.shared
 ShrikeSignposts.launch.end("sharedApplication", appState)
+#if DEBUG
+// Look checks only: `-ShrikeDebugAppAppearance light|dark` forces the app's
+// appearance without touching the system setting or the user's defaults.
+if let i = CommandLine.arguments.firstIndex(of: "-ShrikeDebugAppAppearance"), i + 1 < CommandLine.arguments.count {
+    app.appearance = NSAppearance(named: CommandLine.arguments[i + 1] == "light" ? .aqua : .darkAqua)
+}
+#endif
 
 let delegateState = ShrikeSignposts.launch.begin("appDelegateInit")
 let delegate = AppDelegate(launchSignpost: launchSignpost)

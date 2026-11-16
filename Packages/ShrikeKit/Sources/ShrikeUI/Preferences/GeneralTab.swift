@@ -12,7 +12,7 @@ import ShrikeCore
 
 struct GeneralTab: View {
 
-    /// Spec 27 T1: true for both wheel settings and both fit states.
+    /// True for both wheel settings and both fit states.
     static let wheelHelp = "On a trackpad, a short two-finger scroll moves to the next photo when the photo fits the window and the wheel is set to Changes photo."
 
 
@@ -56,8 +56,8 @@ struct GeneralTab: View {
             Section("Viewing") {
                 Toggle("Hide the toolbar when the pointer is still", isOn: store.viewerToolbarAutoHide)
                 Toggle("Background is always pure black", isOn: store.viewerBackgroundAlwaysBlack)
-                Toggle("Position overlay auto-hides after idle", isOn: store.viewerPositionOverlayAutoHides)
-                Toggle("Show Review Controls", isOn: store.reviewControlsVisible)
+                Toggle("Hide the photo name and number when idle", isOn: store.viewerPositionOverlayAutoHides)
+                Toggle("Show rating bar", isOn: store.reviewControlsVisible)
                 Toggle("Advance after rating", isOn: store.advanceAfterRating)
                 Picker("Text size", selection: store.largerChrome) {
                     Text("Standard").tag(false)
@@ -72,9 +72,9 @@ struct GeneralTab: View {
                     Text("Zooms").tag(false)
                 }
                 Text("Hold ⌘ for the other wheel action. Pinch to zoom. Swipe to change photos.")
-                DisclosureGroup("More Trackpad Controls") { Text(Self.wheelHelp).fixedSize(horizontal: false, vertical: true) }
+                DisclosureGroup("More trackpad controls") { Text(Self.wheelHelp).fixedSize(horizontal: false, vertical: true) }
             } header: {
-                Text("Mouse and Trackpad").font(.headline)
+                Text("Mouse and trackpad").font(.headline)
             }
         }
         .formStyle(.grouped)

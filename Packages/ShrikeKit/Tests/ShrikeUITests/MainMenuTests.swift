@@ -103,7 +103,7 @@ final class MenuKeyUniquenessTests: XCTestCase {
             XCTAssertFalse(bar.items(for: command).isEmpty, "\(command) missing")
         }
         let titles = Set(bar.menu.items.map(\.title))
-        XCTAssertEqual(titles, ["Shrike", "File", "Edit", "View", "Image", "Go", "Window", "Help"])
+        XCTAssertEqual(titles, ["Shrike", "File", "Edit", "View", "Photo", "Go", "Window", "Help"])
         XCTAssertFalse(bar.allItems.contains { $0.title == "Shrike Help" }, "no Help item named after the app")
         XCTAssertEqual(bar.items(for: .keyboardShortcuts).first?.keyEquivalent, "/")
         XCTAssertFalse(bar.items(for: .welcome).isEmpty)
@@ -235,7 +235,7 @@ final class MainMenuBuildTimingTests: XCTestCase {
         _ = makeBar()
         let warm = clock.now - warmStart
         print("SHRIKE_MENU_BUILD cold=\(cold) warm=\(warm) items=\(bar.allItems.count)")
-        XCTAssertLessThan(cold, .milliseconds(100))
+        perfAssertLessThan(cold, .milliseconds(100))
     }
 }
 

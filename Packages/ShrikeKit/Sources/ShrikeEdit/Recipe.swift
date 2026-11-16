@@ -424,13 +424,18 @@ public actor EditRecipe {
     /// Redo-only differences and superseded whole-state steps do not change
     /// the image. Known renderer identity geometry is ignored here only;
     /// the stored history and global effective replay remain unchanged.
+    /// Adjacent quarter turns that add up to a full turn count as no change.
     /// This compares replay values, without rendering pixels.
     public func hasContentChanges(since checkpoint: Checkpoint) -> Bool {
         Self.contentOperations(operations) != Self.contentOperations(checkpoint.operations)
     }
 
+    /// The effective replay with identity steps removed and each run of
+    /// adjacent quarter turns merged into one (sum mod 4, dropped when 0).
+    /// Only adjacent turns merge: a crop, resize or free rotation between
+    /// two turns blocks it. Used for comparison only, never for rendering.
     private static func contentOperations(_ operations: [EditOperation]) -> [EditOperation] {
-        effectiveOperations(operations).filter { operation in
+        let meaningful = effectiveOperations(operations).filter { operation in
             switch operation {
             case .rotate(let degrees), .rotateAutoCrop(let degrees): return !RotateTool.isIdentity(degrees: degrees)
             case .rotate90(let quarters): return quarters % 4 != 0
@@ -438,6 +443,19 @@ public actor EditRecipe {
             case .resize, .colorAdjust, .levels: return true
             }
         }
+        var result: [EditOperation] = []
+        for operation in meaningful {
+            if case .rotate90(let quarters) = operation, case .rotate90(let before)? = result.last {
+                result.removeLast()
+                let net = (((before + quarters) % 4) + 4) % 4
+                if net != 0 { result.append(.rotate90(quarters: net)) }
+            } else if case .rotate90(let quarters) = operation {
+                result.append(.rotate90(quarters: ((quarters % 4) + 4) % 4))
+            } else {
+                result.append(operation)
+            }
+        }
+        return result
     }
 }
 

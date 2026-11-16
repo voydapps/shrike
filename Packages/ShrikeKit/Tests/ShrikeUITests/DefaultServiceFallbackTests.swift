@@ -113,6 +113,26 @@ final class DefaultServiceFallbackTests: XCTestCase {
         }
     }
 
+    /// Audit C-2: when neither thumbnail folder can be made, the cache runs in memory
+    /// instead of ending the app with `fatalError`.
+    func testNoThumbnailFolderAnywhereFallsBackToMemoryInsteadOfCrashing() async throws {
+        try await withPaths { root, paths in
+            // Regular files where the parent folders should be: no folder can be created under them.
+            try Data([1]).write(to: paths.thumbnails.deletingLastPathComponent())
+            try Data([1]).write(to: paths.thumbnailFallback.deletingLastPathComponent())
+            let services = ShrikeServices.makeDefault(storagePaths: paths)
+            XCTAssertFalse(services.thumbnailCache.isPersistent)
+            let imageURL = root.appendingPathComponent("memory-only.jpg")
+            let context = try XCTUnwrap(CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+            let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(imageURL as CFURL, "public.jpeg" as CFString, 1, nil))
+            CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+            XCTAssertTrue(CGImageDestinationFinalize(destination))
+            let image = try await services.thumbnailCache.thumbnail(for: FileImageSource(url: imageURL), maxPixelSize: 32)
+            XCTAssertEqual(image.width, 32, "thumbnails still work, from memory")
+        }
+    }
+
     func testBothDatabasePathsBlockedUseMemoryAndRecoverToOwnedPrimary() async throws {
         try await withPaths { root, paths in
             try blockDatabase(paths.metadata)

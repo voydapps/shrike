@@ -312,7 +312,7 @@ final class MetadataStoreTests: XCTestCase {
         XCTAssertTrue(recs.values.allSatisfy { $0.rating == 4 })
         print(String(format: "[timing] MetadataStore.records(for: 1000) rows=%.2f ms (best of 5), "
                      + "no-rows/xattr=%.2f ms, setRating(1000)=%.2f ms", best, coldMs, writeMs))
-        XCTAssertLessThan(best, 250, "loose guard; see printed timing")
+        perfAssertLessThan(best, 250, "loose guard; see printed timing")
     }
 
     func testTransfer_copyAndMove() async throws {
@@ -433,6 +433,8 @@ final class MetadataStoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: b, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: c, withIntermediateDirectories: true)
 
+        // The 5 ms sleeps only separate the stored timestamps so the order is defined;
+        // a sleep never returns early, so a slow machine cannot break this.
         try await store.addRecentFolder(a)
         try await Task.sleep(nanoseconds: 5_000_000)
         try await store.addRecentFolder(b)

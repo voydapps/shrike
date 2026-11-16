@@ -198,6 +198,6 @@ public enum CompareFooter {
         return out
     }
 
-    /// "Shrike can't open “x.jpg”.".
-    public static func errorText(_ name: String) -> String { "Shrike can't open “\(name)”." }
+    /// "Can't open “x.jpg”.".
+    public static func errorText(_ name: String) -> String { "Can't open “\(name)”." }
 }

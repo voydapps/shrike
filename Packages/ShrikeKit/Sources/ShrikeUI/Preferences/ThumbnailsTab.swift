@@ -18,6 +18,16 @@ struct ThumbnailsTab: View {
     @EnvironmentObject private var store: PreferencesStore
     let thumbnailCache: ThumbnailCache?
 
+    /// Fixed when the cache is made; no cache counts as saved
+    /// (the old "no cache" state keeps its own rules).
+    var cacheIsPersistent: Bool { thumbnailCache?.isPersistent ?? true }
+
+    /// The quiet line above Max size when thumbnails cannot be saved.
+    static func notSavedLine(isPersistent: Bool) -> String? {
+        isPersistent ? nil
+            : "Shrike can't save thumbnails on this Mac right now. Photos still show, but the grid is slower each time you open Shrike."
+    }
+
     // Specifies 180 pt default + the five-step picker. Keep the set
     // explicit so the UI doesn't drift from the backing key's documented
     // defaults.
@@ -30,9 +40,9 @@ struct ThumbnailsTab: View {
         2 * 1024 * 1024 * 1024,
     ]
 
-    /// Spec 27 P3-6: the default comes from `Prefs`, so the hint and the code cannot disagree.
+    /// The default comes from `Prefs`, so the hint and the code cannot disagree.
     static var cellSizeHint: String {
-        "Longest edge of a grid cell, in points. The default is \(Prefs.defaultThumbnailSizePt) pt."
+        "How large photos are in the grid. The default is \(Prefs.defaultThumbnailSizePt) pt."
     }
 
     @State private var currentDiskBytes: Int64 = 0
@@ -43,7 +53,7 @@ struct ThumbnailsTab: View {
     var body: some View {
         Form {
             Section {
-                Picker("Cell size", selection: store.thumbnailSizePt) {
+                Picker("Thumbnail size", selection: store.thumbnailSizePt) {
                     ForEach(SettingsChoices.including(store.thumbnailSizePt.wrappedValue, in: Self.sizeOptions),
                             id: \.self) { size in
                         Text(verbatim: "\(size) pt").tag(size)
@@ -59,15 +69,27 @@ struct ThumbnailsTab: View {
             }
 
             Section {
+                if let line = Self.notSavedLine(isPersistent: cacheIsPersistent) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color(nsColor: .systemOrange))
+                            .accessibilityHidden(true)
+                        Text(line)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    .font(.system(size: ChromeTypography.size(12)))
+                }
                 Picker("Max size", selection: store.cacheDiskCeilingBytes) {
                     ForEach(SettingsChoices.including(store.cacheDiskCeilingBytes.wrappedValue,
                                                       in: Self.ceilingOptions), id: \.self) { bytes in
                         Text(PreferencesByteFormat.string(fromBytes: bytes)).tag(bytes)
                     }
                 }
+                .disabled(!cacheIsPersistent)
 
                 LabeledContent("Current disk usage",
-                               value: currentDiskBytes > 0
+                               value: cacheIsPersistent && currentDiskBytes > 0
                                 ? PreferencesByteFormat.string(fromBytes: currentDiskBytes)
                                 : "—")
 
@@ -80,7 +102,7 @@ struct ThumbnailsTab: View {
                     Button(clearing ? "Clearing…" : "Clear Cache…", role: .destructive) {
                         showClearConfirmation = true
                     }
-                    .disabled(thumbnailCache == nil || clearing)
+                    .disabled(thumbnailCache == nil || !cacheIsPersistent || clearing)
                 }
             } header: {
                 Text("Cache").font(.headline)
@@ -96,7 +118,7 @@ struct ThumbnailsTab: View {
             Task { await applyCeiling(bytes) }
         }
         .confirmationDialog(
-            "Clear Thumbnail Cache?",
+            "Clear thumbnail cache?",
             isPresented: $showClearConfirmation,
             titleVisibility: .visible
         ) {

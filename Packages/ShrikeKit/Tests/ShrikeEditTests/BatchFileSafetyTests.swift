@@ -110,7 +110,7 @@ final class BatchFileSafetyTests: XCTestCase {
         XCTAssertEqual(BatchRunner.Header(srcs[0])?.displaySize.width, 100)
         XCTAssertEqual(result.replacedOriginals.count, 2)
         XCTAssertTrue(result.canUndo)
-        try await runner.undo(result)
+        _ = try await runner.undo(result)
         XCTAssertEqual(try srcs.map { try Data(contentsOf: $0) }, before)
     }
 

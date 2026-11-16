@@ -92,7 +92,7 @@ public final class AppCommands: NSObject, NSMenuItemValidation {
     public let coordinator: WindowCoordinator
     public var panelRunner: any OpenPanelRunning = SystemOpenPanelRunner()
     public var defaults: UserDefaults = ShrikeDefaults.store
-    /// The pinned folder (spec 23-workspace).
+    /// The pinned folder.
     public var workspace: WorkspaceStore {
         get { coordinator.workspaceStore }
         set { coordinator.workspaceStore = newValue }
@@ -104,6 +104,9 @@ public final class AppCommands: NSObject, NSMenuItemValidation {
     public var onShowSettings: ((PreferencesTab?) -> Void)? {
         didSet {
             ExternalEditors.openSettingsTab = { [weak self] in self?.onShowSettings?(.externalEditors) }
+            // The Keyboard Shortcuts window's "Settings…" link works however the window was opened
+            // (Help menu, ⌘/, or the Show All Shortcuts… button in Settings).
+            ShortcutsWindowController.openSettings = { [weak self] in self?.onShowSettings?(.shortcuts) }
         }
     }
     /// Where chosen items go. `asBrowsers` = Open Folder… (always a
@@ -184,7 +187,6 @@ public final class AppCommands: NSObject, NSMenuItemValidation {
     }
 
     @objc public func showKeyboardShortcuts(_ sender: Any?) {
-        ShortcutsWindowController.shared.openSettings = { [weak self] in self?.onShowSettings?(.shortcuts) }
         ShortcutsWindowController.shared.toggle()
     }
 

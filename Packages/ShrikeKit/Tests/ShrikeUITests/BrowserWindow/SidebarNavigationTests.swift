@@ -438,7 +438,8 @@ final class SidebarNavigationTests: XCTestCase {
         let (tree, window, _) = makeTree(favorites: [url("Pics")]); defer { window.close() }
         _ = tree.view
         let cell = try XCTUnwrap(tree.cellForTesting(row: 1))
-        XCTAssertTrue(cell.textField?.allowsExpansionToolTips == true)
+        // Spec 28 §1: the tooltip is the cell's own (no expansion tooltips).
+        XCTAssertFalse(cell.textField?.allowsExpansionToolTips == true)
         XCTAssertEqual(cell.textField?.lineBreakMode, .byTruncatingTail)
     }
 
@@ -514,7 +515,7 @@ final class SidebarNavigationTests: XCTestCase {
         _ = tree.view
         let outline = tree.outlineViewForTesting
         tree.dataSource.lister = { folder, hidden in
-            if folder.lastPathComponent == "A" { Thread.sleep(forTimeInterval: 0.9) }
+            if folder.lastPathComponent == "A" { Thread.sleep(forTimeInterval: 0.9) }   // simulated slow read of A, so the test can race B past it
             return try FolderTreeDataSource.readSubfolders(of: folder, showHidden: hidden)
         }
         let volume = try XCTUnwrap(tree.dataSource.locationsSection?.children.first { $0.kind == .volume })

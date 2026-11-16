@@ -2,7 +2,7 @@
 //  ViewerWindow+EditWidth.swift
 //  ShrikeUI
 //
-//  Spec 27 V7 and N2: edit mode has its own minimum canvas width (648 pt).
+//  Edit mode has its own minimum canvas width (648 pt).
 //  Entering edit in a window: the inspector steps aside first when the canvas
 //  is narrower, then the window widens (left edge fixed, shifted back inside
 //  the screen when needed). While editing the window cannot shrink below it.
@@ -38,7 +38,9 @@ extension ViewerWindow {
             splitController?.editModeChanged(active: true)
             guard contentRoot.windowMode == .windowed, !inFullScreenNow else { return }
             makeRoomForEditing()
-            // Spec 27 N2: the edit toolbar is never left hidden by the auto-hide.
+            // Chosen once, after the widening, so it never flickers.
+            syncEditPickerForm(fresh: true)
+            // The edit toolbar is never left hidden by the auto-hide.
             autoHider?.show(animated: false)
         } else {
             // Decide on the width before the inspector comes back: reopening it makes
@@ -52,10 +54,11 @@ extension ViewerWindow {
     /// While editing in a window, a frame narrower than the minimum canvas is
     /// widened at once. `contentMinSize` only stops a drag; `setFrame` from code
     /// or from Accessibility goes past it, and the 296 pt tool column then
-    /// covered half the photo (audit 2026-10-13, item 3).
+    /// covered half the photo.
     @objc func editWindowDidResize(_ note: Notification) {
         guard editLayoutActive, !editWidthResizing, !inFullScreenNow,
               contentRoot.windowMode == .windowed else { return }
+        defer { syncEditPickerForm(fresh: false) }
         let content = contentRect(forFrameRect: frame).width
         guard content < EditLayout.minCanvasWidth - 0.5 else { return }
         // The inspector gives its room back first, as on entry.
@@ -84,6 +87,17 @@ extension ViewerWindow {
             return
         }
         if let target = widthReturnTarget() { setEditWidthFrame(target) }
+    }
+
+    /// The edit toolbar's tool picker shows words or icons by the
+    /// window width (the toolbar spans the window), with hysteresis. Runs on resize only.
+    /// `fresh`: edit just started, so no earlier form counts.
+    func syncEditPickerForm(fresh: Bool) {
+        let picker = contentRoot.editToolbarController.toolPicker
+        #if DEBUG
+        if let forced = EditPickerFormRule.debugForced { picker.form = forced; return }
+        #endif
+        picker.form = EditPickerFormRule.form(windowWidth: frame.width, current: fresh ? nil : picker.form)
     }
 
     /// The canvas width now: the window's content minus the open inspector column.

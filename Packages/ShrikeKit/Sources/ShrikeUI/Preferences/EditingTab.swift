@@ -22,9 +22,12 @@ struct EditingTab: View {
     static let retentionOptions: [Int] = [7, 30, 90]
 
     @State private var backupBytes: Int64?
+    @State private var backupOverCap = false
+    /// The storage limit; read when the tab is built.
+    private var backupLimit: Int64 { Prefs.backupMaxBytes }
     @State private var isDeleting = false
 
-    /// The confirmation for "Delete All Backups…" (FS-11). Cancel is the default: Return
+    /// The confirmation for "Delete All Backups…". Cancel is the default: Return
     /// and Esc keep the backups. Only Shrike's own backup copies go, never the photos.
     struct DeleteAllCopy: Equatable {
         let message: String
@@ -45,7 +48,7 @@ struct EditingTab: View {
                 QualityRow(title: "HEIC quality", value: store.editHEICQuality)
                 Toggle("Keep metadata when saving", isOn: store.editPreserveEXIFOnSave)
                 Toggle("Remove location when saving", isOn: store.editStripGPSOnSave)
-                Text("Some basic edits use 8-bit colour. When conversion is needed, Save Copy… protects the higher-precision original.")
+                Text("Some edits use 8-bit color. If that would lose detail, use Save Copy… to keep the original.")
                     .font(.system(size: ChromeTypography.size(12))).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } header: {
                 Text("Saving").font(.headline)
@@ -58,16 +61,29 @@ struct EditingTab: View {
                         Text(verbatim: "\(days) days").tag(days)
                     }
                 }
-                Text("The original backup is kept while the original file remains at its recorded location, or while its disk is not connected. Older versions and backups of deleted files can be removed after this period or to meet the storage limit.")
+                Text(Self.helpText(limit: backupLimit))
                     .font(.system(size: ChromeTypography.size(12))).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Text(Self.usageLine(bytes: backupBytes))
+                    Text(Self.usageLine(bytes: backupBytes, limit: backupLimit))
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Show in Finder") { showInFinder() }
                         .disabled(backupStore == nil)
-                    Button("Delete All Backups…") { confirmDeleteAll() }
+                        .padding(.trailing, 8)   // with the stack's 8: a 16 pt gap
+                    Button("Delete All Backups…", role: .destructive) { confirmDeleteAll() }
+                        .foregroundStyle(.red)
                         .disabled(backupStore == nil || (backupBytes ?? 0) == 0 || isDeleting)
+                }
+                if backupOverCap, let line = Self.overLimitLine(limit: backupLimit) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color(nsColor: .systemOrange))
+                            .accessibilityHidden(true)
+                        Text(line)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    .font(.system(size: ChromeTypography.size(12)))
                 }
             } header: {
                 Text("Backups").font(.headline)
@@ -86,14 +102,30 @@ struct EditingTab: View {
             // Size computed when the tab opens, off the main thread (the
             // store is an actor).
             guard let backupStore else { return }
-            backupBytes = await backupStore.totalBytes()
+            let usage = await backupStore.usage()
+            backupBytes = usage.usedBytes
+            backupOverCap = usage.isOverCap
         }
         .preferencesResetFooter("Reset Editing to Defaults", tab: .editing)
     }
 
-    static func usageLine(bytes: Int64?) -> String {
-        guard let bytes else { return "Backups use —." }
-        return "Backups use \(PreferencesByteFormat.string(fromBytes: bytes))."
+    /// "Backups use 111 MB of 10 GB."; no limit set: the old line.
+    static func usageLine(bytes: Int64?, limit: Int64) -> String {
+        let used = bytes.map { PreferencesByteFormat.string(fromBytes: $0) } ?? "—"
+        guard limit > 0 else { return "Backups use \(used)." }
+        return "Backups use \(used) of \(PreferencesByteFormat.string(fromBytes: limit))."
+    }
+
+    static func helpText(limit: Int64) -> String {
+        let lead = "The original backup is kept while the original file remains at its recorded location, or while its disk is not connected. Older versions and backups of deleted files can be removed after this period "
+        guard limit > 0 else { return lead + "or to meet the storage limit." }
+        return lead + "or when backups use more than \(PreferencesByteFormat.string(fromBytes: limit))."
+    }
+
+    /// Shown when the store is over its limit (it can stay there: originals of photos that still exist are kept).
+    static func overLimitLine(limit: Int64) -> String? {
+        guard limit > 0 else { return nil }
+        return "Over the \(PreferencesByteFormat.string(fromBytes: limit)) limit. The rest are backups of photos that still exist, so Shrike keeps them."
     }
 
     private func confirmDeleteAll() {
@@ -104,10 +136,13 @@ struct EditingTab: View {
             let choice = await ShrikeAlert.run(
                 message: copy.message, information: copy.information,
                 buttons: [ShrikeAlert.Button(copy.deleteTitle, role: .destructive), .safeCancel()],
-                on: NSApp.keyWindow)
+                on: NSApp?.keyWindow)
             if choice == 0 {
                 _ = await backupStore.deleteAll()
-                backupBytes = await backupStore.totalBytes()
+                // Size and over-limit state from one read, or the "Over the … limit" line stays.
+                let usage = await backupStore.usage()
+                backupBytes = usage.usedBytes
+                backupOverCap = usage.isOverCap
             }
             isDeleting = false
         }

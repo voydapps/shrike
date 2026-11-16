@@ -14,7 +14,7 @@ import ShrikeRendering
 @MainActor
 final class ComparePaneView: NSView {
 
-    /// Only the footer text dims in an unfocused pane; the photo never does (spec 27 C1).
+    /// Only the footer text dims in an unfocused pane; the photo never does.
     static let unfocusedFooterAlpha: CGFloat = 0.6
 
     let imageView: MetalImageView
@@ -24,7 +24,7 @@ final class ComparePaneView: NSView {
     var onKeep: (() -> Void)?
     var onPrevious: (() -> Void)?
     var onNext: (() -> Void)?
-    private let keep = NSButton(checkboxWithTitle: "Keep Photo", target: nil, action: nil)
+    private let keep = NSButton(checkboxWithTitle: "Keep photo", target: nil, action: nil)
     private let previous = NSButton(title: "‹", target: nil, action: nil)
     private let next = NSButton(title: "›", target: nil, action: nil)
     private let navigationButtons = NSStackView()
@@ -32,6 +32,8 @@ final class ComparePaneView: NSView {
     private var hovered = false
     private var tracking: NSTrackingArea?
     private let focusRing = CompareFocusRingView()
+    /// The pane's own zoom, always visible at its bottom-right.
+    let zoomPill = CompareZoomPillView()
 
     var isFocused = false {
         didSet {
@@ -65,7 +67,7 @@ final class ComparePaneView: NSView {
         keep.target = self; keep.action = #selector(keepClicked)
         previous.target = self; previous.action = #selector(previousClicked)
         next.target = self; next.action = #selector(nextClicked)
-        previous.setAccessibilityLabel("Previous candidate"); next.setAccessibilityLabel("Next candidate")
+        previous.setAccessibilityLabel("Previous photo"); next.setAccessibilityLabel("Next photo")
         navigationButtons.orientation = .horizontal; navigationButtons.spacing = 4
         for button in [previous, keep, next] {
             button.font = ChromeTypography.font(12)
@@ -100,6 +102,15 @@ final class ComparePaneView: NSView {
             errorLabel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -24),
         ])
 
+        zoomPill.isHidden = true   // no photo, no percentage
+        zoomPill.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(zoomPill)
+        NSLayoutConstraint.activate([
+            zoomPill.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -CompareZoomPill.inset),
+            zoomPill.bottomAnchor.constraint(equalTo: bottomAnchor,
+                                             constant: -(footer.frame.height + CompareZoomPill.inset)),
+        ])
+
         focusRing.frame = bounds
         focusRing.autoresizingMask = [.width, .height]
         focusRing.isHidden = true
@@ -126,6 +137,15 @@ final class ComparePaneView: NSView {
     override func layout() {
         super.layout()
         refitFooter()
+        refreshZoomPill()   // a resize at Fit changes the percentage without a zoom callback
+    }
+
+    /// Shows the photo's pixel percent (`pixelScale`: 100 % = one source
+    /// pixel per screen pixel, never the texture zoom); hidden with no photo.
+    func refreshZoomPill() {
+        let scale = CompareZoomPill.shownScale(hasImage: imageView.image != nil, pixelScale: imageView.pixelScale)
+        zoomPill.isHidden = scale == nil
+        if let scale { zoomPill.setPixelScale(scale) }
     }
 
     /// The name is cut with `FileNameFit` so the rest of the footer stays whole.
@@ -170,11 +190,11 @@ final class ComparePaneView: NSView {
 
     func setReference(_ reference: Bool, canPrevious: Bool, canNext: Bool) {
         self.reference = reference; keep.state = reference ? .on : .off
-        keep.toolTip = "Keep this photo while changing candidates"
-        keep.setAccessibilityLabel("Keep Photo")
+        keep.toolTip = "Keep this photo here. The arrow keys change only the other panes."
+        keep.setAccessibilityLabel("Keep photo")
         previous.isEnabled = !reference && canPrevious; next.isEnabled = !reference && canNext
-        previous.toolTip = reference ? "Uncheck Keep Photo to change this photo" : "Previous candidate"
-        next.toolTip = reference ? "Uncheck Keep Photo to change this photo" : "Next candidate"
+        previous.toolTip = reference ? "Uncheck Keep photo to change this photo" : "Previous photo"
+        next.toolTip = reference ? "Uncheck Keep photo to change this photo" : "Next photo"
         refreshActions()
     }
     private func refreshActions() { navigationButtons.isHidden = !(reference || hovered || isFocused) }
@@ -191,10 +211,14 @@ final class ComparePaneView: NSView {
     @objc private func nextClicked() { onNext?() }
 
     var footerAlphaForTesting: CGFloat { footerLabel.alphaValue }
+    #if DEBUG
+    var paneControlsForTesting: [NSButton] { [previous, keep, next] }
+    #endif
 
     func showError(_ text: String?) {
         errorLabel.stringValue = text ?? ""
         errorLabel.isHidden = text == nil
+        refreshZoomPill()
     }
 
     /// The footer and the border never take clicks: they go to the image.
@@ -235,5 +259,68 @@ final class CompareFocusRingView: NSView {
         updateLayer()
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// The Compare pane's zoom pill. Pure parts.
+enum CompareZoomPill {
+    static let inset: CGFloat = 8
+    static let fontSize: CGFloat = 11
+
+    static func percent(pixelScale: Double) -> Int { Int((pixelScale * 100).rounded()) }
+
+    /// `24 %` (the app writes a space before %).
+    static func text(pixelScale: Double) -> String { "\(percent(pixelScale: pixelScale)) %" }
+
+    /// `Zoom 24 percent`, as the photo view says it.
+    static func spoken(pixelScale: Double) -> String {
+        PhotoViewAccessibility.value(pixelScale: pixelScale, isPreview: false)
+    }
+
+    /// The scale to show, or nil (hidden) when the pane has no photo.
+    static func shownScale(hasImage: Bool, pixelScale: Double) -> Double? {
+        hasImage && pixelScale.isFinite && pixelScale > 0 ? pixelScale : nil
+    }
+}
+
+/// The pill: the viewer zoom HUD's look (`HUDSurfaceView`, capsule; opaque
+/// under Reduce transparency through the surface itself), 11 pt digits.
+@MainActor
+final class CompareZoomPillView: HUDSurfaceView {
+    private let label = NSTextField(labelWithString: "")
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        glassShape = .capsule
+        label.textColor = .white
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setAccessibilityElement(false)   // the pill speaks for it
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+        ])
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func setPixelScale(_ scale: Double) {
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: ChromeTypography.size(CompareZoomPill.fontSize), weight: .regular)
+        let text = CompareZoomPill.text(pixelScale: scale)
+        if label.stringValue != text { label.stringValue = text }
+        setAccessibilityLabel(CompareZoomPill.spoken(pixelScale: scale))
+    }
+
+    var text: String { label.stringValue }
+    #if DEBUG
+    var fontForTesting: NSFont? { label.font }
+    #endif
+
+    // Clicks go to the photo underneath.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

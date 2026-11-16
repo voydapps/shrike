@@ -6,8 +6,8 @@
 //
 //  * Viewer: title = file name of the displayed primary, subtitle
 //    "43 of 180 · 6000 × 4000".
-//  * Browser: title = folder name, subtitle "252 images", or
-//    "47 of 252 images" when a filter hides some.
+//  * Browser: title = folder name, subtitle "252 photos", or
+//    "47 of 252 photos" when a filter hides some.
 //
 
 import Foundation
@@ -27,7 +27,7 @@ public enum WindowTitles {
         return total == 1 ? pixels : "\(position) · \(pixels)"
     }
 
-    /// "252 images", "1 image", or "47 of 252 images" when filtered.
+    /// "252 photos", "1 photo", or "47 of 252 photos" when filtered.
     public static func browserSubtitle(visible: Int, total: Int) -> String {
         let noun = total == 1 ? "photo" : "photos"
         if visible == total { return "\(total.formatted(.number)) \(noun)" }

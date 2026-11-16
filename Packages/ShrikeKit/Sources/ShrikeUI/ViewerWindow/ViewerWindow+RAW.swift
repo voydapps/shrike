@@ -2,7 +2,7 @@
 //  ViewerWindow+RAW.swift
 //  ShrikeUI
 //
-//  Spec 24 §4: the view-only RAW <-> primary switch for a pair.
+//  The view-only RAW <-> primary switch for a pair.
 //
 //  The switch swaps the shown index's source in the window's own list for
 //  `FileImageSource(url: group.rawURL)` and navigates to it, so the RAW goes
@@ -27,7 +27,7 @@ extension ViewerWindow {
     }
 
     /// Rotate / Edit are off while the RAW is shown, from the moment the switch
-    /// starts (spec 27 N11: the toolbar never looks enabled for a turn).
+    /// starts.
     func rawBlocksEditing(_ item: DisplayedItem?) -> Bool {
         (item?.isRAWShown ?? false) || contentRoot.editBlockedByRAW
     }
@@ -58,7 +58,7 @@ extension ViewerWindow {
         return kind == "JPEG" ? "JPG" : kind
     }
 
-    static let rawEditBlockedCopy = "RAW files are not changed. Switch to the JPEG to edit."
+    static let rawEditBlockedCopy = ViewerGreyReason.rawLine
     static let rawCannotOpenCopy = "macOS can\u{2019}t open this RAW file."
 
     /// Actions that would write or edit the shown file; refused while the
@@ -84,7 +84,7 @@ extension ViewerWindow {
 
     // MARK: - Switch
 
-    /// ⌥R, the Image menu line, the context menu line and the pill chip.
+    /// ⌥R, the Photo menu line, the context menu line and the pill chip.
     func toggleRAWFile() {
         guard canToggleRAWFile, let item = displayedItem else { return }
         let index = item.listIndex
@@ -94,7 +94,7 @@ extension ViewerWindow {
         }
         guard let raw = item.group.rawURL else { return }
         rawSwitchTask?.cancel()
-        // Spec 27 N11: Edit and Rotate are off in this very turn, before the
+        // Edit and Rotate are off in this very turn, before the
         // RAW is checked. An unreadable RAW puts them back.
         contentRoot.editBlockedByRAW = true
         toolbar?.validateVisibleItems()
@@ -151,7 +151,7 @@ extension ViewerWindow {
     }
 
     /// Leaving a photo that shows its RAW: its slot shows the primary again
-    /// before the move (spec 24 §4.1). `to` is where the user is going.
+    /// before the move. `to` is where the user is going.
     func restorePrimarySourcesBeforeLeaving(to target: Int) async {
         guard let item = displayedItem, item.isRAWShown, item.listIndex != target else { return }
         let sources = sources(replacing: -1, with: nil)

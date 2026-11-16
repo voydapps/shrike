@@ -65,6 +65,51 @@ final class TagEditorTests: XCTestCase {
     }
 
     // T, click Red → the file carries the Red tag.
+    /// The popover reads tags off the main actor: until they arrive the dots
+    /// are off and disabled, and a click changes nothing.
+    func testPopoverDotsWaitForTheTagsReadOffTheMainActor() async throws {
+        let url = try file("a.jpg")
+        try FinderTags.write(url, tags: ["Red"])
+        let gate = ReadGate()
+        let session = TagEditSession(groups: [ImageGroup(primary: url)], colorTags: [red, blue],
+                                     undoManager: nil, onChange: { _ in }, onError: { XCTFail($0) },
+                                     read: { urls in await gate.wait(urls) })
+        let controller = TagsPopoverController(session: session)
+        _ = controller.view
+        XCTAssertFalse(session.isLoaded)
+        XCTAssertEqual(controller.toggles.map(\.state), [.off, .off], "neutral while the read runs")
+        XCTAssertEqual(controller.toggles.map(\.isEnabled), [false, false])
+        session.toggle(blue)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(FinderTags.read(url), ["Red"], "a click during the read writes nothing")
+        await gate.release()
+        let loaded = await waitFor { session.isLoaded }
+        XCTAssertTrue(loaded)
+        XCTAssertEqual(controller.toggles.map(\.state), [.on, .off])
+        XCTAssertEqual(controller.toggles.map(\.isEnabled), [true, true])
+    }
+
+    private actor ReadGate {
+        private var waiter: CheckedContinuation<Void, Never>?
+        private var open = false
+        func wait(_ urls: [URL]) async -> [URL: [String]] {
+            if !open { await withCheckedContinuation { waiter = $0 } }
+            var tags: [URL: [String]] = [:]
+            for url in urls { tags[url] = FinderTags.read(url) }
+            return tags
+        }
+        func release() { open = true; waiter?.resume(); waiter = nil }
+    }
+
+    private func waitFor(_ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
+
     func testColourToggleWritesPrimaryAndRAWButNotSidecar() async throws {
         let jpg = try file("P1.JPG"), orf = try file("P1.ORF"), xmp = try file("P1.xmp")
         let group = ImageGroup(primary: jpg, companions: [
@@ -147,6 +192,8 @@ final class TagEditorTests: XCTestCase {
         viewer.handleKeySnapshot(ShrikeUI.KeyEventSnapshot(key: "t", modifiers: []))
         let session = try XCTUnwrap(opened)
         XCTAssertEqual(session.groups.map(\.primary), [a])
+        let loaded = await waitFor { session.isLoaded }
+        XCTAssertTrue(loaded, "the popover's tags are read off the main actor")
         session.add(["Client"])
         await FinderTagWriter.shared.flush()
         let deadline = Date().addingTimeInterval(2)
@@ -191,6 +238,8 @@ final class TagEditorTests: XCTestCase {
         browser.tagPopoverPresenterForTesting = { opened = $0 }
         inspector.addTagTapped()
         let session = try XCTUnwrap(opened, "the + chip opens the Tags popover")
+        let loaded = await waitFor { session.isLoaded }
+        XCTAssertTrue(loaded, "the popover's tags are read off the main actor")
         XCTAssertEqual(Set(session.groups.map(\.primary.lastPathComponent)), ["a.jpg", "b.jpg"])
         XCTAssertEqual(session.commonTags, ["Client"])
     }

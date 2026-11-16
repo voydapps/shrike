@@ -35,7 +35,7 @@ final class EditPlatterContrast0210Tests: XCTestCase {
     }
 
     func testChosenToolPlatterAndRingAreAtLeast3To1OnTheDarkBar() throws {
-        let bar = Bar(frame: NSRect(x: 0, y: 0, width: 160, height: 28))
+        let bar = Bar(frame: NSRect(x: 0, y: 0, width: EditToolPicker.totalWidth, height: 28))
         bar.appearance = NSAppearance(named: .darkAqua)
         let picker = EditToolPicker()
         picker.frame = bar.bounds
@@ -53,13 +53,14 @@ final class EditPlatterContrast0210Tests: XCTestCase {
         XCTAssertEqual(luminance(barColor), luminance(NSColor(srgbRed: 17 / 255, green: 17 / 255, blue: 17 / 255, alpha: 1)),
                        accuracy: 0.004, "the sample bar is the audit's (17,17,17)")
 
-        // Segment 1 spans x 32...64. Fill: inside the platter, above the glyph.
-        let fill = try pixel(48, 5)
+        // Segment 1 (worded since spec 28 §10 B). Fill: inside the platter, above the glyph and word.
+        let segment = picker.segmentViewsForTesting[1].frame
+        let fill = try pixel(segment.midX, 5)
         XCTAssertGreaterThanOrEqual(ratio(fill, barColor), 3.0, "platter fill vs bar")
         // Ring: the leftmost drawn column of the platter, mid height.
         var best = 0.0
         for dx in stride(from: 0.0, through: 6.0, by: 0.5) {
-            best = max(best, ratio(try pixel(32 + dx, 14), barColor))
+            best = max(best, ratio(try pixel(segment.minX + dx, 14), barColor))
         }
         XCTAssertGreaterThanOrEqual(best, 3.0, "ring vs bar")
         // And it stays clearly blue, not grey.

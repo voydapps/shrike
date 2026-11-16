@@ -2,10 +2,10 @@
 //  ShortcutsTab.swift
 //  ShrikeUI
 //
-//  Settings ▸ Shortcuts. A preset popup and a
-//  read-only list of every key the preset uses, read from `ShortcutTable`
-//  — the same rows the keymaps and the menu bar use, so the list can
-//  never drift from what the keys do.
+//  Settings ▸ Shortcuts. The preset popup, one line of help and a button that
+//  opens the Keyboard Shortcuts window. The long list lives only
+//  there; its rows come from `ShortcutsTab.sections(for:)`, which reads
+//  `ShortcutTable` — the same rows the keymaps and the menu bar use.
 //
 
 import SwiftUI
@@ -25,31 +25,19 @@ struct ShortcutsTab: View {
                 .onChange(of: selectedPreset) { _, newValue in
                     Prefs.shortcutPreset = newValue
                 }
-                Text("Choose a preset. The list shows every key it uses.")
+                Text(Self.presetHelp)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Text("Search all keys with Help ▸ Keyboard Shortcuts (⌘/).")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(ShortcutsTab.sections(for: selectedPreset), id: \.title) { section in
-                Section(section.title) {
-                    // The id carries the section: "Zoom In" is in three of them.
-                    ForEach(section.rows.map { (id: "\(section.title)/\($0.action)", row: $0) }, id: \.id) { item in
-                        let row = item.row
-                        LabeledContent(row.action) {
-                            Text(row.keys)
-                                .font(.system(size: ShortcutsTab.keysFontSize))
-                                .monospacedDigit()
-                                .textSelection(.enabled)
-                        }
-                        .accessibilityElement(children: .combine)
-                    }
-                }
+                // An AppKit button that names itself (SwiftUI's left it unnamed).
+                BatchTextButton(Self.showAllTitle) { ShortcutsWindowController.shared.show() }
+                    .fixedSize()
             }
         }
         .formStyle(.grouped)
     }
+
+    static let presetHelp = "Choose a preset. Use Show All Shortcuts… to see every key."
+    static let showAllTitle = "Show All Shortcuts…"
 
     struct Row: Equatable { let action: String; let keys: String }
 
@@ -71,10 +59,14 @@ struct ShortcutsTab: View {
             var rows: [Row] = []
             for row in ShortcutTable.rows(for: preset)
             where row.context == context && seen.insert(row.command).inserted {
-                rows.append(Row(
-                    action: row.command.shortcutsTabTitle,
-                    keys: ShortcutTable.displayString(for: row.command, context: context, preset: preset)
-                ))
+                // Best Fit runs the same code as Zoom to Fit: one row, all its keys.
+                if row.command == .zoomBestFit { continue }
+                var keys = ShortcutTable.displayString(for: row.command, context: context, preset: preset)
+                if row.command == .zoomToFit {
+                    let twin = ShortcutTable.displayString(for: .zoomBestFit, context: context, preset: preset)
+                    if !twin.isEmpty { keys += ", " + twin }
+                }
+                rows.append(Row(action: row.command.shortcutsTabTitle, keys: keys))
             }
             return SectionModel(title: title, rows: rows)
         }

@@ -85,7 +85,7 @@ final class Fixes027dTests: XCTestCase {
 
     func testHintsAreNotDrawnAtLaunchButWhenAMenuOpens() throws {
         let bar = bar()
-        let image = try menu(bar, "Image")
+        let image = try menu(bar, "Photo")
         let flag = try XCTUnwrap(bar.items(for: .toggleFlag).first)
         XCTAssertNil(flag.badge, "nothing is drawn while the bar is built")
         bar.menuNeedsUpdate(image)
@@ -195,7 +195,7 @@ final class Fixes027dTests: XCTestCase {
         XCTAssertEqual(specs, 1, "the first Return commits the field")
         XCTAssertEqual(panel._heightField.stringValue, "2000")
         XCTAssertEqual(counter.count, 0, "and is not Done")
-        try await Task.sleep(nanoseconds: 100_000_000)
+        for _ in 0..<2500 where field.currentEditor() != nil { try await Task.sleep(nanoseconds: 2_000_000) }
         XCTAssertNil(field.currentEditor(), "the field gave up focus")
         window.sendEvent(keyDown("\r", code: 36, in: window))
         XCTAssertEqual(counter.count, 1, "the next Return is Done")

@@ -71,12 +71,14 @@ public final class EditModeController {
 
     // MARK: - Session state
 
-    public private(set) var isActive: Bool = false
+    public private(set) var isActive: Bool = false {
+        didSet { syncUnsavedEditHold() }
+    }
     /// Nil until a tool is picked.
     public private(set) var currentTool: EditTool?
     public private(set) var sourceURL: URL?
     /// Size, time and inode of the source when edit mode started: Save asks
-    /// first if another program changed the file since (audit FS-7).
+    /// first if another program changed the file since.
     private(set) var sourceStamp: FileStamp?
     public private(set) var originalImage: CGImage?
 
@@ -159,7 +161,6 @@ public final class EditModeController {
             for (control, enabled) in disabledForDecision { control.isEnabled = enabled }
             disabledForDecision = []
         }
-        cropOverlay.acceptsGeometryInput = !value && !isSaving
         publishChrome { $0.isTransitioning = value }
     }
 
@@ -313,7 +314,6 @@ public final class EditModeController {
             }
             disabledForSave = []
         }
-        cropOverlay.acceptsGeometryInput = !saving && !isTransitioning
         publishChrome { $0.isSaving = saving }
     }
     /// Caption-only projection. It does not consume draft edits, focus, history or pixels.
@@ -327,6 +327,7 @@ public final class EditModeController {
                     originY: rect.minY / currentPixelSize.height, width: rect.width / currentPixelSize.width,
                     height: rect.height / currentPixelSize.height)).map(EditOperation.crop)
             } else { pending = pendingCropRect().map(EditOperation.crop) }
+            (installedTool as? CropPanel)?.hasPendingChange = pending != nil
         } else if currentTool == .resize {
             pending = pendingResizeSpec(projected: true).map(EditOperation.resize)
         } else if currentTool == .levels {
@@ -400,6 +401,20 @@ public final class EditModeController {
     /// sync by `refreshPendingEditsMirror()` after any recipe mutation.
     /// Outside an active session this is always false.
     public private(set) var hasPendingEdits: Bool = false
+
+    /// Where unsaved edits are held. Tests put a counting registry here.
+    static var unsavedEditRegistry: ActiveWork = .unsavedEdits
+
+    /// While the title says "Unsaved changes" (the same state the exit
+    /// question checks), the system may not end the app without asking
+    /// (logout, restart). Not running work: the quit flow does not wait on
+    /// it. Ends on save, discard, undo back to clean, exit, window close and
+    /// when the controller goes away.
+    let unsavedEditHold = ActiveWorkHold(kind: .unsavedEdit, registry: EditModeController.unsavedEditRegistry)
+
+    private func syncUnsavedEditHold() {
+        unsavedEditHold.set(isActive && chromeState.hasUnsavedChanges, detail: sourceURL?.lastPathComponent ?? "")
+    }
 
     /// Fires when `hasPendingEdits` flips so the bar can refresh the
     /// Reset button's enabled state without polling.
@@ -480,6 +495,14 @@ public final class EditModeController {
         }
     }
 
+    /// Done's test: has the picture changed since this session started?
+    /// ⌘S uses it too, so edits that cancel out write nothing.
+    func hasSessionContentChanges(_ recipe: EditRecipe) async -> Bool {
+        let initial = await sessionCheckpointTask?.value
+        return if let initial { await recipe.hasContentChanges(since: initial) }
+            else { !EditRecipe.effectiveOperations(await recipe.snapshot()).isEmpty }
+    }
+
     /// The crop the overlay shows, normalised, or nil when it still
     /// covers the whole image (nothing to apply).
     func pendingCropRect() -> CropRect? { meaningfulCrop(overlayCropRect()) }
@@ -512,13 +535,18 @@ public final class EditModeController {
     private func publishChrome(_ change: (inout EditChromeState) -> Void) {
         var next = chromeState
         change(&next)
+        // The frame's input follows the state it is published with, so a
+        // reset state (a new session) can never leave a dead frame behind.
+        cropOverlay.acceptsGeometryInput = !next.isSaving && !next.isTransitioning
         guard next != chromeState else { return }
         chromeState = next
+        syncUnsavedEditHold()
         onChromeStateChanged?(next)
     }
 
     private func wireCropOverlay() {
         cropOverlay.isHidden = true
+        cropOverlay.onDone = { [weak self] in self?.done() }
         cropOverlay.onRectChanged = { [weak self] rect in
             guard rect.width > 0, rect.height > 0 else { return }
             (self?.installedTool as? CropPanel)?.setDimensions(width: Int(rect.width.rounded()), height: Int(rect.height.rounded()))
@@ -682,7 +710,13 @@ public final class EditModeController {
     }
 
     /// Explicit callers own their completion; they never replace a later session's handler.
-    func attemptExit(reason: EditExitReason, completion: @escaping (EditExitOutcome) -> Void) {
+    /// Quit with running work: `deferAnswer` gets a Save /
+    /// Save As / Don't Save answer instead of acting on it (the editor stays
+    /// as it was, outcome `.cancelled`); `presetChoice` later acts on that
+    /// answer without asking again.
+    func attemptExit(reason: EditExitReason, presetChoice: EditExitModal.Choice? = nil,
+                     deferAnswer: (@MainActor (EditExitModal.Choice) -> Void)? = nil,
+                     completion: @escaping (EditExitOutcome) -> Void) {
         guard !isSaving, !isTransitioning, exitPreparationTask == nil else {
             completion(.cancelled); return
         }
@@ -731,8 +765,16 @@ public final class EditModeController {
             }
             let content = EditExitModal.content(fileName: self.sourceURL?.lastPathComponent ?? "Untitled",
                 writable: !self.chromeState.requiresCopy, reason: reason, savePolicy: self.chromeState.savePolicy)
-            let choice = await self.askExitDecision(on: window, content: content)
+            let choice: EditExitModal.Choice
+            if let presetChoice { choice = presetChoice } else { choice = await self.askExitDecision(on: window, content: content) }
             guard self.validDecision(session, generation: generation) else { return }
+            if let deferAnswer, choice != .cancel {
+                // Nothing is saved or discarded yet; edit mode goes on as before the question.
+                await self.restoreCancelledDeparture(for: token)
+                deferAnswer(choice)
+                self.finishExitRequest(request, outcome: .cancelled)
+                return
+            }
             switch choice {
             case .save:
                 self.isAwaitingDepartureSave = true
@@ -744,6 +786,7 @@ public final class EditModeController {
                 let completion = self.takeExitCompletion(request)
                 self.finalizeExit(); completion?(.exited)
             case .cancel:
+                self.exitQuestionCancelCount &+= 1
                 await self.restoreCancelledDeparture(for: token)
                 self.finishExitRequest(request, outcome: .cancelled)
             }
@@ -758,6 +801,10 @@ public final class EditModeController {
     private func finishExitRequest(_ request: ExitRequest, outcome: EditExitOutcome) {
         takeExitCompletion(request)?(outcome)
     }
+
+    /// How many times the unsaved-edits question was answered Cancel (the viewer's
+    /// `enterEditModeWhenShown` drops its request on a Cancel it saw asked).
+    private(set) var exitQuestionCancelCount = 0
 
     private func askExitDecision(on window: NSWindow, content: EditExitModal.Content) async -> EditExitModal.Choice {
         await withCheckedContinuation { continuation in
@@ -891,8 +938,13 @@ public final class EditModeController {
     /// (menu item, ⌘Z while panel doesn't have focus).
     public func performUndo() {
         guard !isSaving, !isTransitioning else { return }
+        // Typing and nothing to undo: no write at all, so the panels are not re-synced over it.
+        guard !panelFieldIsTyping || writesInFlight > 0 || operationCount > 0 else { return }
         endCoalescing()
         enqueue(render: .full, syncPanels: true) { [weak self] recipe in
+            // Nothing to undo: typing in a panel field stays.
+            guard await recipe.undoDepth > 0 else { return }
+            self?.discardPanelTyping()
             self?.lastWrittenDrag = nil
             _ = await recipe.undo()
         }
@@ -900,11 +952,28 @@ public final class EditModeController {
 
     public func performRedo() {
         guard !isSaving, !isTransitioning else { return }
+        guard !panelFieldIsTyping || writesInFlight > 0 || undoneCount > 0 else { return }
         endCoalescing()
         enqueue(render: .full, syncPanels: true) { [weak self] recipe in
+            guard await recipe.redoDepth > 0 else { return }
+            self?.discardPanelTyping()
             self?.lastWrittenDrag = nil
             _ = await recipe.redo()
         }
+    }
+
+    /// A panel number field holds typed text that is not committed.
+    private var panelFieldIsTyping: Bool {
+        let window = hostWindow ?? parameterPanel.window
+        return ((window?.firstResponder as? NSTextView)?.delegate as? PanelTextField)?.isTyping == true
+    }
+
+    /// An undo / redo discards uncommitted typing (never commits it), like Esc,
+    /// so the restored values show and no stale typed number stays pending.
+    private func discardPanelTyping() {
+        (installedTool as? ResizePanel)?.discardTyping()
+        (installedTool as? CropPanel)?.discardTyping()
+        (installedTool as? LevelsPanel)?.discardTyping()
     }
 
     /// Revert every pending edit — wipes the whole recipe, clears the
@@ -987,6 +1056,8 @@ public final class EditModeController {
 
     /// Recipe writes run one after another, in call order.
     private var mutationTail: Task<Void, Never>?
+    /// Writes queued and not finished. With none, `operationCount` / `undoneCount` are current.
+    private var writesInFlight = 0
     /// The newest render (renders overlap so the renderer can drop
     /// stale ones).
     private var renderTail: Task<Void, Never>?
@@ -1014,7 +1085,9 @@ public final class EditModeController {
         renderRevision &+= 1
         let revision = renderRevision
         let previous = mutationTail
+        writesInFlight += 1
         mutationTail = Task { @MainActor [weak self] in
+            defer { self?.writesInFlight -= 1 }
             await previous?.value
             guard let self, self.recipe === recipe else { return }
             await body(recipe)
@@ -1691,9 +1764,9 @@ public final class EditModeController {
     var renderOverrideForTesting: ((EditRecipe, CGImage, RenderQualityHint) async -> CGImage?)?
 
     /// What a render needs. A draft works on a copy shrunk to the draft size,
-    /// so it must not reserve the full-resolution working set (audit MP-07:
+    /// so it must not reserve the full-resolution working set:
     /// ~480 MB per slider tick on a 24 MP photo, which stalled every other
-    /// job and wiped the thumbnails).
+    /// job and wiped the thumbnails.
     static func workingSetEstimate(for original: CGImage, hint: RenderQualityHint, draftLongEdge: Int,
                                    outputSize: CGSize) -> ImageWorkingSetEstimate? {
         var width = original.width, height = original.height

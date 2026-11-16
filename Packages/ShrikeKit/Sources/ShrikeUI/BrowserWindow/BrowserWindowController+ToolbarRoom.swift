@@ -112,8 +112,8 @@ extension BrowserWindowController {
         updateMinimumWindowWidth()
     }
 
-    /// A hidden side pane lowers the window's minimum width (audit on-screen
-    /// L17: half-screen tiling on a laptop), a shown one raises it again.
+    /// A hidden side pane lowers the window's minimum width (for
+    /// half-screen tiling on a laptop), a shown one raises it again.
     /// (AppKit widens the window itself when a pane is shown in a narrow one.)
     func updateMinimumWindowWidth() {
         guard let window, splitController.splitViewItems.count == 3 else { return }

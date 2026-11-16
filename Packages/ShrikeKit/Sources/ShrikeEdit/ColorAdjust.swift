@@ -15,7 +15,7 @@
 //  live preview (`.draft`), Save / Save As / Export, batch and the recipe
 //  replay.
 //
-//  Parameter ranges (spec):
+//  Parameter ranges:
 //    brightness  -1.0 … +1.0    0 = identity
 //    contrast    -1.0 … +1.0    0 = identity
 //    saturation  -1.0 … +1.0    0 = identity

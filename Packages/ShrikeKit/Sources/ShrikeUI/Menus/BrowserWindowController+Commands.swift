@@ -52,7 +52,7 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
         case ShrikeMainMenu.commandAction, #selector(NSText.copy(_:)),
              #selector(NSText.selectAll(_:)):
             guard let command = menuItem.shrikeCommand else { return false }
-            // The right-click menu's Rename… is for one photo (spec 25 §12.1).
+            // The right-click menu's Rename… is for one photo.
             if menuItem.identifier == BrowserContentViewController.contextRenameIdentifier,
                contentController.selectedItems.count != 1 { return false }
             menuItem.state = menuState(for: command)
@@ -60,9 +60,9 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
             case .toggleSidebar:
                 menuItem.title = isSidebarCollapsed ? "Show Sidebar" : "Hide Sidebar"
             case .toggleInspector:
-                menuItem.title = isInspectorCollapsed ? "Show Inspector" : "Hide Inspector"
+                menuItem.title = isInspectorCollapsed ? "Show Info" : "Hide Info"
             case .toggleRAWFile:
-                // Always present, greyed when it cannot apply (spec 27 B5).
+                // Always present, greyed when it cannot apply.
                 menuItem.isHidden = false
                 menuItem.title = rawSwitchMenuTitle
             default: break
@@ -155,7 +155,7 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
             return count > 0
         case .enclosingFolder:
             guard let folder = currentFolder else { return false }
-            // ⌘↑ stops at the Workspace root (spec 23-workspace §4).
+            // ⌘↑ stops at the Workspace root.
             return folder.deletingLastPathComponent().path != folder.path && !isAtWorkspaceRoot
         case .addToFavorites:
             return currentFolder != nil
@@ -165,6 +165,9 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
         case .showInMaps:
             // One item with GPS.
             return selectedCoordinate != nil
+        case .editImage:
+            // One readable photo that is not RAW-only.
+            return contentController.gridMenuState.canEditPhoto
         case .revertToOriginal:
             // One selected item that Shrike edited.
             return revertableSelection != nil
@@ -230,6 +233,7 @@ extension BrowserWindowController: ShrikeMenuActions, NSMenuItemValidation, Shri
         case .flipHorizontal: orientSelection(.flipHorizontal)
         case .flipVertical: orientSelection(.flipVertical)
         case .revertToOriginal: revertSelectionToOriginal()
+        case .editImage: editSelectedPhoto()
         case .nextFolder: goToAdjacentFolder(.next)
         case .previousFolder: goToAdjacentFolder(.previous)
         case .goToFolder: showGoToFolderSheet()

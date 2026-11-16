@@ -133,7 +133,7 @@ final class CompareWindowTests: XCTestCase {
                        "DSC_0042.jpg  ★★★ ⚑   6000 × 4000   ƒ/2.8  1/250 s  ISO 200")
         XCTAssertEqual(CompareFooter.text(name: "a.png", rating: 0, flagged: false, pixelSize: nil,
                                           aperture: nil, shutter: nil, iso: nil), "a.png")
-        XCTAssertEqual(CompareFooter.errorText("x.jpg"), "Shrike can't open “x.jpg”.")
+        XCTAssertEqual(CompareFooter.errorText("x.jpg"), "Can't open “x.jpg”.")
     }
 
     // Spec 25 §11.
@@ -141,7 +141,7 @@ final class CompareWindowTests: XCTestCase {
         XCTAssertEqual(key(SpecialKey.tab)?.command, .compareFocusNext)
         XCTAssertEqual(key(SpecialKey.tab, .shift)?.command, .compareFocusPrevious)
         XCTAssertEqual(CompareFocusRingView.width, 3)
-        XCTAssertEqual(CompareWindow.subtitle(paneCount: 2), "2 photos · Tab switches pane · arrows change candidates")
+        XCTAssertEqual(CompareWindow.subtitle(paneCount: 2), "2 photos · Tab switches pane · Arrow keys change the photo")
         XCTAssertEqual(CompareWindow.subtitle(paneCount: 1), "1 photo")
 
         let browser = try await browser(["a.jpg", "b.jpg", "c.jpg"])
@@ -236,7 +236,7 @@ final class CompareWindowTests: XCTestCase {
         browser.perform(.compare)
         let window = try XCTUnwrap(CompareWindow.current)
         XCTAssertEqual(names(window), ["a.jpg", "c.jpg", "d.jpg"])
-        XCTAssertEqual(window.subtitle, "3 photos · Tab switches pane · arrows change candidates")
+        XCTAssertEqual(window.subtitle, "3 photos · Tab switches pane · Arrow keys change the photo")
         window.setContentSize(NSSize(width: 1200, height: 700))
         window.contentView?.layoutSubtreeIfNeeded()
         window.layoutPanes()
@@ -362,6 +362,111 @@ final class CompareWindowTests: XCTestCase {
     }
 
     // MARK: Locked, 200 % in pane 1 → every pane 200 % at the same relative point
+
+    /// Spec 28 §14: each pane's zoom pill shows its own pixel percent and
+    /// follows zoom changes with Sync on (every pane) and off (one pane).
+    func testZoomPillFollowsEachPaneWithSyncOnAndOff() async throws {
+        try writeJPEG("a.jpg", width: 1200, height: 900)
+        try writeJPEG("b.jpg", width: 1600, height: 1200)
+        let groups = ["a.jpg", "b.jpg"].map { ImageGroup(primary: dir.appendingPathComponent($0)) }
+        var services = ShrikeServices.makeDefault()
+        services.backupStore = nil
+        let window = CompareWindow.open(CompareRequest(list: groups, shown: [0, 1], truncated: false),
+                                        services: services, origin: nil, frame: NSRect(x: 0, y: 0, width: 1200, height: 600))
+        defer { window.close() }
+        let loaded = await waitUntil {
+            window.panes.allSatisfy { $0.view.imageView.image != nil && $0.view.imageView.sourcePixelSize != nil }
+        }
+        XCTAssertTrue(loaded)
+        func pillsMatch() -> Bool {
+            window.panes.allSatisfy { pane in
+                !pane.view.zoomPill.isHidden
+                    && pane.view.zoomPill.text == CompareZoomPill.text(pixelScale: pane.view.imageView.pixelScale)
+            }
+        }
+        XCTAssertTrue(pillsMatch(), "at Fit: \(window.panes.map { $0.view.zoomPill.text })")
+        XCTAssertTrue(window.isLocked)
+        window.panes[0].view.imageView.setPixelScale(2.0, anchor: nil)
+        XCTAssertEqual(window.panes.map { $0.view.zoomPill.text }, ["200 %", "200 %"], "synced")
+        window.perform(try XCTUnwrap(key("s")))
+        XCTAssertFalse(window.isLocked)
+        window.panes[1].view.imageView.setPixelScale(0.5, anchor: nil)
+        XCTAssertEqual(window.panes.map { $0.view.zoomPill.text }, ["200 %", "50 %"], "own zoom")
+        XCTAssertEqual(window.panes[1].view.zoomPill.accessibilityLabel(), "Zoom 50 percent")
+        XCTAssertTrue(pillsMatch())
+    }
+
+    /// Pass 2l: View ▸ Zoom In / Zoom Out / Zoom to Fit / Actual Size work
+    /// while Compare is main, even after the Browser hid them (the real
+    /// menu items, validated and sent as the menu bar does).
+    func testViewMenuZoomCommandsActOnCompare() async throws {
+        // Both larger than a pane, so Fit is below 100 % in each.
+        try writeJPEG("a.jpg", width: 2400, height: 1800)
+        try writeJPEG("b.jpg", width: 3200, height: 2400)
+        let groups = ["a.jpg", "b.jpg"].map { ImageGroup(primary: dir.appendingPathComponent($0)) }
+        var services = ShrikeServices.makeDefault()
+        services.backupStore = nil
+        let window = CompareWindow.open(CompareRequest(list: groups, shown: [0, 1], truncated: false),
+                                        services: services, origin: nil, frame: NSRect(x: 0, y: 0, width: 1200, height: 600))
+        defer { window.close() }
+        let loaded = await waitUntil {
+            window.panes.allSatisfy { $0.view.imageView.image != nil && $0.view.imageView.sourcePixelSize != nil }
+        }
+        XCTAssertTrue(loaded)
+        let bar = ShrikeMainMenu(appCommands: AppCommands(coordinator: WindowCoordinator()))
+        bar.apply(surface: .browser)
+        XCTAssertTrue(bar.items(for: .zoomIn)[0].isHidden, "the Browser hides the viewer's Zoom items")
+        XCTAssertEqual(MenuSurface.of(window), .compare)
+        bar.apply(surface: MenuSurface.of(window))
+        for command in [ShrikeCommand.zoomIn, .zoomOut, .zoomToFit, .actualSize] {
+            let item = bar.items(for: command)[0]
+            XCTAssertFalse(item.isHidden, "\(command) shows in Compare")
+            // ⌘1 focuses pane 1 in Compare, so Actual Size shows no key there.
+            XCTAssertEqual(item.keyEquivalent.isEmpty, command == .actualSize, "\(command) key in Compare")
+            XCTAssertTrue(window.validateMenuItem(item), "\(command) is on in Compare")
+        }
+        // ⌘+ / ⌘− / ⌘0 reach the Zoom items: no other visible item holds them.
+        func allItems(_ menu: NSMenu) -> [NSMenuItem] {
+            menu.items.flatMap { [$0] + ($0.submenu.map(allItems) ?? []) }
+        }
+        let everything = allItems(bar.menu)
+        for command in [ShrikeCommand.zoomIn, .zoomOut, .zoomToFit] {
+            let zoom = bar.items(for: command)[0]
+            let rivals = everything.filter {
+                $0 !== zoom && !$0.isHidden && $0.keyEquivalent == zoom.keyEquivalent
+                    && $0.keyEquivalentModifierMask == zoom.keyEquivalentModifierMask
+            }
+            XCTAssertEqual(rivals.map(\.title), [], "\(command) key is unique in Compare")
+        }
+        bar.apply(surface: .browser)
+        XCTAssertFalse(bar.items(for: .largerThumbnails)[0].keyEquivalent.isEmpty, "the Browser gets its keys back")
+        bar.apply(surface: .compare)
+        XCTAssertFalse(bar.items(for: .viewAsGrid)[0].isHidden, "the rest keeps the last set")
+        XCTAssertEqual(bar.surface, .browser)
+        XCTAssertTrue(window.isLocked)
+        let before = window.panes.map { $0.view.imageView.pixelScale }
+        window.performShrikeCommand(bar.items(for: .zoomIn)[0])
+        for (pane, old) in zip(window.panes, before) {
+            XCTAssertGreaterThan(pane.view.imageView.pixelScale, old + 0.001, "Zoom In, Sync on: every pane")
+        }
+        window.performShrikeCommand(bar.items(for: .actualSize)[0])
+        // The full-resolution textures arrive later; the shared zoom follows.
+        let actual = await waitUntil { window.panes.allSatisfy { abs($0.view.imageView.pixelScale - 1) < 0.01 } }
+        XCTAssertTrue(actual, "Actual Size: \(window.panes.map { $0.view.imageView.pixelScale })")
+        window.performShrikeCommand(bar.items(for: .zoomOut)[0])
+        XCTAssertTrue(window.panes.allSatisfy { $0.view.imageView.pixelScale < 0.99 })
+        window.performShrikeCommand(bar.items(for: .zoomToFit)[0])
+        XCTAssertTrue(window.panes.allSatisfy { $0.view.imageView.isAtFit })
+        // Sync off: the focused pane only.
+        window.perform(try XCTUnwrap(key("s")))
+        XCTAssertFalse(window.isLocked)
+        let focused = try XCTUnwrap(window.focusedPane)
+        window.performShrikeCommand(bar.items(for: .actualSize)[0])
+        XCTAssertFalse(focused.view.imageView.isAtFit,
+                       "focused: \(focused.view.imageView.pixelScale) fit \(focused.view.imageView.fitPixelScale)")
+        XCTAssertEqual(window.panes.filter { $0.view.imageView.isAtFit }.count, 1,
+                       "one pane stays at Fit: \(window.panes.map { ($0.view.imageView.pixelScale, $0.view.imageView.fitPixelScale) })")
+    }
 
     func testVector2LockSharesZoomAndRelativePosition() async throws {
         try writeJPEG("a.jpg", width: 1200, height: 900)

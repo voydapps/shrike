@@ -39,7 +39,7 @@ final class NoTrashDeleteCopyTests: XCTestCase {
     func testCancelIsTheDefaultForReturnAndEsc() {
         let copy = FileActionCopy.noTrashDelete([group("a.jpg")])
         let alert = ShrikeAlert.make(message: copy.message, information: copy.information, buttons: copy.buttons)
-        XCTAssertEqual(alert.buttons.map(\.title), ["Cancel", "Delete"], "NSAlert order: rightmost first")
+        XCTAssertEqual(alert.buttons.map { $0.accessibilityLabel() ?? $0.title }, ["Cancel", "Delete"], "NSAlert order: rightmost first")
         XCTAssertEqual(alert.buttons[0].keyEquivalent, "\r")
         XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[0].cell)
         XCTAssertEqual(alert.buttons[1].keyEquivalent, "", "Delete has no key equivalent")
@@ -53,7 +53,7 @@ final class NoTrashDeleteCopyTests: XCTestCase {
         XCTAssertTrue(copy.information.contains("frees"))
         let alert = ShrikeAlert.make(message: copy.message, information: copy.information,
                                      buttons: [ShrikeAlert.Button(copy.deleteTitle, role: .destructive), .safeCancel()])
-        XCTAssertEqual(alert.buttons.map(\.title), ["Cancel", "Delete All Backups"])
+        XCTAssertEqual(alert.buttons.map { $0.accessibilityLabel() ?? $0.title }, ["Cancel", "Delete All Backups"])
         XCTAssertEqual(alert.buttons[0].keyEquivalent, "\r")
         XCTAssertEqual(alert.buttons[1].keyEquivalent, "")
     }
