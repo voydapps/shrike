@@ -25,12 +25,19 @@ final class BrowserScrollAndFollowTests: XCTestCase {
     private var dir: URL!
     private var fakeTrash: URL!
     private var savedReduceMotion: Bool?
+    private var savedFollowSchedule: TrailingDebouncer.Schedule?
 
     override func setUp() async throws {
         savedReduceMotion = ReduceMotion.overrideForTesting
         // Hidden test windows do not service NSClipView's scroll animator.
         // Assert final scroll geometry here; native QA covers normal motion.
         ReduceMotion.overrideForTesting = true
+        // The paired viewer's "Browser follows the viewer" runs 150 ms after a photo change on
+        // the real clock; the delete tests assert the selection the delete leaves, and on a slow
+        // runner the follow can fire between the awaits of a mode loop. The follow itself:
+        // BrowserFollowsViewerTests.
+        savedFollowSchedule = ViewerWindow.browserFollowSchedule
+        ViewerWindow.browserFollowSchedule = { _, _ in {} }
         root = TestScratch.directory
             .appendingPathComponent("shrike-bscroll-\(UUID().uuidString)", isDirectory: true)
         dir = root.appendingPathComponent("Folder", isDirectory: true)
@@ -41,6 +48,7 @@ final class BrowserScrollAndFollowTests: XCTestCase {
 
     override func tearDown() async throws {
         ReduceMotion.overrideForTesting = savedReduceMotion
+        if let savedFollowSchedule { ViewerWindow.browserFollowSchedule = savedFollowSchedule }
         try? FileManager.default.removeItem(at: root)
     }
 

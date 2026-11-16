@@ -1136,6 +1136,9 @@ final class EditTransitionTests: XCTestCase {
     func testInPlaceSaveFinishesNormallyAfterTheListIsRebuiltDuringTheExport() async throws {
         let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
         let c = viewer.contentRootForTesting.editModeController
+        // The "proved" branch is the point: a rebuild slower than the default 2 s (slow VM) would
+        // take the close-out path; the wait ends on the idle event, so a long limit costs nothing.
+        viewer.saveOwnershipWait = .seconds(30)
         let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls)
         viewer.reloadList(showing: 0)   // the real rebuild replaces the held navigation
         await navigationGate.open()
@@ -1218,6 +1221,9 @@ final class EditTransitionTests: XCTestCase {
             started = true
             viewer.navCoalescer.run { await secondGate.hold() }
         }
+        // The save must already wait on the idle event (the case named above); opened earlier,
+        // the toast would come only after the whole 2 s wait, close to the 3 s toast wait.
+        try await until { viewer.navCoalescer.idleWaiterCountForTesting > 0 }
         await navigationGate.open()
         try await until { started }
         let name = urls[0].lastPathComponent
@@ -1305,9 +1311,10 @@ final class EditTransitionTests: XCTestCase {
         let saved = await save.value   // the limit runs out while the navigation is held
         XCTAssertFalse(saved)
         XCTAssertFalse(c.isActive, "the session is ended, not left in a refused state")
+        // Before the badge wait: the plain toast lives 2.5 s on the real clock.
+        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content, ToastContent(SaveCopy.saved(urls[0].lastPathComponent)))
         // The saved photo is the one shown: its pencil mark is read again all the same.
         try await until { viewer.fileBadges[urls[0]]?.edited == true }
-        XCTAssertEqual(viewer.contentRootForTesting.toastHost.content, ToastContent(SaveCopy.saved(urls[0].lastPathComponent)))
         XCTAssertEqual(viewer.undoManagerForTesting.undoActionName, undoName, "no Save entry on the undo stack")
         await navigationGate.open()
         try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[0] }
@@ -1354,11 +1361,16 @@ final class EditTransitionTests: XCTestCase {
         XCTAssertFalse(saved)
         XCTAssertFalse(c.isActive, "ended through the close-out limit")
         let new = CGSize(width: 200, height: 150)
-        try await until { viewer.contentRootForTesting.imageView.sourcePixelSize == new }
-        XCTAssertEqual(viewer.subtitle, WindowTitles.viewerSubtitle(index: 0, total: viewer.list.count, pixelSize: new))
+        let subtitle = WindowTitles.viewerSubtitle(index: 0, total: viewer.list.count, pixelSize: new)
+        // Size and subtitle in one wait: the exit's own header read can land before the exit's
+        // redraw, which then writes back the size it read before its decode (nil) and blanks the
+        // subtitle until its own header read lands; every redraw ends with that read.
+        func settled() -> Bool { viewer.contentRootForTesting.imageView.sourcePixelSize == new && viewer.subtitle == subtitle }
+        try await until(settled)
         await navigationGate.open()
         try await until { viewer.navCoalescer.isIdle }
-        XCTAssertEqual(viewer.contentRootForTesting.imageView.sourcePixelSize, new)
+        // Idle is not "drawn": a redraw still on its way can clear the size again (CI run E).
+        try await until(settled)
         XCTAssertNotEqual(viewer.headerPixelSizes[urls[0]], CGSize(width: 400, height: 300))
     }
 
@@ -1370,7 +1382,9 @@ final class EditTransitionTests: XCTestCase {
         let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
         let c = viewer.contentRootForTesting.editModeController
         viewer.saveOwnershipWait = .milliseconds(50)
-        viewer.saveCloseOutLimit = .milliseconds(200)
+        // 2 s, not 200 ms: the append below must land before the limit runs out (from the
+        // write), or the unchanged session is ended; the gate is held, so the limit runs out anyway.
+        viewer.saveCloseOutLimit = .seconds(2)
         let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls, rotate: true)
         let session = try XCTUnwrap(c.recipe)
         await session.append(.rotate90(quarters: 1))
@@ -1403,7 +1417,9 @@ final class EditTransitionTests: XCTestCase {
             let (viewer, urls) = try await editingViewer(); defer { viewer.close() }
             let c = viewer.contentRootForTesting.editModeController
             viewer.saveOwnershipWait = .milliseconds(50)
-            viewer.saveCloseOutLimit = settles ? .seconds(20) : .seconds(1)
+            // 3 s when it does not settle: the outside write below must land before the limit
+            // runs out (from Shrike's write), or the session is ended over a file it wrote.
+            viewer.saveCloseOutLimit = settles ? .seconds(20) : .seconds(3)
             let (save, navigationGate, original) = try await saveDuringNavigation(viewer, urls, rotate: true)
             let name = urls[0].lastPathComponent
             try await until { viewer.contentRootForTesting.toastHost.content == ToastContent(SaveCopy.saved(name)) }
