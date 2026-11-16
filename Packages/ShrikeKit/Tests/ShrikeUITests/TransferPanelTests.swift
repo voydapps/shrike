@@ -13,12 +13,16 @@ final class TransferPanelTests: XCTestCase {
     private var host: ToastHostView!
     private var previousContrast: Bool?
     private var previousFallback = false
+    private var previousReduceTransparency: Bool?
 
     override func setUp() async throws {
         _ = NSApplication.shared
         previousContrast = ShrikeTokens.increaseContrastOverride
         previousFallback = HUDGlass.forceFallbackForTesting
         ShrikeTokens.increaseContrastOverride = false
+        // Reduce Transparency is read live; pin it off (a CI runner had it on).
+        previousReduceTransparency = ReduceTransparency.overrideForTesting
+        ReduceTransparency.overrideForTesting = false
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
                           styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -48,6 +52,7 @@ final class TransferPanelTests: XCTestCase {
         window = nil
         ShrikeTokens.increaseContrastOverride = previousContrast
         HUDGlass.forceFallbackForTesting = previousFallback
+        ReduceTransparency.overrideForTesting = previousReduceTransparency
     }
 
     private func progress(_ message: String = "Moving 1 item…", fraction: Double = 0,

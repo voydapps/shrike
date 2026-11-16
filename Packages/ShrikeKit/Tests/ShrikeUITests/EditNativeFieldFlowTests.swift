@@ -618,7 +618,13 @@ final class EditNativeFieldFlowTests: XCTestCase {
                     XCTAssertTrue(c.isActive)
                     let operations = await c.recipe?.snapshot()
                     XCTAssertEqual(operations, [], "Cancel does not apply the pending crop")
-                    XCTAssertEqual(c.pendingCropRect(), pendingBefore, "still pending, shown as the frame")
+                    // The rect is re-derived from the overlay's view geometry, so the last
+                    // bit can differ with the window's size (a CI runner gave 0.5000000000000001).
+                    let pendingAfter = try XCTUnwrap(c.pendingCropRect(), "still pending, shown as the frame")
+                    XCTAssertEqual(pendingAfter.originX, pendingBefore.originX, accuracy: 1e-9, "still pending, shown as the frame")
+                    XCTAssertEqual(pendingAfter.originY, pendingBefore.originY, accuracy: 1e-9, "still pending, shown as the frame")
+                    XCTAssertEqual(pendingAfter.width, pendingBefore.width, accuracy: 1e-9, "still pending, shown as the frame")
+                    XCTAssertEqual(pendingAfter.height, pendingBefore.height, accuracy: 1e-9, "still pending, shown as the frame")
                     XCTAssertFalse(c.cropOverlay.isHidden)
                     XCTAssertEqual(c.currentPixelSize, CGSize(width: 2400, height: 1600), "the photo itself is not cropped")
                     XCTAssertEqual(viewer.subtitle, "Editing · Unsaved changes")

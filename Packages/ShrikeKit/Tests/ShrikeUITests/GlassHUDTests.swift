@@ -21,9 +21,13 @@ final class GlassHUDTests: XCTestCase {
         "shrike.viewer.exifPanel.pinnedFullscreen",
         "shrike.viewer.histogramVisible",
     ]
+    private var savedReduceTransparency: Bool?
 
     override func setUp() async throws {
         try await super.setUp()
+        // Reduce Transparency is read live; pin it off (a CI runner had it on).
+        savedReduceTransparency = ReduceTransparency.overrideForTesting
+        ReduceTransparency.overrideForTesting = false
         for key in pinKeys { ShrikeDefaults.store.removeObject(forKey: key) }
         HUDGlass.forceFallbackForTesting = false
         ShrikeTokens.increaseContrastOverride = false
@@ -32,6 +36,7 @@ final class GlassHUDTests: XCTestCase {
     override func tearDown() async throws {
         HUDGlass.forceFallbackForTesting = false
         ShrikeTokens.increaseContrastOverride = nil
+        ReduceTransparency.overrideForTesting = savedReduceTransparency
         for key in pinKeys { ShrikeDefaults.store.removeObject(forKey: key) }
         try await super.tearDown()
     }

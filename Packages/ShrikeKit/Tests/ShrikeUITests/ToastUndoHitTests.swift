@@ -18,8 +18,15 @@ final class ToastUndoHitTests: XCTestCase {
     private var window: NSWindow!
     private var toast: ToastHostView!
     private var ran = 0
+    private var savedReduceTransparency: Bool?
+    private var savedContrast: Bool?
 
     override func setUp() async throws {
+        // Reduce Transparency is read live; pin it off (a CI runner had it on).
+        savedReduceTransparency = ReduceTransparency.overrideForTesting
+        savedContrast = ShrikeTokens.increaseContrastOverride
+        ReduceTransparency.overrideForTesting = false
+        ShrikeTokens.increaseContrastOverride = false
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
                           styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -34,6 +41,8 @@ final class ToastUndoHitTests: XCTestCase {
         toast.dismiss(animated: false)
         window.orderOut(nil)
         window = nil
+        ReduceTransparency.overrideForTesting = savedReduceTransparency
+        ShrikeTokens.increaseContrastOverride = savedContrast
     }
 
     private func showTrash() {

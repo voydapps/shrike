@@ -24,6 +24,8 @@ final class ViewerTitleScrim028Tests: XCTestCase {
     private var savedInspector = false
     private let filmstripKey = "shrike.viewer.filmstrip.visibleInWindowed"
     private var savedFilmstripPreference: Any?
+    private var savedReduceTransparency: Bool?
+    private var savedContrast: Bool?
 
     override func setUp() async throws {
         dir = TestScratch.directory
@@ -39,6 +41,11 @@ final class ViewerTitleScrim028Tests: XCTestCase {
         Prefs.viewerInspectorVisibleWindowed = false
         MetalImageView.reduceMotionOverrideForTesting = true
         ReduceMotion.overrideForTesting = true
+        // Reduce Transparency is read live; pin it off (a CI runner had it on).
+        savedReduceTransparency = ReduceTransparency.overrideForTesting
+        savedContrast = ShrikeTokens.increaseContrastOverride
+        ReduceTransparency.overrideForTesting = false
+        ShrikeTokens.increaseContrastOverride = false
     }
 
     override func tearDown() async throws {
@@ -53,6 +60,8 @@ final class ViewerTitleScrim028Tests: XCTestCase {
                        savedFilmstripPreference as? NSObject, "Restore the exact preference object or absence")
         MetalImageView.reduceMotionOverrideForTesting = nil
         ReduceMotion.overrideForTesting = nil
+        ReduceTransparency.overrideForTesting = savedReduceTransparency
+        ShrikeTokens.increaseContrastOverride = savedContrast
         try? FileManager.default.removeItem(at: dir)
     }
 
