@@ -421,6 +421,10 @@ final class TagsPopoverController: NSViewController, NSTokenFieldDelegate, NSPop
     private(set) var heading: NSTextField?
     // Strong while shown; released in `popoverDidClose`.
     private var popover: NSPopover?
+    /// Closes the popover when its window closes: a plain `close()` (not
+    /// `performClose`) leaves a shown popover open, and the popover then
+    /// keeps the window alive for good.
+    private var hostCloseObserver: (any NSObjectProtocol)?
 
     init(session: TagEditSession) {
         self.session = session
@@ -511,6 +515,14 @@ final class TagsPopoverController: NSViewController, NSTokenFieldDelegate, NSPop
         self.popover = popover
         let stable = Self.stableAnchor(rect, of: anchor)
         popover.show(relativeTo: stable.rect, of: stable.view, preferredEdge: edge)
+        stopObservingHostWindow()
+        if let host = stable.view.window {
+            hostCloseObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: host, queue: nil
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.closeWithHostWindow() }
+            }
+        }
         view.window?.makeFirstResponder(tokenField)
     }
 
@@ -550,8 +562,22 @@ final class TagsPopoverController: NSViewController, NSTokenFieldDelegate, NSPop
     }
 
     func popoverDidClose(_ notification: Notification) {
+        stopObservingHostWindow()
         popover?.contentViewController = nil
         popover = nil
+    }
+
+    private func closeWithHostWindow() {
+        stopObservingHostWindow()
+        guard let popover else { return }
+        self.popover = nil
+        popover.close()
+        popover.contentViewController = nil
+    }
+
+    private func stopObservingHostWindow() {
+        if let hostCloseObserver { NotificationCenter.default.removeObserver(hostCloseObserver) }
+        hostCloseObserver = nil
     }
 
     // MARK: NSTokenFieldDelegate

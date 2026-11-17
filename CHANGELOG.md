@@ -63,6 +63,7 @@
 - Undo or Redo while you type in a number field of the edit panels drops the typing, as Esc does. The fields then show the real values.
 - A save that ends while the viewer changes photos or reloads the folder now says "Saved", or says that it failed. Your edits are never applied twice. The original is in the backup, so File > Revert to Original brings it back.
 - The Filter popover in the Browser is no longer see-through in Light mode.
+- A Browser or viewer that closes while its Filter or Tags popover is open now gives its memory back.
 
 ## 0.2.32 - 2026-11-10
 

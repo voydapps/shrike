@@ -2323,6 +2323,12 @@ extension BrowserWindowController: NSWindowDelegate {
     public func windowWillClose(_ notification: Notification) {
         persistenceBanner?.dispose()
         persistenceBanner = nil
+        // A plain `close()` (not `performClose`) leaves a shown popover
+        // open, and the popover then keeps the window alive for good.
+        if let popover = filterPopover {
+            filterPopover = nil
+            popover.close()
+        }
         chromeTextObservation = nil
         browserDidClose = true
         folderRequestGeneration &+= 1

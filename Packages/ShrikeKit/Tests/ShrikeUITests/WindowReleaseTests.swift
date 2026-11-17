@@ -609,4 +609,172 @@ final class WindowReleaseTests: XCTestCase {
         }
         XCTAssertEqual(left, [], "a closed Compare window must be freed; still alive: \(left)")
     }
+
+    // MARK: Browser and viewer closed with a popover open
+
+    /// The popover windows shown now.
+    private func shownPopoverWindows() -> [NSWindow] {
+        (NSApp?.windows ?? []).filter { $0.isVisible && NSStringFromClass(type(of: $0)).contains("PopoverWindow") }
+    }
+
+    /// The view controller of type `T` whose view is in `window`.
+    private func controller<T: NSViewController>(_ type: T.Type, in window: NSWindow?) -> T? {
+        func search(_ view: NSView) -> T? {
+            if let match = view.nextResponder as? T, match.view === view { return match }
+            for sub in view.subviews { if let found = search(sub) { return found } }
+            return nil
+        }
+        return window?.contentView.flatMap { search($0.superview ?? $0) }
+    }
+
+    /// A Browser on `dir`, on screen but fully transparent, listed.
+    private func openBrowser(_ services: ShrikeServices) async -> BrowserWindowController {
+        let browser = BrowserWindowController(services: services, initialFolder: dir)
+        browser.window?.alphaValue = 0
+        browser.window?.ignoresMouseEvents = true
+        browser.window?.animationBehavior = .none
+        browser.showWindow(nil)
+        let listed = await waitUntil { browser.contentController.visibleItems.count == 3 }
+        XCTAssertTrue(listed, "the folder is listed")
+        return browser
+    }
+
+    private enum CloseRoute { case close, performClose }
+
+    /// Weak references to a closed Browser (or viewer) and the popover it had open.
+    private struct PopoverRefs {
+        let owner: [(String, Weak<AnyObject>)]
+        let popover: Weak<NSViewController>
+        let popoverWindow: Weak<NSWindow>
+
+        var alive: [String] {
+            owner.compactMap { $0.1.value == nil ? nil : $0.0 }
+                + (popover.value == nil ? [] : ["popover controller"])
+                + (popoverWindow.value == nil ? [] : ["popover window"])
+        }
+        var objects: [(String, AnyObject)] {
+            let all: [(String, AnyObject?)] = owner.map { ($0.0, $0.1.value) }
+                + [("popover controller", popover.value), ("popover window", popoverWindow.value)]
+            return all.compactMap { name, object in object.map { (name, $0) } }
+        }
+    }
+
+    private func assertFreed(_ refs: PopoverRefs, _ what: String,
+                             file: StaticString = #filePath, line: UInt = #line) async {
+        let left = await settle { refs.alive }
+        if !left.isEmpty { LifetimeDiagnostics.dump(name, alive: refs.objects) }
+        XCTAssertEqual(left, [], "\(what) must be freed; still alive: \(left)", file: file, line: line)
+    }
+
+    /// A plain `close()` (not `performClose`) left a shown Filter popover
+    /// open, and it kept the Browser alive.
+    func testBrowserClosedWithFilterPopoverOpenIsFreed() throws {
+        try runWithoutXCTestEventPump { try await self.browserWithFilterPopoverIsFreed(.close) }
+    }
+
+    /// The close button and ⌘W (`performClose`).
+    func testBrowserClosedWithFilterPopoverOpenIsFreedAfterPerformClose() throws {
+        try runWithoutXCTestEventPump { try await self.browserWithFilterPopoverIsFreed(.performClose) }
+    }
+
+    private func browserWithFilterPopoverIsFreed(_ route: CloseRoute) async throws {
+        _ = plainGroups()
+        let services = try services()
+        var refs: PopoverRefs?
+        do {
+            let browser = await openBrowser(services)
+            browser.showFilterPopover(nil)
+            XCTAssertEqual(browser.filterPopoverIsShownForTesting, true, "the Filter popover is shown")
+            let popover = try XCTUnwrap(browser.filterPopoverForTesting)
+            let popoverWindow = try XCTUnwrap(popover.view.window)
+            refs = PopoverRefs(owner: [("BrowserWindowController", Weak<AnyObject>(browser)), ("BrowserWindow", Weak<AnyObject>(browser.window))],
+                               popover: Weak<NSViewController>(popover), popoverWindow: Weak<NSWindow>(popoverWindow))
+            switch route {
+            case .close: browser.close()
+            case .performClose: browser.window?.performClose(nil)
+            }
+            XCTAssertEqual(browser.window?.isVisible, false, "the Browser closed")
+        }
+        await assertFreed(try XCTUnwrap(refs), "a Browser closed with its Filter popover open")
+    }
+
+    /// Control: a shown Browser with no popover, closed by ⌘W.
+    func testShownBrowserIsFreedAfterPerformClose() throws {
+        try runWithoutXCTestEventPump {
+            _ = self.plainGroups()
+            let services = try self.services()
+            var refs: PopoverRefs?
+            do {
+                let browser = await self.openBrowser(services)
+                refs = PopoverRefs(owner: [("BrowserWindowController", Weak<AnyObject>(browser)), ("BrowserWindow", Weak<AnyObject>(browser.window))],
+                                   popover: Weak<NSViewController>(nil), popoverWindow: Weak<NSWindow>(nil))
+                browser.window?.performClose(nil)
+            }
+            await self.assertFreed(try XCTUnwrap(refs), "a closed Browser")
+        }
+    }
+
+    func testBrowserClosedWithTagsPopoverOpenIsFreed() throws {
+        try runWithoutXCTestEventPump { try await self.browserWithTagsPopoverIsFreed(.close) }
+    }
+
+    func testBrowserClosedWithTagsPopoverOpenIsFreedAfterPerformClose() throws {
+        try runWithoutXCTestEventPump { try await self.browserWithTagsPopoverIsFreed(.performClose) }
+    }
+
+    private func browserWithTagsPopoverIsFreed(_ route: CloseRoute) async throws {
+        let groups = plainGroups()
+        let services = try services()
+        var refs: PopoverRefs?
+        do {
+            let browser = await openBrowser(services)
+            XCTAssertTrue(browser.contentController.select(url: groups[0].primary), "a photo is selected")
+            let before = Set(shownPopoverWindows().map(ObjectIdentifier.init))
+            XCTAssertNotNil(browser.showTagEditor(), "the Tags popover opens")
+            let popoverWindow = try XCTUnwrap(shownPopoverWindows().first { !before.contains(ObjectIdentifier($0)) },
+                                              "the Tags popover is shown")
+            let popover = try XCTUnwrap(controller(TagsPopoverController.self, in: popoverWindow))
+            refs = PopoverRefs(owner: [("BrowserWindowController", Weak<AnyObject>(browser)), ("BrowserWindow", Weak<AnyObject>(browser.window))],
+                               popover: Weak<NSViewController>(popover), popoverWindow: Weak<NSWindow>(popoverWindow))
+            switch route {
+            case .close: browser.close()
+            case .performClose: browser.window?.performClose(nil)
+            }
+            XCTAssertEqual(browser.window?.isVisible, false, "the Browser closed")
+        }
+        await assertFreed(try XCTUnwrap(refs), "a Browser closed with its Tags popover open")
+    }
+
+    func testViewerClosedWithTagsPopoverOpenIsFreed() throws {
+        try runWithoutXCTestEventPump { try await self.viewerWithTagsPopoverIsFreed(.close) }
+    }
+
+    func testViewerClosedWithTagsPopoverOpenIsFreedAfterPerformClose() throws {
+        try runWithoutXCTestEventPump { try await self.viewerWithTagsPopoverIsFreed(.performClose) }
+    }
+
+    private func viewerWithTagsPopoverIsFreed(_ route: CloseRoute) async throws {
+        let coordinator = WindowCoordinator()
+        let services = try services()
+        let groups = plainGroups()
+        var r: ViewerRefs?
+        var popoverRefs: PopoverRefs?
+        do {
+            let viewer = try await openViewer(coordinator, groups: groups, services: services)
+            r = await refs(viewer)
+            let before = Set(shownPopoverWindows().map(ObjectIdentifier.init))
+            XCTAssertNotNil(viewer.showTagEditor(), "the Tags popover opens")
+            let popoverWindow = try XCTUnwrap(shownPopoverWindows().first { !before.contains(ObjectIdentifier($0)) },
+                                              "the Tags popover is shown")
+            let popover = try XCTUnwrap(controller(TagsPopoverController.self, in: popoverWindow))
+            popoverRefs = PopoverRefs(owner: [], popover: Weak<NSViewController>(popover), popoverWindow: Weak<NSWindow>(popoverWindow))
+            switch route {
+            case .close: viewer.close()
+            case .performClose: viewer.performClose(nil)
+            }
+            XCTAssertTrue(viewer.didTearDown, "the viewer closed")
+        }
+        await assertFreed(try XCTUnwrap(r), coordinator)
+        await assertFreed(try XCTUnwrap(popoverRefs), "the Tags popover of a closed viewer")
+    }
 }
