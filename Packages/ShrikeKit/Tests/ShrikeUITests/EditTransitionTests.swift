@@ -1660,12 +1660,28 @@ final class EditTransitionTests: XCTestCase {
         // Ran out twice on the CI runner (at 3 s and at 10 s) and never here: when it runs
         // out, the failure names what is still running, and whether the window goes away
         // later (a slow holder) or not at all (only the 10 s answer is asserted).
+        // On the GitHub runner this release check is reported, not enforced (user decision
+        // 2026-11-17): the holder is unknown, the wait runs out in about 1 of 3 runs there
+        // and never locally (~400 runs). The report below is still built and printed in full,
+        // as expected failures (they do not fail the run); everywhere else they fail it.
+        // Every other assertion in this test, including the backup check, stays strict.
+        let onGitHubRunner = ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true"
+        func raise(_ messages: [String]) {
+            if onGitHubRunner {
+                XCTExpectFailure("Known issue on the GitHub runner only: the closed viewer is not released "
+                                 + "in time and the holder is unknown; see the printed report.", strict: false) {
+                    for message in messages { XCTFail(message) }
+                }
+            } else {
+                for message in messages { XCTFail(message) }
+            }
+        }
         let end = Date().addingTimeInterval(10)
         while weakViewer != nil, Date() < end { try await Task.sleep(for: .milliseconds(5)) }
         if weakViewer != nil {
             // In a pool: what NSApp.windows / firstResponder hand back must not hold the window.
             // The state first, as its own failure: it reaches the log even if leaks stalls.
-            XCTFail(autoreleasepool { held.report(weakViewer) } + "\n" + (await held.queueState()))
+            raise([autoreleasepool { held.report(weakViewer) } + "\n" + (await held.queueState())])
             let tree = autoreleasepool { Self.referenceTree(of: weakViewer) }
             let late = end.addingTimeInterval(20)
             while weakViewer != nil, Date() < late { try await Task.sleep(for: .milliseconds(20)) }
@@ -1679,12 +1695,13 @@ final class EditTransitionTests: XCTestCase {
             // The viewer's direct referrers (one route per root; its own subviews' back
             // pointers are most of them): compare with a closed viewer that is released.
             let level1 = tree.filter { $0.hasPrefix("      ") && ($0.dropFirst(6).first?.isNumber ?? false) }
-            XCTFail("reference tree level-1 referrers (\(level1.count)):\n" + level1.prefix(40).joined(separator: "\n"))
+            var rest = ["reference tree level-1 referrers (\(level1.count)):\n" + level1.prefix(40).joined(separator: "\n")]
             let parts = stride(from: 0, to: max(tree.count, 1), by: 100).map { Array(tree.dropFirst($0).prefix(100)) }
             for (i, part) in parts.enumerated() {
-                XCTFail("reference tree part \(i + 1)/\(parts.count):\n" + part.joined(separator: "\n"))
+                rest.append("reference tree part \(i + 1)/\(parts.count):\n" + part.joined(separator: "\n"))
             }
-            XCTFail(after)
+            rest.append(after)
+            raise(rest)
         }
         try await assertOriginalInBackup(urls[0], original)
     }
