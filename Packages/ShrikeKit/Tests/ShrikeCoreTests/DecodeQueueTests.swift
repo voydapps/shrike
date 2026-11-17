@@ -70,6 +70,22 @@ struct TestImageSource: ImageSource {
     }
 }
 
+extension ImageResourceBudget {
+    /// A budget owned by one test. A queue on the default `.shared` budget
+    /// gets its FAR neighbours (±2) only on a best-effort basis: they are
+    /// speculative and are refused, never retried, when `.shared` has no
+    /// free discretionary slot (the limit is the core count: 3 on the CI
+    /// runner) or a waiter, and any relief or memory-pressure callback on
+    /// `.shared` shrinks the window to ±1. Earlier tests in the same
+    /// process leave decodes running on `.shared` (0.2.34 release gate:
+    /// two 300 ms far-neighbour decodes from the previous test plus the
+    /// stale one filled the 3 slots). Tests that assert far neighbours
+    /// use this instead. No system memory-pressure source is attached.
+    static func isolatedForTesting() -> ImageResourceBudget {
+        ImageResourceBudget(configuration: .init(normalBudget: 512 << 20, maximumDiscretionaryWorkCount: 8))
+    }
+}
+
 final class DecodeQueueTests: XCTestCase {
 
     /// Helper — copies a fixture under N different names so we have N
@@ -122,7 +138,8 @@ final class DecodeQueueTests: XCTestCase {
         let tmp = TempDir("decode-idle-trim")
         defer { tmp.cleanup() }
         let sources = try makeNavList(count: 12, tmp: tmp)
-        let q = DecodeQueue(idleTrimDelay: .milliseconds(300))
+        // Own budget: the full window includes far neighbours (see `isolatedForTesting`).
+        let q = DecodeQueue(idleTrimDelay: .milliseconds(300), resources: .isolatedForTesting())
         await q.setNavigation(list: sources, currentIndex: 5)
 
         func waitFor(_ cond: @Sendable () async -> Bool) async {
@@ -152,13 +169,14 @@ final class DecodeQueueTests: XCTestCase {
         let tmp = TempDir("decode-idle-off")
         defer { tmp.cleanup() }
         let sources = try makeNavList(count: 8, tmp: tmp)
-        let q = DecodeQueue(idleTrimDelay: nil)
+        // Own budgets: both windows count far neighbours (see `isolatedForTesting`).
+        let q = DecodeQueue(idleTrimDelay: nil, resources: .isolatedForTesting())
         await q.setNavigation(list: sources, currentIndex: 3)
         for _ in 0..<1000 where await q.cachedIDs().count < 5 { try await Task.sleep(nanoseconds: 10_000_000) }
         // A control queue over the same list with a short trim delay. Once it
         // has trimmed, the queue under test has had the same chance to trim
         // (it started earlier) and must still hold the whole window.
-        let control = DecodeQueue(idleTrimDelay: .milliseconds(50))
+        let control = DecodeQueue(idleTrimDelay: .milliseconds(50), resources: .isolatedForTesting())
         await control.setNavigation(list: sources, currentIndex: 3)
         for _ in 0..<1000 where await control.cachedIDs().count != 3 { try await Task.sleep(nanoseconds: 10_000_000) }
         let trimmed = await control.cachedIDs().count

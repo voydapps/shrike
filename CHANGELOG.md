@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.34 - 2026-11-16
+## 0.2.35 - 2026-11-17
 
 ### New
 - If you quit while a Batch or a copy or move is running, Shrike says what is still running and asks first. Quit Anyway stops the work, and the photo being written is finished first. Cancel is the safe choice. Shrike also waits for saves and rotations that are still being written.

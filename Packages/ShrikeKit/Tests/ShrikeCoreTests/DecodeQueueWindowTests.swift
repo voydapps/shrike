@@ -78,7 +78,10 @@ final class DecodeQueueWindowTests: XCTestCase {
     }
 
     func testResultsFromReplacedListAreDropped() async throws {
-        let q = DecodeQueue()
+        // fresh[2] is a FAR neighbour (±2): own budget so it is admitted, and
+        // no idle trim, so "fully cached" is a state the queue keeps (see
+        // `ImageResourceBudget.isolatedForTesting`).
+        let q = DecodeQueue(idleTrimDelay: nil, resources: .isolatedForTesting())
         let slow = sources(0..<3, delayMS: 250)
         await q.setNavigation(list: slow, currentIndex: 0)
         let fresh = sources(10..<13)
@@ -114,7 +117,9 @@ final class DecodeQueueWindowTests: XCTestCase {
     }
 
     func testJumpCancelsDecodesThatLeftTheWindow() async throws {
-        let q = DecodeQueue()
+        // Own budget: its 300 ms far-neighbour decodes outlive the test and
+        // must not hold slots of `.shared` that the next tests need.
+        let q = DecodeQueue(resources: .isolatedForTesting())
         let list = sources(0..<20, delayMS: 300)
         await q.setNavigation(list: list, currentIndex: 0)
         let early = await q.inFlightIDs()
@@ -135,7 +140,9 @@ final class DecodeQueueWindowTests: XCTestCase {
         let wanted = await q.wantedIDs()
         XCTAssertEqual(wanted, Set([list[4].id, list[5].id, list[6].id]))
 
-        let roomy = DecodeQueue(windowRadius: 2, byteBudget: 512 * 1_048_576)
+        // Own budget: far neighbours depend on the free bytes of the
+        // resource budget and on no relief having compacted the window.
+        let roomy = DecodeQueue(windowRadius: 2, byteBudget: 512 * 1_048_576, resources: .isolatedForTesting())
         await roomy.setNavigation(list: list, currentIndex: 5)
         let wide = await roomy.wantedIDs()
         XCTAssertEqual(wide, Set((3...7).map { list[$0].id }))

@@ -178,7 +178,10 @@ final class DecodeHandoffTests: XCTestCase {
         let ledger = DecodeMemoryLedger()
         let list = (0..<9).map { TestImageSource(key: 600 + $0, decodeDelayMS: 0) }
         let budget = 512 * 1_048_576
-        let a = DecodeQueue(windowRadius: 2, ledger: ledger, sharedByteBudget: budget)
+        // Own resource budget: a relief callback on `.shared` from other
+        // work in the process would compact `a` to ±1.
+        let a = DecodeQueue(windowRadius: 2, ledger: ledger, sharedByteBudget: budget,
+                            resources: .isolatedForTesting())
         await a.setNavigation(list: list, currentIndex: 4)
         let wide = await a.wantedIDs()
         XCTAssertEqual(wide.count, 5, "alone, a window gets its far neighbours")

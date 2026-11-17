@@ -1631,11 +1631,13 @@ final class EditTransitionTests: XCTestCase {
     /// nothing more is shown or registered, and the window goes away.
     func testWindowClosedWhileTheSaveWaitsShowsNothingMoreAndIsReleased() async throws {
         weak var weakViewer: ViewerWindow?
+        let held = ClosedViewerParts()
         var urls: [URL] = [], original = Data(), undoName = ""
         var save: Task<Bool, Never>?, navigationGate: ExportGate?
         do {
             let (viewer, files) = try await editingViewer()
             weakViewer = viewer; urls = files
+            held.track(viewer)
             viewer.saveOwnershipWait = .milliseconds(50)
             undoName = viewer.undoManagerForTesting.undoActionName
             let started = try await saveDuringNavigation(viewer, urls)
@@ -1645,7 +1647,7 @@ final class EditTransitionTests: XCTestCase {
             // 10 s: see saveDuringNavigation (which 3 s wait ran out on CI is unknown).
             try await until(timeout: 10) { viewer.contentRootForTesting.toastHost.content == saved }
             viewer.contentRootForTesting.toastHost.dismiss(animated: false)
-            viewer.close()
+            viewer.close(); held.noteClose(viewer)
             let finished = await save?.value
             XCTAssertEqual(finished, false)
             XCTAssertNil(viewer.contentRootForTesting.toastHost.content, "nothing more is shown")
@@ -1655,8 +1657,98 @@ final class EditTransitionTests: XCTestCase {
         save = nil
         // The likeliest of the three waits to have run out on CI (not proven); no holder
         // bounded by a product constant was found. ViewerLifetimeTests gives a release 5 s.
-        try await until(timeout: 10) { weakViewer == nil }
+        // Ran out twice on the CI runner (at 3 s and at 10 s) and never here: when it runs
+        // out, the failure names what is still running, and whether the window goes away
+        // later (a slow holder) or not at all (only the 10 s answer is asserted).
+        let end = Date().addingTimeInterval(10)
+        while weakViewer != nil, Date() < end { try await Task.sleep(for: .milliseconds(5)) }
+        if weakViewer != nil {
+            // In a pool: what NSApp.windows / firstResponder hand back must not hold the window.
+            // The state first, as its own failure: it reaches the log even if leaks stalls.
+            XCTFail(autoreleasepool { held.report(weakViewer) } + "\n" + (await held.queueState()))
+            let tree = Self.referenceTree(of: weakViewer)
+            let late = end.addingTimeInterval(20)
+            while weakViewer != nil, Date() < late { try await Task.sleep(for: .milliseconds(20)) }
+            let after = weakViewer == nil ? "released within \(Int(Date().timeIntervalSince(end).rounded(.up))) s after the 10 s"
+                : "still alive 20 s after the 10 s"
+            XCTFail(tree + "\n" + after)
+        }
         try await assertOriginalInBackup(urls[0], original)
+    }
+
+    /// Who references `object`, from `/usr/bin/leaks --traceTree` on this process: the
+    /// lines naming Shrike code or a thread stack, at most 80. `leaks` pauses the process
+    /// while it reads it (the 90 s limit is checked only between those pauses), so this
+    /// runs only after the 10 s answer is known. Written to a file, never a pipe: nothing
+    /// in the paused process could read a pipe.
+    private static func referenceTree(of object: AnyObject?) -> String {
+        guard let object else { return "reference tree: released meanwhile" }
+        let address = String(format: "%p", UInt(bitPattern: Unmanaged.passUnretained(object).toOpaque()))
+        let out = TestScratch.directory.appendingPathComponent("viewer-trace-\(UUID()).txt")
+        defer { try? FileManager.default.removeItem(at: out) }
+        guard FileManager.default.createFile(atPath: out.path, contents: nil),
+              let handle = try? FileHandle(forWritingTo: out) else { return "reference tree: no file" }
+        defer { try? handle.close() }
+        let leaks = Process()
+        leaks.executableURL = URL(fileURLWithPath: "/usr/bin/leaks")
+        leaks.arguments = ["\(getpid())", "--traceTree=\(address)"]
+        leaks.standardOutput = handle; leaks.standardError = handle
+        do { try leaks.run() } catch { return "reference tree: leaks did not start (\(error))" }
+        let deadline = Date().addingTimeInterval(90)
+        while leaks.isRunning, Date() < deadline { usleep(100_000) }
+        if leaks.isRunning { leaks.terminate(); return "reference tree: leaks ran past 90 s" }
+        let text = (try? String(contentsOf: out, encoding: .utf8)) ?? ""
+        let lines = text.split(separator: "\n")
+        let picked = lines.filter { $0.contains("Shrike") || $0.contains("Stack thread") }.prefix(80)
+        return "reference tree of \(address) (leaks exit \(leaks.terminationStatus), \(lines.count) lines; Shrike / stack lines):\n"
+            + picked.joined(separator: "\n")
+    }
+
+    /// What a closed viewer still has running, for the message of a release wait that ran out.
+    /// Weak only. The window owns its parts, so their being alive would name no holder.
+    private final class ClosedViewerParts {
+        private weak var coalescer: NavTaskCoalescer?
+        private weak var undo: UndoManager?
+        private weak var toast: ToastHostView?
+        private weak var queue: DecodeQueue?
+        private var redrawsAtClose: UInt64 = 0
+        private var started = Date(), closedAfter: TimeInterval = 0
+        /// Before the save starts: the watcher ignores the saved file for 2 s from there.
+        @MainActor func track(_ viewer: ViewerWindow) {
+            coalescer = viewer.navCoalescer; undo = viewer.undoManagerForTesting; toast = viewer.contentRootForTesting.toastHost
+            queue = viewer.navigationForTesting.decodeQueue; started = Date()
+        }
+        /// Right after close(): a redraw that FINISHES later ran on the closed window (for
+        /// example after a folder-watcher event for the saved file that came late).
+        @MainActor func noteClose(_ viewer: ViewerWindow) {
+            redrawsAtClose = viewer.redrawCount; closedAfter = Date().timeIntervalSince(started)
+        }
+        /// The decode queue's state (Debug builds), read without holding the window.
+        @MainActor func queueState() async -> String {
+            guard let queue else { return "decodeQueue gone" }
+            #if DEBUG
+            return "decodeQueue " + (await queue.stateForTesting())
+            #else
+            return "decodeQueue alive (state needs Debug)"
+            #endif
+        }
+        @MainActor func report(_ viewer: ViewerWindow?) -> String {
+            var lines = ["closed viewer still alive after 10 s; closed \(String(format: "%.1f", closedAfter)) s after the save started"]
+            if let viewer {
+                let c = viewer.contentRootForTesting.editModeController
+                // The `viewer` ref passed in is +1 here.
+                lines.append("viewer retainCount≈\(CFGetRetainCount(viewer)) tornDown=\(viewer.didTearDown) visible=\(viewer.isVisible) inAppWindows=\(NSApp?.windows.contains { $0 === viewer } ?? false) key=\(NSApp?.keyWindow === viewer) main=\(NSApp?.mainWindow === viewer) releasedWhenClosed=\(viewer.isReleasedWhenClosed) sheets=\(viewer.sheets.count) children=\(viewer.childWindows?.count ?? 0) firstResponder=\(viewer.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")")
+                lines.append("redraws finished since close=\(viewer.redrawCount &- redrawsAtClose) tasks: editExit=\(viewer.editExitTask != nil) editLoad=\(viewer.editLoadTask != nil) hiddenTrim=\(viewer.hiddenTrimTask != nil) textureRefetch=\(viewer.textureRefetchTask != nil) folderWatch=\(viewer.folderWatchTask != nil) watcher=\(viewer.folderWatcher != nil)")
+                lines.append("edit active=\(c.isActive) saving=\(c.isSaving) displayed=\(viewer.displayedItem?.group.primary.lastPathComponent ?? "nil") image=\(viewer.imageViewForTesting.image != nil)")
+            }
+            if let coalescer {
+                lines.append("navCoalescer idle=\(coalescer.isIdle) idleWaiters=\(coalescer.idleWaiterCountForTesting) currentCancelled=\(coalescer.isCurrentTaskCancelled) replaced=\(coalescer.replacedCount)")
+            }
+            lines.append("viewerSavesRunning=\(ViewerSaveCounter.running) undoCanUndo=\(undo?.canUndo.description ?? "gone") toast=\(toast.map { String(describing: $0.content) } ?? "gone")")
+            let s = ImageResourceBudget.shared.snapshot()
+            lines.append("shared budget active=\(s.activeDiscretionaryOperationCount) oversize=\(s.activeOversizeOperationCount) waiters=\(s.pendingWaiterCount) pressure=\(s.pressure) reserved=\(s.reservedEstimatedBytes)")
+            return lines.joined(separator: "\n")
+        }
     }
 
     /// D: the export reports no backup record (the file was gone when it wrote, so
