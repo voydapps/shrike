@@ -154,6 +154,13 @@ public final class ImageResourceBudget: Sendable {
         var registrations: Set<UUID> = []
         var observers: [UUID: @Sendable (ImageMemoryPressure) -> Void] = [:]
         var pressure: ImageMemoryPressure = .normal
+        /// One-shot "a discretionary slot freed" callbacks, at most one per
+        /// (owner, key). Not waiters: they hold no place in the queue.
+        var slotRetries: [SlotRetryKey: @Sendable () -> Void] = [:]
+    }
+    private struct SlotRetryKey: Hashable, Sendable {
+        let owner: ImageResourceOwner
+        let key: String
     }
     private let configuration: Configuration
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -212,6 +219,39 @@ public final class ImageResourceBudget: Sendable {
         let fits = Self.plus(Self.plus(current.retained, current.reserved), bytes) <= target(s)
         return fits || (policy == .oneOversizedOperation && discretionary.isEmpty)
     }
+    private func hasDiscretionarySlot(_ s: State) -> Bool {
+        s.work.values.filter { $0.policy != .requiredImage }.count < configuration.maximumDiscretionaryWorkCount
+    }
+    /// True when the only thing in the way of a bounded job is the slot count.
+    private func onlySlotsAreFull(_ bytes: Int, _ policy: ImageAdmissionPolicy, _ s: State) -> Bool {
+        guard policy == .bounded, s.pressure == .normal, !hasDiscretionarySlot(s),
+              !s.work.values.contains(where: \.oversize) else { return false }
+        let current = totals(s)
+        return Self.plus(Self.plus(current.retained, current.reserved), bytes) <= target(s)
+    }
+    /// Drops every pending slot-freed handler of `owner`, except those whose
+    /// key is in `keeping`.
+    internal func cancelSlotRetries(owner: ImageResourceOwner, keeping: Set<String> = []) {
+        state.withLock { s in
+            guard !s.slotRetries.isEmpty else { return }
+            s.slotRetries = s.slotRetries.filter { $0.key.owner != owner || keeping.contains($0.key.key) }
+        }
+    }
+    /// Test seam: slot-freed handlers still pending for `owner`.
+    internal func pendingSlotRetryCount(owner: ImageResourceOwner) -> Int {
+        state.withLock { s in s.slotRetries.keys.filter { $0.owner == owner }.count }
+    }
+    private func fireSlotRetries() {
+        let handlers = state.withLock { s -> [@Sendable () -> Void] in
+            guard !s.slotRetries.isEmpty else { return [] }
+            if s.pressure != .normal { s.slotRetries.removeAll(); return [] }
+            guard hasDiscretionarySlot(s) else { return [] }
+            let all = Array(s.slotRetries.values)
+            s.slotRetries.removeAll()
+            return all
+        }
+        for handler in handlers { handler() }
+    }
     private func exceedsTarget(adding bytes: Int, _ s: State) -> Bool {
         let current = totals(s)
         return Self.plus(Self.plus(current.retained, current.reserved), bytes) > target(s)
@@ -257,6 +297,18 @@ public final class ImageResourceBudget: Sendable {
     }
     public func tryReserve(bytes: Int, owner: ImageResourceOwner, category: ImageResourceCategory,
                            priority: ImageWorkPriority, policy: ImageAdmissionPolicy) -> ImageWorkReservation? {
+        tryReserve(bytes: bytes, owner: owner, category: category, priority: priority, policy: policy, slotRetry: nil)
+    }
+    /// Like the public `tryReserve`. When it refuses ONLY because every
+    /// discretionary slot is taken (normal pressure, bytes would fit), the
+    /// `slotRetry` handler is stored under the same lock and called once,
+    /// outside the lock, after a later release leaves a slot free. A newer
+    /// handler with the same (owner, key) replaces the older one.
+    /// `cancelSlotRetries(owner:)` drops them. Memory pressure never fires
+    /// a handler (the budget clears them when pressure is not normal).
+    internal func tryReserve(bytes: Int, owner: ImageResourceOwner, category: ImageResourceCategory,
+                             priority: ImageWorkPriority, policy: ImageAdmissionPolicy,
+                             slotRetry: (key: String, handler: @Sendable () -> Void)?) -> ImageWorkReservation? {
         guard bytes >= 0 else { return nil }
         let id = UUID()
         var reliefRequested = false
@@ -264,7 +316,12 @@ public final class ImageResourceBudget: Sendable {
             let requestedThisPass = reliefRequested
             let outcome = state.withLock { s -> Int in
                 guard canAdmit(bytes, policy, priority, s),
-                      !hasBlockingWaiter(bytes: bytes, priority: priority, policy: policy, s) else { return 0 }
+                      !hasBlockingWaiter(bytes: bytes, priority: priority, policy: policy, s) else {
+                    if let slotRetry, onlySlotsAreFull(bytes, policy, s) {
+                        s.slotRetries[SlotRetryKey(owner: owner, key: slotRetry.key)] = slotRetry.handler
+                    }
+                    return 0
+                }
                 if policy == .oneOversizedOperation, exceedsTarget(adding: bytes, s), !requestedThisPass { return 2 }
                 install(id, bytes: bytes, owner: owner, category: category, priority: priority, policy: policy, &s)
                 return 1
@@ -387,7 +444,11 @@ public final class ImageResourceBudget: Sendable {
         if ready.contains(where: { $0.needsRelief }) { requestOptionalRelief() }
         for item in ready { item.waiter.continuation.resume(returning: ImageWorkReservation(self, item.waiter.id)) }
     }
-    fileprivate func releaseWork(_ id: UUID) { state.withLock { _ = $0.work.removeValue(forKey: id) }; pump() }
+    fileprivate func releaseWork(_ id: UUID) {
+        state.withLock { _ = $0.work.removeValue(forKey: id) }
+        pump()
+        fireSlotRetries()
+    }
     public func retain(_ costs: [ImageResourceCost], owner: ImageResourceOwner,
                        category: ImageResourceCategory) -> ImageResourceLease {
         let id = UUID()
@@ -431,7 +492,11 @@ public final class ImageResourceBudget: Sendable {
     }
     public func setPressureForTesting(_ pressure: ImageMemoryPressure) { setPressure(pressure) }
     private func setPressure(_ pressure: ImageMemoryPressure) {
-        let callbacks = state.withLock { s in s.pressure = pressure; return Array(s.observers.values) }
+        let callbacks = state.withLock { s in
+            s.pressure = pressure
+            if pressure != .normal { s.slotRetries.removeAll() }   // memory pressure wins
+            return Array(s.observers.values)
+        }
         for callback in callbacks { callback(pressure) }
         pump()
     }

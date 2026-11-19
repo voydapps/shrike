@@ -19,6 +19,9 @@ final class BrowserMetadataMembershipTests: XCTestCase {
     private var savedMotion: Bool?
     private var savedFollowSchedule: TrailingDebouncer.Schedule?
     private var heldHydration: CheckedContinuation<Void, Never>?
+    /// Follows the viewer scheduled and the test has not "let the 150 ms pass" for yet.
+    private var heldFollows: [@MainActor @Sendable () -> Void] = []
+    private func letFollowsFire() { let held = heldFollows; heldFollows = []; held.forEach { $0() } }
     override func setUp() async throws {
         root = TestScratch.directory.appendingPathComponent("shrike-membership-\(UUID())")
         folder = root.appendingPathComponent("Photos")
@@ -36,7 +39,10 @@ final class BrowserMetadataMembershipTests: XCTestCase {
         // runner it fired between Undo and Redo and left c-bright selected).
         // BrowserFollowsViewerTests covers the follow itself.
         savedFollowSchedule = ViewerWindow.browserFollowSchedule
-        ViewerWindow.browserFollowSchedule = { _, _ in {} }
+        ViewerWindow.browserFollowSchedule = { [weak self] _, fire in
+            self?.heldFollows.append(fire)
+            return {}
+        }
     }
     override func tearDown() async throws {
         CullingUndo.beforeWriteForTesting = nil
@@ -263,6 +269,50 @@ final class BrowserMetadataMembershipTests: XCTestCase {
         XCTAssertEqual(browser.contentController.filter, filter)
         XCTAssertEqual(browser.window?.subtitle, WindowTitles.browserSubtitle(visible: 1, total: 3))
         assertEmptySelection(browser)
+    }
+    /// Runs rate (advance to c-bright), Undo, Redo on a Browser filtered to unrated
+    /// "bright" photos and returns the Browser selection at the end. A follow
+    /// "settles" when `letFollowsFire()` runs (the 150 ms passing).
+    private func selectionAfterRateUndoRedo(settleBetweenSteps: Bool, settleOriginal: Bool = true) async throws -> [URL] {
+        let urls = try photos()
+        let browser = try await self.browser()
+        var filter = BrowserFilter(searchTerm: "bright"); filter.unratedOnly = true
+        browser.contentController.filter = filter; browser.updateSubtitle()
+        XCTAssertTrue(browser.contentController.select(url: urls[0]))
+        Prefs.reviewControlsVisible = true; Prefs.advanceAfterRating = true
+        let viewer = ViewerWindow(groups: browser.contentController.visibleItems.map(\.group), startIndex: 0, services: services)
+        viewers.append(viewer)
+        viewer.pairedBrowser = browser; browser.pairedViewer = viewer
+        try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[0] }
+        viewer.windowUndoManager.groupsByEvent = false; viewer.windowUndoManager.beginUndoGrouping()
+        viewer.rateDisplayed(4); viewer.windowUndoManager.endUndoGrouping()
+        await CullingUndo.waitForPendingWrites()
+        try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[2] }
+        if settleOriginal { letFollowsFire() }   // the original action, followed: c-bright is selected
+        viewer.windowUndoManager.undo(); await CullingUndo.waitForPendingWrites()
+        try await until { viewer.navCoalescer.isIdle && viewer.displayedItem?.group.primary == urls[0] }
+        if settleBetweenSteps { letFollowsFire() }
+        viewer.windowUndoManager.redo(); await CullingUndo.waitForPendingWrites()
+        letFollowsFire()
+        XCTAssertEqual(visible(browser), [urls[2]])
+        return browser.contentController.selectedItems.map(\.url)
+    }
+    /// Reference: with the follow settling after every step, the viewer ends on a-bright
+    /// (now rated, hidden by the filter), so the Browser selects nothing.
+    func testRateUndoRedoWithSettledFollowsLeavesNothingSelected() async throws {
+        let selected = try await selectionAfterRateUndoRedo(settleBetweenSteps: true)
+        XCTAssertTrue(selected.isEmpty)
+    }
+    /// Undo then Redo before the 150 ms follow fires must leave the same selection
+    /// as the settled run: nothing (a stale c-bright from the first follow must not stay).
+    func testRedoBeforeTheFollowFiresLeavesNothingSelected() async throws {
+        let selected = try await selectionAfterRateUndoRedo(settleBetweenSteps: false)
+        XCTAssertTrue(selected.isEmpty, "Redo within 150 ms of Undo left \(selected.map(\.lastPathComponent)) selected")
+    }
+    /// Rate, Undo and Redo all inside one 150 ms window.
+    func testRateUndoRedoAllBeforeAnyFollowFiresLeavesNothingSelected() async throws {
+        let selected = try await selectionAfterRateUndoRedo(settleBetweenSteps: false, settleOriginal: false)
+        XCTAssertTrue(selected.isEmpty, "left \(selected.map(\.lastPathComponent)) selected")
     }
     func testDirectFlagsRemoveActionTargetsInGridListAndFilmstripAndUndoRestoresMembership() async throws {
         let urls = try photos(), browser = try await browser()

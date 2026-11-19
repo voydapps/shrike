@@ -149,6 +149,9 @@ public final class ViewerWindow: NSWindow {
     /// Overrides the async header-size read in tests that exercise a redraw
     /// while metadata is still loading.
     var headerPixelSizeReaderForTesting: (@Sendable (URL) -> CGSize?)?
+    /// Runs inside a redraw after its decode and before the new pixels are applied
+    /// (tests: lets a test close the window in that window of time).
+    var redrawAfterDecodeForTesting: (@MainActor () async -> Void)?
     /// The larger-texture fetch after the canvas grew.
     var textureRefetchTask: Task<Void, Never>?
     var textureRefetchCount = 0

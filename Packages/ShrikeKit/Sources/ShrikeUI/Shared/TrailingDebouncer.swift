@@ -28,6 +28,7 @@ final class TrailingDebouncer {
     private let schedule: Schedule
     private var cancelPending: (() -> Void)?
     private var generation: UInt64 = 0
+    private var pendingAction: (@MainActor @Sendable () -> Void)?
 
     init(delay: TimeInterval, schedule: @escaping Schedule = TrailingDebouncer.mainActorClock) {
         self.delay = delay
@@ -41,16 +42,26 @@ final class TrailingDebouncer {
         cancelPending?()
         generation &+= 1
         let mine = generation
+        pendingAction = action
         cancelPending = schedule(delay) { [weak self] in
             guard let self, self.generation == mine else { return }
             self.cancelPending = nil
+            self.pendingAction = nil
             action()
         }
+    }
+
+    /// Runs the pending call now (if any) and drops its timer.
+    func flush() {
+        guard let action = pendingAction else { return }
+        cancel()
+        action()
     }
 
     func cancel() {
         cancelPending?()
         cancelPending = nil
+        pendingAction = nil
         generation &+= 1
     }
 }

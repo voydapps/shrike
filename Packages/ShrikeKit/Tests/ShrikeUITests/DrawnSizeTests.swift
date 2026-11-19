@@ -153,6 +153,64 @@ final class DrawnSizeTests: XCTestCase {
         XCTAssertEqual(viewer.imageViewForTesting.sourcePixelSize, CGSize(width: 8, height: 16))
     }
 
+    /// A window closed while its redraw decodes must not draw that redraw.
+    func testViewerClosedDuringARedrawDecodeDoesNotDrawIt() async throws {
+        let watching = ViewerWindow.watchFoldersForTesting
+        ViewerWindow.watchFoldersForTesting = false
+        defer { ViewerWindow.watchFoldersForTesting = watching }
+        let url = dir.appendingPathComponent("closed-during-redraw.jpg")
+        try SaveFlowTests.writeImage(url, type: .jpeg)
+        let viewer = await viewer(url)
+        let drawnBefore = viewer.redrawCount
+        viewer.redrawAfterDecodeForTesting = { viewer.close() }
+        await viewer.redrawDisplayedKeepingViewNow()
+        viewer.redrawAfterDecodeForTesting = nil
+        XCTAssertEqual(viewer.redrawCount, drawnBefore, "a redraw whose window closed meanwhile draws nothing")
+        XCTAssertNil(viewer.imageViewForTesting.image)
+    }
+
+    /// A modified-file event that arrives after the window is closed draws and decodes
+    /// nothing, and the window is still freed. (Without the guard at the top of the redraw
+    /// nothing observable differs here: the decode queue refuses after close; the test
+    /// above is the one that can fail.)
+    func testLateWatcherEventOnAClosedViewerDrawsNothingAndTheWindowIsFreed() async throws {
+        let watching = ViewerWindow.watchFoldersForTesting
+        ViewerWindow.watchFoldersForTesting = false
+        defer { ViewerWindow.watchFoldersForTesting = watching }
+        let url = dir.appendingPathComponent("late-watcher.jpg")
+        try SaveFlowTests.writeImage(url, type: .jpeg)
+        weak var weakViewer: ViewerWindow?
+        var passedDecode = false
+        var redrawsAtClose: UInt64 = 0
+        do {
+            let viewer = await viewer(url)
+            weakViewer = viewer
+            viewer.redrawAfterDecodeForTesting = { passedDecode = true }
+            viewer.close()
+            await viewer.waitForResourceTeardownForTesting()
+            redrawsAtClose = viewer.redrawCount
+            // The real entry: the redraw task starts after the close.
+            viewer.didChangeFileOnDisk(url, fit: false)
+            await viewer.redrawDisplayedKeepingViewNow()
+            XCTAssertEqual(viewer.redrawCount, redrawsAtClose, "a closed viewer must not draw")
+            XCTAssertNil(viewer.imageViewForTesting.image, "a closed viewer must not show a photo again")
+        }
+        let freed = await Self.settle(timeout: 10) { weakViewer == nil }
+        // Report-only on the GitHub runner (unknown holder there), strict on the Mac.
+        if !freed { ClosedViewerReport.raise(["the closed window was not freed within 10 s"]) }
+        XCTAssertFalse(passedDecode, "a closed viewer must not decode and draw")
+    }
+
+    /// Waits up to `timeout` for `condition`; a bounded look, not a fixed sleep.
+    private static func settle(timeout: TimeInterval, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
+
     /// The flake of `testDelayedWatcherRedrawAfterRotateKeepsKnownDrawnSize`, made
     /// certain: a size read that saw the file before a turn landed after the
     /// turn was written, and put the old (landscape) size back.

@@ -237,6 +237,10 @@ public actor DecodeQueue {
     public nonisolated let resources: ImageResourceBudget
     public nonisolated let resourceOwner: ImageResourceOwner
     private var pressureObservation: ImagePressureObservation?
+    /// Counts memory-relief / pressure callbacks. Bumped synchronously in the
+    /// callback (before its hop to the actor), so a far-preload retry armed
+    /// before a relief can never run after it.
+    private nonisolated let reliefEpoch = OSAllocatedUnfairLock(initialState: 0)
 
     public init(
         windowRadius: Int = 2,
@@ -260,6 +264,7 @@ public actor DecodeQueue {
     }
 
     deinit {
+        resources.cancelSlotRetries(owner: resourceOwner)
         ledger.set(ObjectIdentifier(self), bytes: 0)
     }
 
@@ -284,8 +289,11 @@ public actor DecodeQueue {
 
     private func observeResourcePressure() {
         guard pressureObservation == nil else { return }
+        let epoch = reliefEpoch, budget = resources, owner = resourceOwner
         pressureObservation = resources.observePressure { [weak self] pressure in
             guard pressure != .normal else { return }
+            epoch.withLock { $0 &+= 1 }
+            budget.cancelSlotRetries(owner: owner)
             Task { await self?.relieveResourcePressure() }
         }
     }
@@ -322,6 +330,7 @@ public actor DecodeQueue {
         self.currentIndex = list.isEmpty ? 0 : max(0, min(currentIndex, list.count - 1))
         self.direction = 1
         generation &+= 1
+        resources.cancelSlotRetries(owner: resourceOwner)   // retries armed for the old list
         // Supersede nav tasks queued against the old list.
         latestNavGen &+= 1
         // Keeps cached / in-flight files that are still in the new window
@@ -531,6 +540,7 @@ public actor DecodeQueue {
     public func purge() {
         pressureObservation?.cancel()
         pressureObservation = nil
+        resources.cancelSlotRetries(owner: resourceOwner)
         idleTrimTask?.cancel()
         idleTrimTask = nil
         fullResTask?.cancel()
@@ -763,6 +773,9 @@ public actor DecodeQueue {
             if usable == nil && inFlight[id] == nil { toStart.append(i) }
         }
         wanted = Set(keep)
+        // A retry for a file that left the window is dropped now, so retries
+        // never outnumber the wanted neighbours.
+        resources.cancelSlotRetries(owner: resourceOwner, keeping: wanted)
         for (id, pending) in inFlight where !wanted.contains(id) {
             pending.task.cancel()
             inFlight.removeValue(forKey: id)
@@ -810,6 +823,15 @@ public actor DecodeQueue {
         let lane = self.lane
         let resources = self.resources, owner = resourceOwner
         let required = abs(index - currentIndex) <= 1
+        // A far preload refused only for want of a free slot is tried again
+        // when one frees (budget event; no timer). The handler only hops
+        // back here, where `retryFarPreload` re-checks the window.
+        let retry: (key: String, handler: @Sendable () -> Void)? = required ? nil : {
+            let generation = self.generation, epoch = reliefEpoch.withLock { $0 }
+            return (id, { [weak self] in
+                Task { await self?.retryFarPreload(index: index, id: id, generation: generation, epoch: epoch, token: token) }
+            })
+        }()
         let format: ImageFormat? = (source as? FileImageSource).flatMap { ImageFormat(url: $0.url) }
 
         // Cold open: the app may have started this file's decode before
@@ -835,13 +857,17 @@ public actor DecodeQueue {
             }
             try Task.checkCancellation()
             let estimate = try await Self.workingSet(for: source, target: target)
+            // A task cancelled meanwhile (purge, new list, window moved) must
+            // not store a retry handler; the usual cancel path handles the throw.
+            try Task.checkCancellation()
             let reservation: ImageWorkReservation
             if required {
                 reservation = try await resources.reserve(bytes: estimate, owner: owner, category: .decodeWork,
                                                           priority: .visible, policy: .requiredImage)
             } else {
                 guard let optional = resources.tryReserve(bytes: estimate, owner: owner, category: .decodeWork,
-                                                         priority: .speculative, policy: .bounded) else {
+                                                         priority: .speculative, policy: .bounded,
+                                                         slotRetry: retry) else {
                     throw DecodeQueueError.memoryBudgetExceeded
                 }
                 reservation = optional
@@ -881,6 +907,45 @@ public actor DecodeQueue {
             await self?.complete(id: id, token: token, entry: entry)
         }
     }
+
+    /// The budget freed a slot after refusing the far preload of `id` for
+    /// that reason alone. Starts it again only if the same list is still
+    /// shown, no relief or pressure came since, and the file is still a
+    /// wanted neighbour with nothing cached or running for it. At most one
+    /// retry exists per file (the budget keys it by file), so this cannot
+    /// grow; a refusal on the retry arms the next one.
+    ///
+    /// `token` is the decode that was refused. It stays in `inFlight` until its
+    /// completion reaches the actor, which a slot freeing first can beat; that
+    /// entry is dead, so it is replaced. A different live decode still blocks.
+    func retryFarPreload(index: Int, id: String, generation: UInt64, epoch: Int, token: UInt64? = nil) {
+        guard self.generation == generation, reliefEpoch.withLock({ $0 }) == epoch,
+              !compactWindow, !isBackground,
+              list.indices.contains(index), list[index].id == id,
+              wanted.contains(id), usableEntry(for: index) == nil else { return }
+        if let live = inFlight[id] {
+            guard let token, live.token == token else { return }
+            live.task.cancel()
+            inFlight.removeValue(forKey: id)
+        }
+        spawnDecode(index: index)
+    }
+
+    /// Test seam: starts the far decode of `index` and, in the same actor
+    /// turn (so its completion cannot have arrived), runs the retry the budget
+    /// would send for it. Returns how many decodes were started.
+    /// `tokenOffset` != 0 sends the retry with another decode's token.
+    func spawnThenRetryInOneTurnForTesting(index: Int, tokenOffset: UInt64 = 0) -> Int {
+        let before = spawnedForTesting.count
+        let id = list[index].id
+        spawnDecode(index: index)
+        retryFarPreload(index: index, id: id, generation: generation,
+                        epoch: reliefEpoch.withLock { $0 }, token: nextToken &+ tokenOffset)
+        return spawnedForTesting.count - before
+    }
+
+    /// Test seam: the running decode task for `id`, to await as a barrier.
+    func inFlightTaskForTesting(id: String) -> Task<DecodedImage, any Error>? { inFlight[id]?.task }
 
     /// Decode `file` for a display of `target` pixels and build its
     /// texture. Blocks: run it on a `DecodeLane`.

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.36 - 2026-11-18
+
+### Faster
+- A photo two steps ahead that could not be loaded early, because Shrike was busy, is now loaded as soon as there is room. Before, it waited for your next step.
+
+### Fixed
+- After a quick Undo and Redo of a rating or flag in the viewer, the Browser no longer keeps a wrong photo selected.
+
 ## 0.2.35 - 2026-11-17
 
 ### New

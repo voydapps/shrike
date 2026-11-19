@@ -73,6 +73,10 @@ extension ViewerWindow {
     /// flash it if it is auto-hidden, and keep a paired Browser in step.
     func cullingDidChange(_ values: [URL: FileRecord]) {
         applyCullingValues(values, flash: true)
+        // A follow still waiting for its 150 ms runs first, so the Browser's selection
+        // is what it would be had the user waited. Otherwise a photo this change hides
+        // is never selected, and the old selection stays behind.
+        browserFollow.flush()
         pairedBrowser?.applyCullingValues(values)
     }
 

@@ -73,8 +73,8 @@ struct TestImageSource: ImageSource {
 extension ImageResourceBudget {
     /// A budget owned by one test. A queue on the default `.shared` budget
     /// gets its FAR neighbours (±2) only on a best-effort basis: they are
-    /// speculative and are refused, never retried, when `.shared` has no
-    /// free discretionary slot (the limit is the core count: 3 on the CI
+    /// speculative and are refused when `.shared` has no
+    /// free discretionary slot (retried when one frees; the limit is the core count: 3 on the CI
     /// runner) or a waiter, and any relief or memory-pressure callback on
     /// `.shared` shrinks the window to ±1. Earlier tests in the same
     /// process leave decodes running on `.shared` (0.2.34 release gate:

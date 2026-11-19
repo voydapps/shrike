@@ -266,7 +266,8 @@ extension ViewerWindow {
 
     /// The same, for a caller that must wait until the new pixels are in.
     func redrawDisplayedKeepingViewNow(fit: Bool = false) async {
-        guard let item = displayedItem else { return }
+        // A late watcher event can arrive after the window closed: draw nothing.
+        guard !didTearDown, let item = displayedItem else { return }
         let url = item.group.primary
         let navigation = self.navigation
         // Snapshot dimensions before the async decode can overlap another
@@ -277,9 +278,11 @@ extension ViewerWindow {
             ?? contentRoot.imageView.sourcePixelSize
         do {
             await navigation.decodeQueue.evict(url: url)
-            guard let index = self.list.index(of: url),
+            guard !self.didTearDown, let index = self.list.index(of: url),
                   let entry = try? await navigation.jumpEntry(to: index),
-                  self.displayedItem?.group.primary == url else { return }
+                  !self.didTearDown, self.displayedItem?.group.primary == url else { return }
+            await self.redrawAfterDecodeForTesting?()
+            guard !self.didTearDown, self.displayedItem?.group.primary == url else { return }
             let view = self.contentRoot.imageView
             // Keep the last known dimensions attached to the displayed
             // pixels while the file's replacement is decoded and its new

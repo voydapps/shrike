@@ -38,6 +38,39 @@ final class TrailingDebouncerTests: XCTestCase {
 }
 
 @MainActor
+final class TrailingDebouncerFlushTests: XCTestCase {
+    func testFlushRunsThePendingCallOnceEvenIfItsTimerFiresAnyway() {
+        var timers: [@MainActor @Sendable () -> Void] = []
+        let debouncer = TrailingDebouncer(delay: 0.15) { _, fire in timers.append(fire); return {} }
+        var ran: [Int] = []
+        debouncer.call { ran.append(1) }
+        debouncer.call { ran.append(2) }
+        debouncer.flush()
+        XCTAssertEqual(ran, [2])
+        XCTAssertFalse(debouncer.isPending)
+        timers.forEach { $0() }
+        XCTAssertEqual(ran, [2], "a timer that was not cancelled must not run it again")
+        debouncer.flush()
+        XCTAssertEqual(ran, [2], "nothing pending: flush does nothing")
+    }
+
+    func testFlushAfterCancelOrAfterTheTimerFiredDoesNothing() {
+        var timers: [@MainActor @Sendable () -> Void] = []
+        let debouncer = TrailingDebouncer(delay: 0.15) { _, fire in timers.append(fire); return {} }
+        var ran = 0
+        debouncer.call { ran += 1 }
+        debouncer.cancel()
+        debouncer.flush()
+        XCTAssertEqual(ran, 0)
+        debouncer.call { ran += 1 }
+        if let last = timers.last { last() }
+        XCTAssertEqual(ran, 1)
+        debouncer.flush()
+        XCTAssertEqual(ran, 1, "a call that already ran is not replayed")
+    }
+}
+
+@MainActor
 final class BrowserFollowsViewerTests: XCTestCase {
     private var dir: URL!
     private var savedSchedule: TrailingDebouncer.Schedule!
